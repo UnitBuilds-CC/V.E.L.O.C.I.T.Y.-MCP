@@ -1,0 +1,22 @@
+[package]
+name = "velocity_mcp"
+version = "1.0.0"
+edition = "2021"
+authors = ["UnitBuilds <ian@unitbuilds.com>"]
+description = "A high-performance, zero-allocation Model Context Protocol (MCP) server in Rust"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+memmap2 = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+ctrlc = "3.4"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+

@@ -1,0 +1,41 @@
+# Knowledge Card Index — V.E.L.O.C.I.T.Y. NMCP Server
+schema_version: 1
+locale: en-US
+branch: main
+nodes_managed: true
+exported_at: "2026-08-17T20:58:00Z"
+classification_summary:
+    total_files: 7
+    real: 7
+    generated: 0
+    template: 0
+    stub: 0
+    critical_modules:
+        - module: src/protocol
+          files: 3
+          status: "Dual-protocol handlers (JSON-RPC stdio + NMCP binary shmem)"
+        - module: src/ipc
+          files: 2
+          status: "Memory-mapped shared memory IPC with atomic state machine"
+        - module: src/registry
+          files: 1
+          status: "NDA tool definitions and C# core delegation"
+        - module: src/benchmark
+          files: 1
+          status: "In-memory micro-benchmark suite (JSON vs binary vs shmem)"
+modules:
+    "":
+        dir_name: V.E.L.O.C.I.T.Y. NMCP Server Root Crate
+        title: V.E.L.O.C.I.T.Y. NMCP Server Root Crate
+        scope:
+            - README.md
+            - Cargo.toml
+            - LICENSE
+            - src/main.rs
+            - src/registry.rs
+            - src/benchmark.rs
+            - src/protocol/
+            - src/ipc/
+        source_files:
+            - Cargo.toml
+            - src/main.rs

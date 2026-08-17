@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "project": "V.E.L.O.C.I.T.Y. NMCP Server",
+  "locale": "en-US",
+  "exported_at": "2026-08-17T20:58:00Z",
+  "workspace": {
+    "root": "V.E.L.O.C.I.T.Y.-MCP/",
+    "crates": [
+      {
+        "name": "velocity_mcp",
+        "path": "./",
+        "file_count": 7,
+        "role": "High-performance zero-allocation NMCP server with dual-mode protocol (JSON-RPC stdio + shared memory binary)"
+      }
+    ],
+    "total_source_files": 7,
+    "key_constraints": [
+      "Dual-protocol execution: stdio JSON-RPC v2.0 and shared memory NMCP binary",
+      "Zero-allocation binary frame parsing via raw slice alignment",
+      "Memory-mapped file IPC with atomic state machine ring buffer (64KB total)",
+      "C# NdaMcpServer delegation for tool execution (convert_to_nda, read_nda, execute_nda)",
+      "SHA-256 Merkle signatures on NMCP binary frames (32-byte merkle root)",
+      "Release profile: opt-level 3, LTO, codegen-units 1, panic abort, stripped",
+      "Self-contained single executable — no dynamic dependencies"
+    ]
+  },
+  "content_pages": {
+    "count": 8,
+    "categories": [
+      "Getting Started",
+      "Development Guide",
+      "Troubleshooting & FAQ",
+      "Core Concepts & Architecture",
+      "Protocol Layer",
+      "IPC Subsystem",
+      "Tool Registry and Sandbox",
+      "Performance Benchmarking"
+    ]
+  },
+  "knowledge_cards": {
+    "count": 7,
+    "topics": [
+      "Cargo Single Crate Build",
+      "NMCP Binary Protocol",
+      "Shared Memory IPC",
+      "JSON-RPC v2.0 Stdio",
+      "NDA Tool Registry",
+      "Micro-Benchmark Suite",
+      "Proprietary License"
+    ]
+  },
+  "skills": {
+    "count": 2,
+    "names": [
+      "rust-code-review",
+      "nmcp-protocol-dev"
+    ]
+  }
+}
