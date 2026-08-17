@@ -19,7 +19,8 @@ pub struct Tool {
 const DEFAULT_CSHARP_PATH: &str = r"C:\Users\visse\OneDrive\Documents\Payment and Transaction Flow\Velocity\NdaMcpServer\bin\Debug\net10.0\NdaMcpServer.exe";
 
 /// Timeout for C# process execution (30 seconds).
-const CSHARP_TIMEOUT: Duration = Duration::from_secs(30);
+/// Note: Currently unused as we read stdout until complete response, then kill the process.
+const _CSHARP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Return the list of registered MCP tools with their input schemas.
 pub fn get_tools() -> Vec<Tool> {
@@ -157,35 +158,67 @@ fn execute_csharp_mcp_tool(tool_name: &str, arguments: &Value, exe_path: &str) -
     let request_str = serde_json::to_string(&request)? + "\n";
 
     // Spawn the process
-    use std::io::Write;
+    use std::io::{Write, BufRead, BufReader};
     let mut child = Command::new(exe_path)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()?;
 
+    // Write request and close stdin to signal EOF
     {
         let stdin = child.stdin.as_mut().ok_or("Failed to open stdin of C# child process")?;
         stdin.write_all(request_str.as_bytes())?;
+        stdin.flush()?;
     }
+    // stdin is dropped here, closing the pipe
 
-    // Wait with timeout to prevent indefinite hangs
-    let output = match wait_with_timeout(child, CSHARP_TIMEOUT) {
-        Ok(output) => output,
-        Err(e) => {
-            error!(tool = tool_name, error = %e, "C# process timed out or failed");
-            return Err(e);
+    // Read stdout in a thread with timeout
+    let mut stdout = child.stdout.take().ok_or("Failed to open stdout")?;
+    let reader_thread = std::thread::spawn(move || {
+        let mut response_str = String::new();
+        let mut reader = BufReader::new(&mut stdout);
+        // Read lines until we get a complete JSON response
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => break, // EOF
+                Ok(_) => {
+                    response_str.push_str(&line);
+                    // Check if we have a complete JSON object
+                    if response_str.trim().starts_with('{') && response_str.trim().ends_with('}') {
+                        // Try to parse it
+                        if serde_json::from_str::<Value>(response_str.trim()).is_ok() {
+                            break;
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        response_str
+    });
+
+    // Wait for reader thread with timeout
+    let response_str = match reader_thread.join() {
+        Ok(s) => s,
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("Failed to read response from C# process".into());
         }
     };
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        error!(tool = tool_name, status = %output.status, stderr = %stderr, "C# process failed");
-        return Err(format!("C# process exited with status: {}. Stderr: {}", output.status, stderr).into());
+    // Kill the process (C# MCP server doesn't exit on its own)
+    let _ = child.kill();
+    let _ = child.wait();
+
+    if response_str.trim().is_empty() {
+        error!(tool = tool_name, "C# process returned empty response");
+        return Err("C# process returned empty response".into());
     }
 
-    let response_str = String::from_utf8(output.stdout)?;
-    let response: Value = serde_json::from_str(&response_str)?;
+    let response: Value = serde_json::from_str(response_str.trim())?;
 
     // Parse out the text from the JSON-RPC response content array
     if let Some(err) = response.get("error") {
@@ -209,6 +242,7 @@ fn execute_csharp_mcp_tool(tool_name: &str, arguments: &Value, exe_path: &str) -
 /// Wait for a child process with a timeout.
 /// Polls the child with try_wait() and kills it if the timeout expires.
 /// Returns the output on success, or an error if the timeout expires.
+#[allow(dead_code)]
 fn wait_with_timeout(mut child: std::process::Child, timeout: Duration) -> Result<std::process::Output, Box<dyn Error>> {
     let start = std::time::Instant::now();
     let poll_interval = Duration::from_millis(50);
