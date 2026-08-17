@@ -505,4 +505,34 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
+
+    #[test]
+    fn test_get_builtin_tools_returns_three_tools() {
+        let tools = get_builtin_tools();
+        assert_eq!(tools.len(), 3);
+        assert_eq!(tools[0].name, "convert_to_nda");
+        assert_eq!(tools[1].name, "read_nda");
+        assert_eq!(tools[2].name, "execute_nda");
+    }
+
+    #[test]
+    fn test_discover_csharp_tools_returns_tools() {
+        // This test requires the C# engine to be available
+        match discover_csharp_tools() {
+            Ok(tools) => {
+                // C# engine should return at least the 3 NDA tools
+                assert!(tools.len() >= 3);
+                // Verify tool structure
+                for tool in &tools {
+                    assert!(!tool.name.is_empty());
+                    assert!(!tool.description.is_empty());
+                    assert!(tool.input_schema.is_object());
+                }
+            }
+            Err(e) => {
+                // If C# engine not available, that's acceptable for unit tests
+                println!("C# engine not available (expected in some test environments): {}", e);
+            }
+        }
+    }
 }

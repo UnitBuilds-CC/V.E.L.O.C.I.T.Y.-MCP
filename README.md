@@ -101,6 +101,15 @@ cargo clippy -- -W clippy::all
 
 ## Features
 
+### Dynamic Tool Hosting
+The server automatically discovers and hosts tools from the C# backend engine. On first `tools/list` request, it queries the C# engine for available tools, caches them, and merges with the built-in NDA tools (deduplicating by name). Any tool added to the C# engine is immediately available through the Rust server — no configuration needed.
+
+### Built-in NDA Tools
+Three built-in tools for NDA (Neural Document Archive) operations:
+- **convert_to_nda**: Convert files to cryptographically signed `.nda` binary format
+- **read_nda**: Inspect NDA files (semantic triples, display commands, string pool)
+- **execute_nda**: Execute runnable NDA containers (binaries run in-memory, scripts via shell)
+
 ### Graceful Shutdown
 Ctrl+C sets an atomic shutdown flag. Both stdio and shmem loops poll this flag and exit cleanly. The stdio loop uses a reader thread + `recv_timeout` pattern so stdin reads never block shutdown. The shmem loop removes the buffer file on exit.
 

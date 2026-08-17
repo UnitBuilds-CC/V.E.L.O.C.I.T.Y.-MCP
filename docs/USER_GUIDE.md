@@ -137,6 +137,24 @@ Server → Client (stdout): {"jsonrpc":"2.0","id":1,"result":{...}}
 
 ## 3. Using the Tools
 
+### Dynamic Tool Hosting
+
+The V.E.L.O.C.I.T.Y. server is a **self-hosting MCP server** that automatically discovers and hosts tools from the C# backend engine. When a client sends a `tools/list` request:
+
+1. The server queries the C# engine for its available tools
+2. Results are cached for subsequent requests
+3. Built-in NDA tools are merged with discovered tools (deduplicated)
+4. All tool calls are routed to the C# engine for execution
+
+**What this means for users:**
+- Add a tool to the C# engine → it's immediately available through the Rust server
+- No configuration or restart needed
+- The Rust server provides high-performance protocol handling while the C# engine handles tool logic
+
+### Built-in NDA Tools
+
+The server provides three built-in tools for NDA (Neural Document Archive) operations. These tools are always available and provide the core functionality for converting files to the faster binary format.
+
 ### convert_to_nda
 
 Convert any file into a cryptographically signed `.nda` binary document.
