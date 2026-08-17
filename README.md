@@ -151,11 +151,11 @@ Built-in micro-benchmark suite (`--benchmark`) comparing protocol parsing and IP
 
 | Operation | Protocol / Parser | Mean Latency | Speedup vs JSON |
 |:----------|:------------------|:------------:|:---------------:|
-| **JSON-RPC Parse** | `serde_json` | **653.00 ns** | *1.0x (baseline)* |
-| **Mmapped Buffer R/W** | Shared Memory IPC | **58.97 ns** | **11.1x faster** |
-| **Zero-Alloc Binary Parse** | NMCP Binary Parser | **0.40 ns** | **1,636x faster** |
+| **JSON-RPC Parse** | `serde_json` | **1,320 ns** | *1.0x (baseline)* |
+| **Mmapped Buffer R/W** | Shared Memory IPC | **115 ns** | **11.5x faster** |
+| **Zero-Alloc Binary Parse** | NMCP Binary Parser | **6.03 ns** | **219x faster** |
 
-The zero-allocation NMCP binary parser performs raw pointer casts and slice traversal, processing over **2.5 billion frames per second** on a single thread.
+The zero-allocation NMCP binary parser performs raw pointer casts and slice traversal, processing over **165 million frames per second** on a single thread — including actual data extraction from the parsed payload.
 
 ---
 

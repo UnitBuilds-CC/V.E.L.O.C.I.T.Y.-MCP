@@ -24,13 +24,20 @@ pub fn run_benchmarks() {
     
     println!("Running JSON-RPC Parse Benchmark ({} iterations)...", json_iterations);
     let start = Instant::now();
+    let mut json_checksum: u32 = 0;
     for _ in 0..json_iterations {
         let val: serde_json::Value = serde_json::from_str(black_box(json_req)).unwrap();
-        let _method = black_box(val["method"].as_str());
+        // Extract data from the parsed value to prevent dead-code elimination.
+        if let Some(method) = val["method"].as_str() {
+            for b in method.bytes() {
+                json_checksum = json_checksum.wrapping_add(b as u32);
+            }
+        }
     }
     let duration_json = start.elapsed();
     let json_avg_ns = (duration_json.as_nanos() as f64) / (json_iterations as f64);
     println!("  Mean Latency (serde_json): {:.2} ns", json_avg_ns);
+    black_box(json_checksum);
 
     // 2. Benchmark NMCP Zero-Alloc Binary Frame Parsing
     let mut binary_buffer = Vec::new();
@@ -41,13 +48,20 @@ pub fn run_benchmarks() {
 
     println!("\nRunning NMCP Zero-Alloc Binary Frame Parse Benchmark ({} iterations)...", binary_iterations);
     let start_bin = Instant::now();
+    let mut checksum: u32 = 0;
     for _ in 0..binary_iterations {
         let frame = NmcpBinaryFrame::parse(black_box(&binary_buffer)).unwrap();
-        let _magic = black_box(frame.magic);
+        // Force actual data access through the parsed references.
+        // Summing bytes prevents the compiler from hoisting or constant-folding.
+        for &b in frame.payload {
+            checksum = checksum.wrapping_add(b as u32);
+        }
+        checksum = checksum.wrapping_add(frame.magic[0] as u32);
     }
     let duration_bin = start_bin.elapsed();
     let bin_avg_ns = (duration_bin.as_nanos() as f64) / (binary_iterations as f64);
     println!("  Mean Latency (Zero-Alloc Binary Frame): {:.2} ns", bin_avg_ns);
+    black_box(checksum);
 
     // 3. Benchmark Shared Memory Mapped Operations (Read/Write)
     let temp_shmem_path = "temp_bench_shmem.bin";

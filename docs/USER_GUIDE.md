@@ -655,11 +655,11 @@ Run the built-in benchmark suite:
 
 | Operation | Mean Latency | Throughput |
 |-----------|:------------:|:----------:|
-| JSON-RPC Parse | 653 ns | ~1.5M req/s |
-| Shared Memory R/W | 59 ns | ~17M ops/s |
-| Binary Frame Parse | 0.4 ns | ~2.5B frames/s |
+| JSON-RPC Parse | 1,320 ns | ~760K req/s |
+| Shared Memory R/W | 115 ns | ~8.7M ops/s |
+| Binary Frame Parse | 6.03 ns | ~166M frames/s |
 
-The binary parser is **1,636x faster** than JSON parsing because it performs zero-copy pointer casts instead of string parsing.
+The binary parser is **219x faster** than JSON parsing because it performs zero-copy pointer casts instead of string parsing, while still extracting data from the parsed payload.
 
 ---
 
