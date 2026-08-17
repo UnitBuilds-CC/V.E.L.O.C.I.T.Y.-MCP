@@ -65,6 +65,71 @@ pub fn run_benchmarks() {
     println!("  Mean Latency (Zero-Alloc Binary Frame): {:.2} ns", bin_avg_ns);
     black_box(checksum);
 
+    // 2b. Fair comparison: Same tool call via JSON vs NDA binary wrapper
+    // This measures: JSON parse only vs binary parse + extract payload
+    println!("\nRunning Protocol Overhead Benchmark (same request, different formats)...");
+    
+    // The same tool call request
+    let tool_call_json = r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"hello_world","arguments":{"message":"Hello, World!"}},"id":1}"#;
+    
+    // Wrap it in an NMCP binary frame
+    let mut nda_wrapped = Vec::new();
+    nda_wrapped.extend_from_slice(b"NMCP");
+    nda_wrapped.extend_from_slice(&[0u8; 32]); // Merkle root
+    nda_wrapped.extend_from_slice(tool_call_json.as_bytes());
+    
+    let overhead_iterations = 500_000;
+    
+    // Benchmark A: Parse JSON directly
+    let start_json_direct = Instant::now();
+    let mut json_direct_checksum: u32 = 0;
+    for _ in 0..overhead_iterations {
+        let val: serde_json::Value = serde_json::from_str(black_box(tool_call_json)).unwrap();
+        if let Some(method) = val["method"].as_str() {
+            for b in method.bytes() {
+                json_direct_checksum = json_direct_checksum.wrapping_add(b as u32);
+            }
+        }
+        if let Some(tool_name) = val["params"]["name"].as_str() {
+            for b in tool_name.bytes() {
+                json_direct_checksum = json_direct_checksum.wrapping_add(b as u32);
+            }
+        }
+    }
+    let duration_json_direct = start_json_direct.elapsed();
+    let json_direct_avg_ns = (duration_json_direct.as_nanos() as f64) / (overhead_iterations as f64);
+    black_box(json_direct_checksum);
+    
+    // Benchmark B: Parse NMCP binary frame, extract payload, then parse as JSON
+    let start_nda_parse = Instant::now();
+    let mut nda_parse_checksum: u32 = 0;
+    for _ in 0..overhead_iterations {
+        // Step 1: Zero-copy binary frame parse
+        let frame = NmcpBinaryFrame::parse(black_box(&nda_wrapped)).unwrap();
+        // Step 2: Convert payload to string (this is where NDA would differ)
+        let payload_str = std::str::from_utf8(frame.payload).unwrap();
+        // Step 3: Parse as JSON-RPC
+        let val: serde_json::Value = serde_json::from_str(black_box(payload_str)).unwrap();
+        if let Some(method) = val["method"].as_str() {
+            for b in method.bytes() {
+                nda_parse_checksum = nda_parse_checksum.wrapping_add(b as u32);
+            }
+        }
+        if let Some(tool_name) = val["params"]["name"].as_str() {
+            for b in tool_name.bytes() {
+                nda_parse_checksum = nda_parse_checksum.wrapping_add(b as u32);
+            }
+        }
+    }
+    let duration_nda_parse = start_nda_parse.elapsed();
+    let nda_parse_avg_ns = (duration_nda_parse.as_nanos() as f64) / (overhead_iterations as f64);
+    black_box(nda_parse_checksum);
+    
+    println!("  JSON-RPC direct parse:       {:.2} ns", json_direct_avg_ns);
+    println!("  NDA binary + JSON parse:     {:.2} ns", nda_parse_avg_ns);
+    let overhead_ratio = nda_parse_avg_ns / json_direct_avg_ns;
+    println!("  NDA overhead:                {:.2}x vs direct JSON", overhead_ratio);
+
     // 3. Benchmark Shared Memory Mapped Operations (Read/Write)
     let temp_shmem_path = "temp_bench_shmem.bin";
     let shmem_iterations = 200_000;
@@ -151,5 +216,10 @@ pub fn run_benchmarks() {
     println!("  Zero-Alloc Binary Parse:     {:.2} ns", bin_avg_ns);
     let speedup_binary = json_avg_ns / bin_avg_ns;
     println!("  Binary Ingestion Speedup:    {:.1}x over JSON-RPC", speedup_binary);
+    println!("------------------------------------------------------------");
+    println!("  Protocol Overhead (same tool call):");
+    println!("    JSON direct:               {:.2} ns", json_direct_avg_ns);
+    println!("    NDA binary + JSON:         {:.2} ns", nda_parse_avg_ns);
+    println!("    NDA overhead:              {:.2}x", overhead_ratio);
     println!("============================================================");
 }
