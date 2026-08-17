@@ -671,13 +671,22 @@ Run the built-in benchmark suite:
 
 ### Reference Results (Intel Core i5-14400F)
 
+**Low-Level Parsing:**
+
 | Operation | Mean Latency | Throughput |
 |-----------|:------------:|:----------:|
-| JSON-RPC Parse | 1,320 ns | ~760K req/s |
-| Shared Memory R/W | 115 ns | ~8.7M ops/s |
-| Binary Frame Parse | 6.03 ns | ~166M frames/s |
+| JSON-RPC Parse | 637 ns | ~1.57M req/s |
+| Shared Memory R/W | 52 ns | ~19.2M ops/s |
+| Binary Frame Parse | 3.06 ns | ~327M frames/s |
 
-The binary parser is **219x faster** than JSON parsing because it performs zero-copy pointer casts instead of string parsing, while still extracting data from the parsed payload.
+**End-to-End Tool Calls:**
+
+| Operation | Mean Latency | Notes |
+|-----------|:------------:|:------|
+| JSON Tool Call | 104 ms | convert_to_nda (includes process spawn) |
+| NDA Tool Call | 78 ms | read_nda (1.34x faster) |
+
+The binary parser is **208x faster** than JSON parsing because it performs zero-copy pointer casts instead of string parsing. End-to-end tool calls show 1.34x speedup because process spawning and IPC overhead dominate. The real NDA benefits are semantic triples, compact binary storage, and cryptographic signing.
 
 ---
 

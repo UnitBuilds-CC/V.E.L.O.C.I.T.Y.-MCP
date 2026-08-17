@@ -156,15 +156,24 @@ The Acquire/Release pair on the state byte combined with SeqCst fences ensures t
 
 Built-in micro-benchmark suite (`--benchmark`) comparing protocol parsing and IPC latency.
 
-### Benchmark Results (Intel Core i5-14400F, Release Mode)
+### Benchmark Results (Intel Core i5-14400F)
 
-| Operation | Protocol / Parser | Mean Latency | Speedup vs JSON |
-|:----------|:------------------|:------------:|:---------------:|
-| **JSON-RPC Parse** | `serde_json` | **1,320 ns** | *1.0x (baseline)* |
-| **Mmapped Buffer R/W** | Shared Memory IPC | **115 ns** | **11.5x faster** |
-| **Zero-Alloc Binary Parse** | NMCP Binary Parser | **6.03 ns** | **219x faster** |
+**Low-Level Parsing:**
 
-The zero-allocation NMCP binary parser performs raw pointer casts and slice traversal, processing over **165 million frames per second** on a single thread — including actual data extraction from the parsed payload.
+| Operation | Mean Latency | Speedup vs JSON |
+|-----------|:------------:|:---------------:|
+| JSON-RPC Parse | 637 ns | baseline |
+| Shared Memory R/W | 52 ns | 12.3x faster |
+| Zero-Alloc Binary Parse | 3.06 ns | **208x faster** |
+
+**End-to-End Tool Calls:**
+
+| Operation | Mean Latency | Speedup |
+|-----------|:------------:|:-------:|
+| JSON Tool Call (convert_to_nda) | 104 ms | baseline |
+| NDA Tool Call (read_nda) | 78 ms | **1.34x faster** |
+
+The zero-allocation binary parser processes frames at 3.06 ns (208x faster than JSON parsing). End-to-end tool calls show 1.34x speedup because process spawning and IPC dominate over parsing time. The real NDA benefits emerge at scale with semantic triples, compact storage, and cryptographic signing.
 
 ---
 

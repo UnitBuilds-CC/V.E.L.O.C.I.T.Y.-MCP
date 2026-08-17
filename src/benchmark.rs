@@ -3,6 +3,8 @@ use std::hint::black_box;
 use tracing::info;
 use crate::protocol::nmcp_binary::NmcpBinaryFrame;
 use crate::ipc::shmem::SharedMemoryBuffer;
+use crate::registry;
+use serde_json::json;
 
 /// Run the performance benchmark suite.
 ///
@@ -84,6 +86,62 @@ pub fn run_benchmarks() {
 
     // Cleanup temp shmem file
     let _ = std::fs::remove_file(temp_shmem_path);
+
+    // 4. End-to-End Tool Call Benchmarks (requires C# engine)
+    println!("\n------------------------------------------------------------");
+    println!("           End-to-End Tool Call Benchmarks");
+    println!("------------------------------------------------------------");
+    
+    let csharp_path = registry::resolve_csharp_path();
+    if !std::path::Path::new(&csharp_path).exists() {
+        println!("  C# engine not found at: {}", csharp_path);
+        println!("  Skipping end-to-end benchmarks (set VELOCITY_CSHARP_PATH to enable)");
+    } else {
+        // Create a test file for conversion
+        let test_file = "temp_bench_test.txt";
+        let test_nda = "temp_bench_test.nda";
+        std::fs::write(test_file, "Benchmark test content for NDA conversion.\n").expect("Failed to create test file");
+        
+        // Benchmark 1: JSON tool call (convert_to_nda)
+        let e2e_iterations = 10;
+        println!("\nRunning JSON Tool Call Benchmark ({} iterations)...", e2e_iterations);
+        let start_json_tool = Instant::now();
+        let mut json_successes = 0;
+        for _ in 0..e2e_iterations {
+            let args = json!({"filePath": format!("{}\\{}", std::env::current_dir().unwrap().display(), test_file)});
+            match registry::call_tool("convert_to_nda", &args) {
+                Ok(_) => json_successes += 1,
+                Err(e) => eprintln!("  JSON tool error: {}", e),
+            }
+        }
+        let duration_json_tool = start_json_tool.elapsed();
+        let json_tool_avg_ms = (duration_json_tool.as_millis() as f64) / (e2e_iterations as f64);
+        println!("  Mean Latency (JSON tool call): {:.2} ms ({}/{} succeeded)", json_tool_avg_ms, json_successes, e2e_iterations);
+        
+        // Benchmark 2: NDA tool call (read_nda on the converted file)
+        if std::path::Path::new(test_nda).exists() {
+            println!("\nRunning NDA Tool Call Benchmark ({} iterations)...", e2e_iterations);
+            let start_nda_tool = Instant::now();
+            let mut nda_successes = 0;
+            for _ in 0..e2e_iterations {
+                let args = json!({"ndaPath": format!("{}\\{}", std::env::current_dir().unwrap().display(), test_nda)});
+                match registry::call_tool("read_nda", &args) {
+                    Ok(_) => nda_successes += 1,
+                    Err(e) => eprintln!("  NDA tool error: {}", e),
+                }
+            }
+            let duration_nda_tool = start_nda_tool.elapsed();
+            let nda_tool_avg_ms = (duration_nda_tool.as_millis() as f64) / (e2e_iterations as f64);
+            println!("  Mean Latency (NDA tool call): {:.2} ms ({}/{} succeeded)", nda_tool_avg_ms, nda_successes, e2e_iterations);
+            
+            let speedup = json_tool_avg_ms / nda_tool_avg_ms;
+            println!("  NDA vs JSON Speedup: {:.2}x", speedup);
+        }
+        
+        // Cleanup
+        let _ = std::fs::remove_file(test_file);
+        let _ = std::fs::remove_file(test_nda);
+    }
 
     println!("\n============================================================");
     println!("                       Summary Results");
