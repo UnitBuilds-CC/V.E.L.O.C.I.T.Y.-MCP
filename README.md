@@ -179,7 +179,7 @@ The zero-allocation NMCP binary parser performs raw pointer casts and slice trav
 ├── tests/
 │   └── integration.rs       # Cross-module integration tests
 ├── Cargo.toml               # Dependencies: serde, serde_json, memmap2, tracing, ctrlc
-├── LICENSE                  # Proprietary license
+├── LICENSE                  # Apache-2.0 / MIT dual license
 └── README.md                # This file
 ```
 
@@ -187,4 +187,4 @@ The zero-allocation NMCP binary parser performs raw pointer casts and slice trav
 
 ## License
 
-This repository is subject to the terms of the strictly proprietary and confidential license agreement located in the [LICENSE](LICENSE) file. Unauthorized usage, modification, or distribution is strictly prohibited.
+Licensed under either of [Apache License, Version 2.0](LICENSE) or [MIT License](LICENSE), at your option.
