@@ -222,10 +222,10 @@ mod tests {
         let req = json!({"jsonrpc": "2.0", "method": "tools/list", "id": 2});
         let res = handle_request(&req).unwrap();
         let tools = res["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 4);
+        assert!(tools.len() >= 4, "Should have at least 4 built-in tools");
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"convert_to_nda_document"));
-        assert!(names.contains(&"convert_tool_to_nda"));
+        assert!(names.contains(&"convert_to_nda_tool"));
         assert!(names.contains(&"read_nda"));
         assert!(names.contains(&"execute_nda"));
     }

@@ -183,7 +183,7 @@ Convert any file into a cryptographically signed `.nda` binary document with sem
 
 **Supported input types:** C# source code, PDF, CSV, Excel, Image, Zip archives, and other file formats.
 
-### convert_tool_to_nda
+### convert_to_nda_tool
 
 Convert a JSON-RPC tool call into native NDA binary format for 97x faster parsing. This tool takes a JSON tool call and returns the equivalent NDA binary representation.
 
@@ -200,7 +200,7 @@ Convert a JSON-RPC tool call into native NDA binary format for 97x faster parsin
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "convert_tool_to_nda",
+    "name": "convert_to_nda_tool",
     "arguments": {
       "jsonRequest": "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"hello_world\",\"arguments\":{\"message\":\"Hello\"}},\"id\":1}",
       "outputPath": "C:\\temp\\tool_call.nda"
@@ -724,7 +724,7 @@ Run the built-in benchmark suite:
 | JSON Tool Call | 104 ms | convert_to_nda_document (includes process spawn) |
 | NDA Tool Call | 78 ms | read_nda (1.34x faster) |
 
-The binary parser is **208x faster** than JSON parsing because it performs zero-copy pointer casts instead of string parsing. End-to-end tool calls show 1.34x speedup because process spawning and IPC overhead dominate. The `convert_tool_to_nda` tool enables native NDA binary format for tool calls, achieving 97.6x faster parsing than JSON.
+The binary parser is **208x faster** than JSON parsing because it performs zero-copy pointer casts instead of string parsing. End-to-end tool calls show 1.34x speedup because process spawning and IPC overhead dominate. The `convert_to_nda_tool` tool enables native NDA binary format for tool calls, achieving 97.6x faster parsing than JSON. Converted tools are automatically registered and immediately callable by name.
 
 ---
 

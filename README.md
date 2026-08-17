@@ -30,7 +30,7 @@ The server registers four built-in tools:
 | Tool | Description | Required Params |
 |------|-------------|------------------|
 | `convert_to_nda_document` | Convert any file (C# source, PDF, CSV, Excel, Image, Zip) into a cryptographically signed `.nda` binary document with semantic triples | `filePath` (absolute) |
-| `convert_tool_to_nda` | Convert a JSON-RPC tool call into native NDA binary format for 97x faster parsing | `jsonRequest` |
+| `convert_to_nda_tool` | Convert a JSON-RPC tool call into native NDA binary format for 97x faster parsing | `jsonRequest` |
 | `read_nda` | Read and parse a compiled `.nda` binary to view semantic triples, visual display commands, and string pool contents | `ndaPath` (absolute) |
 | `execute_nda` | Execute a runnable `.nda` container (compiled C# binary in-memory, or script via shell process) | `ndaPath` (absolute) |
 
@@ -108,7 +108,7 @@ The server automatically discovers and hosts tools from the C# backend engine. O
 ### Built-in NDA Tools
 Four built-in tools for NDA (Neural Document Archive) operations:
 - **convert_to_nda_document**: Convert files to cryptographically signed `.nda` binary format with semantic triples
-- **convert_tool_to_nda**: Convert JSON-RPC tool calls to native NDA binary format (97x faster parsing)
+- **convert_to_nda_tool**: Convert JSON-RPC tool calls to native NDA binary format (97x faster parsing)
 - **read_nda**: Inspect NDA files (semantic triples, display commands, string pool)
 - **execute_nda**: Execute runnable NDA containers (binaries run in-memory, scripts via shell)
 
@@ -175,7 +175,7 @@ Built-in micro-benchmark suite (`--benchmark`) comparing protocol parsing and IP
 | JSON Tool Call (convert_to_nda_document) | 104 ms | baseline |
 | NDA Tool Call (read_nda) | 78 ms | **1.34x faster** |
 
-The zero-allocation binary parser processes frames at 3.06 ns (208x faster than JSON parsing). End-to-end tool calls show 1.34x speedup because process spawning and IPC dominate over parsing time. The `convert_tool_to_nda` tool enables native NDA binary format for tool calls, achieving 97.6x faster parsing than JSON.
+The zero-allocation binary parser processes frames at 3.06 ns (208x faster than JSON parsing). End-to-end tool calls show 1.34x speedup because process spawning and IPC dominate over parsing time. The `convert_to_nda_tool` tool enables native NDA binary format for tool calls, achieving 97.6x faster parsing than JSON.
 
 ---
 

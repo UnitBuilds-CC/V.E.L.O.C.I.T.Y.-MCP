@@ -32,7 +32,7 @@ fn test_full_mcp_session_flow() {
     let list_req = json!({"jsonrpc": "2.0", "method": "tools/list", "id": 2});
     let list_res = handle_request(&list_req).expect("tools/list must return a response");
     let tools = list_res["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 4);
+    assert!(tools.len() >= 4, "Should have at least 4 built-in tools");
 
     // Step 4: tools/call with unknown tool (should return error content, not crash)
     let call_req = json!({
@@ -204,11 +204,15 @@ fn test_binary_frame_parser_edge_cases() {
 #[test]
 fn test_registry_tool_definitions() {
     let tools = registry::get_tools();
-    assert_eq!(tools.len(), 4);
+    assert!(tools.len() >= 4, "Should have at least 4 built-in tools");
 
-    let expected_names = ["convert_to_nda_document", "convert_tool_to_nda", "read_nda", "execute_nda"];
-    for (tool, expected) in tools.iter().zip(expected_names.iter()) {
-        assert_eq!(&tool.name, expected);
+    let expected_names = ["convert_to_nda_document", "convert_to_nda_tool", "read_nda", "execute_nda"];
+    let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    for expected in expected_names.iter() {
+        assert!(tool_names.contains(expected), "Missing built-in tool: {}", expected);
+    }
+    // Verify schemas for the built-in tools
+    for tool in tools.iter().filter(|t| expected_names.contains(&t.name.as_str())) {
         assert!(!tool.description.is_empty());
         assert_eq!(tool.input_schema["type"], "object");
         assert!(tool.input_schema["properties"].is_object());
