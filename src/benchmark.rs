@@ -65,18 +65,31 @@ pub fn run_benchmarks() {
     println!("  Mean Latency (Zero-Alloc Binary Frame): {:.2} ns", bin_avg_ns);
     black_box(checksum);
 
-    // 2b. Fair comparison: Same tool call via JSON vs NDA binary wrapper
-    // This measures: JSON parse only vs binary parse + extract payload
-    println!("\nRunning Protocol Overhead Benchmark (same request, different formats)...");
+    // 2b. Fair comparison: Same tool call via JSON vs native NDA binary format
+    // This measures: JSON parse vs native binary parse (no JSON inside NDA)
+    println!("\nRunning Protocol Overhead Benchmark (JSON vs native NDA binary)...");
     
-    // The same tool call request
+    // The same tool call request as JSON
     let tool_call_json = r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"hello_world","arguments":{"message":"Hello, World!"}},"id":1}"#;
     
-    // Wrap it in an NMCP binary frame
-    let mut nda_wrapped = Vec::new();
-    nda_wrapped.extend_from_slice(b"NMCP");
-    nda_wrapped.extend_from_slice(&[0u8; 32]); // Merkle root
-    nda_wrapped.extend_from_slice(tool_call_json.as_bytes());
+    // Native NDA binary encoding of the same tool call:
+    // [4 bytes: magic "NMCP"]
+    // [32 bytes: merkle root]
+    // [1 byte: method type (1=tools/call)]
+    // [2 bytes: tool name length]
+    // [N bytes: tool name]
+    // [2 bytes: arguments length]  
+    // [M bytes: arguments as binary key-value pairs]
+    let mut nda_native = Vec::new();
+    nda_native.extend_from_slice(b"NMCP");           // Magic
+    nda_native.extend_from_slice(&[0u8; 32]);        // Merkle root
+    nda_native.push(1u8);                            // Method type: tools/call
+    let tool_name = b"hello_world";
+    nda_native.extend_from_slice(&(tool_name.len() as u16).to_be_bytes());
+    nda_native.extend_from_slice(tool_name);
+    let args = b"message=Hello, World!";
+    nda_native.extend_from_slice(&(args.len() as u16).to_be_bytes());
+    nda_native.extend_from_slice(args);
     
     let overhead_iterations = 500_000;
     
@@ -95,40 +108,58 @@ pub fn run_benchmarks() {
                 json_direct_checksum = json_direct_checksum.wrapping_add(b as u32);
             }
         }
+        if let Some(args) = val["params"]["arguments"].as_object() {
+            for (k, v) in args {
+                for b in k.bytes() {
+                    json_direct_checksum = json_direct_checksum.wrapping_add(b as u32);
+                }
+                if let Some(s) = v.as_str() {
+                    for b in s.bytes() {
+                        json_direct_checksum = json_direct_checksum.wrapping_add(b as u32);
+                    }
+                }
+            }
+        }
     }
     let duration_json_direct = start_json_direct.elapsed();
     let json_direct_avg_ns = (duration_json_direct.as_nanos() as f64) / (overhead_iterations as f64);
     black_box(json_direct_checksum);
     
-    // Benchmark B: Parse NMCP binary frame, extract payload, then parse as JSON
-    let start_nda_parse = Instant::now();
-    let mut nda_parse_checksum: u32 = 0;
+    // Benchmark B: Parse native NDA binary format (no JSON parsing at all)
+    let start_nda_native = Instant::now();
+    let mut nda_native_checksum: u32 = 0;
     for _ in 0..overhead_iterations {
-        // Step 1: Zero-copy binary frame parse
-        let frame = NmcpBinaryFrame::parse(black_box(&nda_wrapped)).unwrap();
-        // Step 2: Convert payload to string (this is where NDA would differ)
-        let payload_str = std::str::from_utf8(frame.payload).unwrap();
-        // Step 3: Parse as JSON-RPC
-        let val: serde_json::Value = serde_json::from_str(black_box(payload_str)).unwrap();
-        if let Some(method) = val["method"].as_str() {
-            for b in method.bytes() {
-                nda_parse_checksum = nda_parse_checksum.wrapping_add(b as u32);
-            }
+        // Zero-copy binary frame parse
+        let frame = NmcpBinaryFrame::parse(black_box(&nda_native)).unwrap();
+        // Extract method type (1 byte at offset 36)
+        let method_type = frame.payload[0];
+        nda_native_checksum = nda_native_checksum.wrapping_add(method_type as u32);
+        // Extract tool name length (2 bytes)
+        let name_len = u16::from_be_bytes([frame.payload[1], frame.payload[2]]) as usize;
+        // Extract tool name
+        let name_start = 3;
+        let name_end = name_start + name_len;
+        let tool_name_bytes = &frame.payload[name_start..name_end];
+        for &b in tool_name_bytes {
+            nda_native_checksum = nda_native_checksum.wrapping_add(b as u32);
         }
-        if let Some(tool_name) = val["params"]["name"].as_str() {
-            for b in tool_name.bytes() {
-                nda_parse_checksum = nda_parse_checksum.wrapping_add(b as u32);
-            }
+        // Extract arguments length (2 bytes)
+        let args_len = u16::from_be_bytes([frame.payload[name_end], frame.payload[name_end + 1]]) as usize;
+        // Extract arguments
+        let args_start = name_end + 2;
+        let args_bytes = &frame.payload[args_start..args_start + args_len];
+        for &b in args_bytes {
+            nda_native_checksum = nda_native_checksum.wrapping_add(b as u32);
         }
     }
-    let duration_nda_parse = start_nda_parse.elapsed();
-    let nda_parse_avg_ns = (duration_nda_parse.as_nanos() as f64) / (overhead_iterations as f64);
-    black_box(nda_parse_checksum);
+    let duration_nda_native = start_nda_native.elapsed();
+    let nda_native_avg_ns = (duration_nda_native.as_nanos() as f64) / (overhead_iterations as f64);
+    black_box(nda_native_checksum);
     
-    println!("  JSON-RPC direct parse:       {:.2} ns", json_direct_avg_ns);
-    println!("  NDA binary + JSON parse:     {:.2} ns", nda_parse_avg_ns);
-    let overhead_ratio = nda_parse_avg_ns / json_direct_avg_ns;
-    println!("  NDA overhead:                {:.2}x vs direct JSON", overhead_ratio);
+    println!("  JSON-RPC parse (full extraction):  {:.2} ns", json_direct_avg_ns);
+    println!("  NDA native binary parse:           {:.2} ns", nda_native_avg_ns);
+    let speedup = json_direct_avg_ns / nda_native_avg_ns;
+    println!("  NDA speedup:                       {:.1}x faster than JSON", speedup);
 
     // 3. Benchmark Shared Memory Mapped Operations (Read/Write)
     let temp_shmem_path = "temp_bench_shmem.bin";
@@ -218,8 +249,8 @@ pub fn run_benchmarks() {
     println!("  Binary Ingestion Speedup:    {:.1}x over JSON-RPC", speedup_binary);
     println!("------------------------------------------------------------");
     println!("  Protocol Overhead (same tool call):");
-    println!("    JSON direct:               {:.2} ns", json_direct_avg_ns);
-    println!("    NDA binary + JSON:         {:.2} ns", nda_parse_avg_ns);
-    println!("    NDA overhead:              {:.2}x", overhead_ratio);
+    println!("    JSON full parse:           {:.2} ns", json_direct_avg_ns);
+    println!("    NDA native binary:         {:.2} ns", nda_native_avg_ns);
+    println!("    NDA speedup:               {:.1}x faster", speedup);
     println!("============================================================");
 }
