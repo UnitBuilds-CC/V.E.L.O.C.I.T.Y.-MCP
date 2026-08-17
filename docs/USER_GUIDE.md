@@ -9,13 +9,14 @@ A complete guide to installing, configuring, and using the V.E.L.O.C.I.T.Y. NMCP
 1. [Getting Started](#1-getting-started)
 2. [Configuring MCP Clients](#2-configuring-mcp-clients)
 3. [Using the Tools](#3-using-the-tools)
-4. [Shared Memory Mode](#4-shared-memory-mode)
-5. [Health Checks](#5-health-checks)
-6. [Logging and Diagnostics](#6-logging-and-diagnostics)
-7. [Performance Benchmarks](#7-performance-benchmarks)
-8. [Security Model](#8-security-model)
-9. [Troubleshooting](#9-troubleshooting)
-10. [Frequently Asked Questions](#10-frequently-asked-questions)
+4. [NDA Format and Tool Structuring Guide](#4-nda-format-and-tool-structuring-guide)
+5. [Shared Memory Mode](#5-shared-memory-mode)
+6. [Health Checks](#6-health-checks)
+7. [Logging and Diagnostics](#7-logging-and-diagnostics)
+8. [Performance Benchmarks](#8-performance-benchmarks)
+9. [Security Model](#9-security-model)
+10. [Troubleshooting](#10-troubleshooting)
+11. [Frequently Asked Questions](#11-frequently-asked-questions)
 
 ---
 
@@ -224,7 +225,283 @@ Execute a runnable `.nda` container.
 
 ---
 
-## 4. Shared Memory Mode
+## 4. NDA Format and Tool Structuring Guide
+
+The NDA (Neural Document Archive) format is the core data format that the V.E.L.O.C.I.T.Y. server operates on. This section explains what NDA files are, how the conversion pipeline works, and how to structure your tools and content for full NDA support.
+
+### What is an NDA File?
+
+An `.nda` file is a **cryptographically signed binary container** that encapsulates:
+
+- **Semantic Triples** — Structured knowledge representations (subject-predicate-object) that capture the semantic meaning of the original content
+- **Visual Display Commands** — Instructions for rendering the content visually (layout, formatting, display logic)
+- **String Pool** — An optimized, deduplicated pool of all string data referenced by the triples and display commands
+- **Executable Payloads** (optional) — Compiled binaries or scripts that can be executed in-memory
+
+The NDA format is designed for:
+- **Zero-trust distribution** — Cryptographic signing ensures content integrity and authenticity
+- **Semantic search** — Triples enable AI agents to query the *meaning* of content, not just text matching
+- **Compact storage** — Binary encoding with string deduplication is significantly smaller than source formats
+- **In-memory execution** — Runnable NDAs execute without writing to disk
+
+### The NDA Pipeline: Convert → Read → Execute
+
+The three tools form a complete lifecycle:
+
+```
+┌─────────────┐     convert_to_nda     ┌──────────────┐     read_nda      ┌────────────────┐
+│ Source File  │ ─────────────────────▶ │   .nda File  │ ────────────────▶ │ Inspect Content│
+│ .cs .pdf     │                       │ (signed,     │                   │ (triples,      │
+│ .csv .xlsx   │                       │  binary,     │                   │  display cmds, │
+│ .png .zip    │                       │  compact)    │                   │  string pool)  │
+└─────────────┘                        └──────┬───────┘                   └────────────────┘
+                                              │
+                                              │ execute_nda
+                                              ▼
+                                       ┌──────────────┐
+                                       │  In-Memory   │
+                                       │  Execution   │
+                                       │  (C# binary  │
+                                       │   or script) │
+                                       └──────────────┘
+```
+
+### Supported Source File Types
+
+| File Type | Extension | What Gets Encapsulated |
+|-----------|-----------|----------------------|
+| **C# Source Code** | `.cs` | Compiled assembly + semantic analysis triples + type hierarchy |
+| **PDF Documents** | `.pdf` | Extracted text triples + page layout commands + embedded fonts |
+| **CSV Data** | `.csv` | Column schema triples + row data triples + statistical metadata |
+| **Excel Workbooks** | `.xlsx` | Sheet structure triples + cell data + formula dependency graph |
+| **Images** | `.png`, `.jpg` | Visual display commands + metadata triples + pixel data |
+| **Zip Archives** | `.zip` | File manifest triples + embedded file payloads |
+| **Other formats** | Any | Raw binary payload + file-type metadata triples |
+
+### Structuring C# Tools for NDA Support
+
+If you are building C# tools that will be invoked through the V.E.L.O.C.I.T.Y. server, follow these guidelines to ensure full NDA compatibility:
+
+#### 1. Standard Input/Output Contract
+
+Your C# tool must communicate via **JSON-RPC over stdin/stdout**. The server sends a JSON-RPC request to your tool's stdin and reads the response from stdout.
+
+**Request format (from server to your tool):**
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "your_tool_name",
+    "arguments": { ... }
+  },
+  "id": 999
+}
+```
+
+**Expected response format (from your tool to server):**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 999,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Your tool's output here"
+      }
+    ],
+    "isError": false
+  }
+}
+```
+
+**Error response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 999,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Description of what went wrong"
+      }
+    ],
+    "isError": true
+  }
+}
+```
+
+#### 2. Tool Registration
+
+Register your tool in the Rust server's `registry.rs` by adding a `Tool` entry:
+
+```rust
+Tool {
+    name: "your_tool_name".to_string(),
+    description: "Clear description of what the tool does.".to_string(),
+    input_schema: json!({
+        "type": "object",
+        "properties": {
+            "param1": { "type": "string", "description": "What this param does" },
+            "param2": { "type": "integer", "description": "What this param does" }
+        },
+        "required": ["param1"]
+    }),
+},
+```
+
+Then add a dispatch arm in `call_tool_with_csharp_path()`:
+
+```rust
+"your_tool_name" => {
+    let param1 = arguments["param1"].as_str().ok_or("param1 is required")?;
+    validate_file_path(param1)?;
+    execute_csharp_mcp_tool("your_tool_name", arguments, csharp_path)
+}
+```
+
+#### 3. File Path Requirements
+
+All file paths passed to your tool **must be absolute**. The server validates this before your tool ever receives the request:
+
+| Valid | Invalid | Reason |
+|-------|---------|--------|
+| `C:\Users\me\file.nda` | `file.nda` | Relative path |
+| `D:\Projects\output.nda` | `.\output.nda` | Relative with `.` |
+| `\\server\share\file.nda` | `C:\Users\..\Windows\f.txt` | Path traversal (`..`) |
+
+#### 4. Producing NDA-Compatible Output
+
+When your tool generates output that should be convertible to NDA format:
+
+- **Structured data**: Return data as JSON or well-structured text. The NDA converter extracts semantic triples from structured formats more accurately than from free-form text.
+- **Binary output**: If your tool produces a binary file, write it to the path specified in the arguments. Return the output file path in the response text.
+- **Error reporting**: Always set `"isError": true` and provide a descriptive error message. Never write errors to stderr — the server only reads stdout for the JSON-RPC response.
+
+#### 5. Creating Runnable NDAs
+
+To create an NDA that can be executed with `execute_nda`:
+
+1. **Compile your C# code** to an executable or DLL
+2. **Convert it** using `convert_to_nda` with the compiled binary as input
+3. **Execute it** using `execute_nda` — the binary runs in-memory without disk extraction
+
+```bash
+# Via MCP client JSON-RPC:
+
+# Step 1: Convert compiled binary to runnable NDA
+{"jsonrpc":"2.0","method":"tools/call","params":{"name":"convert_to_nda","arguments":{"filePath":"C:\\tools\\my_app.exe"}},"id":1}
+
+# Step 2: Execute the NDA
+{"jsonrpc":"2.0","method":"tools/call","params":{"name":"execute_nda","arguments":{"ndaPath":"C:\\tools\\my_app.nda","arguments":["--flag","value"]}},"id":2}
+```
+
+#### 6. Script-Based NDAs
+
+You can also package scripts into NDAs for execution:
+
+| Script Type | Runtime Required | Example Use |
+|-------------|-----------------|-------------|
+| PowerShell | Windows PowerShell | System administration, file processing |
+| Python | Python runtime | Data analysis, ML pipelines |
+| Node.js | Node.js runtime | Web scraping, API integration |
+| Bash | Git Bash / WSL | Shell automation |
+
+### NDA File Inspection with read_nda
+
+The `read_nda` tool lets you inspect the internal structure of any `.nda` file:
+
+**What you get back:**
+
+```
+Semantic Triples:
+  Subject          Predicate           Object
+  ─────────────────────────────────────────────────
+  :document        :hasTitle           "My Document"
+  :document        :hasAuthor          "UnitBuilds"
+  :class:MyClass   :hasMethod          :method:Process
+  :method:Process  :returnType         "System.Void"
+
+Visual Display Commands:
+  [PAGE 1] Layout: A4, Portrait
+  [BLOCK 1] TextBlock at (72, 72) size (468, 600)
+  [FONT] Segoe UI, 11pt
+
+String Pool:
+  0: "My Document"
+  1: "UnitBuilds"
+  2: "Process"
+  3: "System.Void"
+  ... (N unique strings, deduplicated)
+```
+
+This is useful for:
+- **Debugging** — Verify that conversion produced correct triples
+- **Auditing** — Check what semantic content was extracted
+- **Integration** — Understand the internal structure before building tools that consume NDA data
+
+### End-to-End Workflow Example
+
+Here's a complete workflow converting a C# source file, inspecting it, and running it:
+
+```json
+// 1. Convert C# source to NDA
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "convert_to_nda",
+    "arguments": {
+      "filePath": "C:\\Projects\\MyApp\\Program.cs",
+      "outputPath": "C:\\Projects\\MyApp\\Program.nda"
+    }
+  },
+  "id": 1
+}
+
+// 2. Inspect the NDA to verify conversion
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "read_nda",
+    "arguments": {
+      "ndaPath": "C:\\Projects\\MyApp\\Program.nda"
+    }
+  },
+  "id": 2
+}
+
+// 3. Execute the NDA
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "execute_nda",
+    "arguments": {
+      "ndaPath": "C:\\Projects\\MyApp\\Program.nda",
+      "arguments": ["--config", "production"]
+    }
+  },
+  "id": 3
+}
+```
+
+### Best Practices
+
+1. **Always use absolute paths** — The server rejects relative paths for security
+2. **Validate inputs early** — Your C# tool should validate arguments before processing
+3. **Return structured output** — JSON or well-formatted text converts to better NDA triples
+4. **Handle timeouts** — The server kills your process after 30 seconds. Design long-running tools to checkpoint progress
+5. **Keep stdout clean** — Only write the JSON-RPC response to stdout. Use stderr or log files for debug output
+6. **Test with read_nda** — After converting any file, use `read_nda` to verify the triples and display commands are correct
+7. **Version your NDAs** — Include version metadata in your source files so converted NDAs carry version information in their triples
+
+---
+
+## 5. Shared Memory Mode
 
 Shared memory mode provides the lowest-latency communication path by using a memory-mapped file instead of stdin/stdout. This is designed for custom host applications that need maximum throughput.
 
@@ -289,7 +566,7 @@ If the server encounters an error (e.g., invalid JSON, internal error), it sets 
 
 ---
 
-## 5. Health Checks
+## 6. Health Checks
 
 Both modes support the `health/check` JSON-RPC method for monitoring.
 
@@ -311,7 +588,7 @@ Use health checks to verify the server is responsive before sending tool calls, 
 
 ---
 
-## 6. Logging and Diagnostics
+## 7. Logging and Diagnostics
 
 ### Log Levels
 
@@ -358,7 +635,7 @@ At startup, the server logs:
 
 ---
 
-## 7. Performance Benchmarks
+## 8. Performance Benchmarks
 
 Run the built-in benchmark suite:
 
@@ -386,7 +663,7 @@ The binary parser is **1,636x faster** than JSON parsing because it performs zer
 
 ---
 
-## 8. Security Model
+## 9. Security Model
 
 ### Path Validation
 
@@ -424,7 +701,7 @@ All file paths provided to tools are validated before execution:
 
 ---
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 ### "C# core engine not found at expected path"
 
@@ -484,7 +761,7 @@ set VELOCITY_CSHARP_PATH=C:\correct\path\to\NdaMcpServer.exe
 
 ---
 
-## 10. Frequently Asked Questions
+## 11. Frequently Asked Questions
 
 ### Q: What MCP protocol version does this server support?
 
