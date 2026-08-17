@@ -239,8 +239,7 @@ mod tests {
         });
         let res = handle_request(&req).unwrap();
         assert_eq!(res["result"]["isError"], true);
-        let text = res["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("not registered"));
+        // Unknown tools are routed to the C# engine, which returns an error
     }
 
     #[test]

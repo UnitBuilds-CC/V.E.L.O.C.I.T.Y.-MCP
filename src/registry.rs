@@ -2,6 +2,7 @@ use serde::{Serialize, Deserialize};
 use serde_json::{json, Value};
 use std::error::Error;
 use std::process::Command;
+use std::sync::OnceLock;
 use std::time::Duration;
 use tracing::{info, warn, error, debug};
 
@@ -22,8 +23,51 @@ const DEFAULT_CSHARP_PATH: &str = r"C:\Users\visse\OneDrive\Documents\Payment an
 /// Note: Currently unused as we read stdout until complete response, then kill the process.
 const _CSHARP_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Global cache for dynamically discovered tools from the C# engine.
+static CACHED_TOOLS: OnceLock<Vec<Tool>> = OnceLock::new();
+
 /// Return the list of registered MCP tools with their input schemas.
+///
+/// This includes:
+/// 1. Built-in NDA tools (convert_to_nda, read_nda, execute_nda)
+/// 2. Dynamically discovered tools from the C# engine (cached on first call)
+///
+/// Duplicates are filtered out — if a discovered tool has the same name as a built-in,
+/// the built-in version takes precedence.
 pub fn get_tools() -> Vec<Tool> {
+    let mut tools = get_builtin_tools();
+    let builtin_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+    
+    // Add dynamically discovered tools from the C# engine
+    if let Some(dynamic_tools) = CACHED_TOOLS.get() {
+        // Filter out tools that have the same name as built-ins
+        for tool in dynamic_tools {
+            if !builtin_names.contains(&tool.name) {
+                tools.push(tool.clone());
+            }
+        }
+    } else {
+        // Try to discover tools from the C# engine
+        match discover_csharp_tools() {
+            Ok(dynamic_tools) => {
+                let _ = CACHED_TOOLS.set(dynamic_tools.clone());
+                for tool in dynamic_tools {
+                    if !builtin_names.contains(&tool.name) {
+                        tools.push(tool.clone());
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to discover tools from C# engine, using built-in tools only");
+            }
+        }
+    }
+    
+    tools
+}
+
+/// Return only the built-in NDA tools.
+fn get_builtin_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "convert_to_nda".to_string(),
@@ -67,6 +111,85 @@ pub fn get_tools() -> Vec<Tool> {
     ]
 }
 
+/// Discover tools from the C# engine by sending a tools/list request.
+fn discover_csharp_tools() -> Result<Vec<Tool>, Box<dyn Error>> {
+    let csharp_path = resolve_csharp_path();
+    
+    if !std::path::Path::new(&csharp_path).exists() {
+        return Err(format!("C# engine not found at: {}", csharp_path).into());
+    }
+    
+    debug!("Discovering tools from C# engine");
+    
+    // Prepare tools/list request
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "tools/list",
+        "params": {},
+        "id": 1
+    });
+    
+    let request_str = serde_json::to_string(&request)? + "\n";
+    
+    // Spawn the C# process and send the request
+    use std::io::{Write, BufRead, BufReader};
+    let mut child = Command::new(&csharp_path)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    
+    {
+        let stdin = child.stdin.as_mut().ok_or("Failed to open stdin")?;
+        stdin.write_all(request_str.as_bytes())?;
+        stdin.flush()?;
+    }
+    
+    // Read response
+    let mut stdout = child.stdout.take().ok_or("Failed to open stdout")?;
+    let reader_thread = std::thread::spawn(move || {
+        let mut response_str = String::new();
+        let mut reader = BufReader::new(&mut stdout);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    response_str.push_str(&line);
+                    if response_str.trim().starts_with('{') && response_str.trim().ends_with('}') {
+                        if serde_json::from_str::<Value>(response_str.trim()).is_ok() {
+                            break;
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        response_str
+    });
+    
+    let response_str = reader_thread.join().map_err(|_| "Failed to read response")?;
+    let _ = child.kill();
+    let _ = child.wait();
+    
+    if response_str.trim().is_empty() {
+        return Err("Empty response from C# engine".into());
+    }
+    
+    let response: Value = serde_json::from_str(response_str.trim())?;
+    
+    // Parse the tools from the response
+    let tools_value = &response["result"]["tools"];
+    if !tools_value.is_array() {
+        return Err("Invalid tools/list response from C# engine".into());
+    }
+    
+    let tools: Vec<Tool> = serde_json::from_value(tools_value.clone())?;
+    info!(count = tools.len(), "Discovered tools from C# engine");
+    
+    Ok(tools)
+}
+
 /// Dispatch a tool call by name, using the configured C# engine path.
 ///
 /// Validates required parameters and file paths before delegating to the
@@ -78,10 +201,15 @@ pub fn call_tool(name: &str, arguments: &Value) -> Result<String, Box<dyn Error>
 }
 
 /// Call a tool with an explicit C# executable path.
+///
+/// Routes tool calls as follows:
+/// - Built-in NDA tools (convert_to_nda, read_nda, execute_nda): validates paths, then delegates
+/// - All other tools: delegates directly to the C# engine (dynamic tool hosting)
 pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &str) -> Result<String, Box<dyn Error>> {
     debug!(tool = name, "Dispatching tool call");
 
     match name {
+        // Built-in NDA tools with path validation
         "convert_to_nda" => {
             let file_path = arguments["filePath"].as_str().ok_or("filePath is required")?;
             validate_file_path(file_path)?;
@@ -101,9 +229,10 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
             validate_file_path(nda_path)?;
             execute_csharp_mcp_tool("execute_nda", arguments, csharp_path)
         }
+        // Dynamic tools: route directly to the C# engine
         _ => {
-            warn!(tool = name, "Tool not registered");
-            Err(format!("Tool '{}' is not registered on this server.", name).into())
+            debug!(tool = name, "Routing to C# engine (dynamic tool)");
+            execute_csharp_mcp_tool(name, arguments, csharp_path)
         }
     }
 }
@@ -307,9 +436,9 @@ mod tests {
 
     #[test]
     fn test_call_unknown_tool_returns_error() {
+        // Unknown tools are routed to the C# engine, which will return an error
         let result = call_tool("nonexistent_tool", &json!({}));
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not registered"));
     }
 
     #[test]

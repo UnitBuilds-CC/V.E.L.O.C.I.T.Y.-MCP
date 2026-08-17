@@ -288,7 +288,7 @@ fn test_protocol_to_registry_dispatch() {
     let text = res["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("ndaPath is required") || text.contains("Error running tool"));
 
-    // Unknown tool — should get "not registered"
+    // Unknown tool — should get an error (routed to C# engine which rejects it)
     let req = json!({
         "jsonrpc": "2.0",
         "method": "tools/call",
@@ -297,6 +297,4 @@ fn test_protocol_to_registry_dispatch() {
     });
     let res = handle_request(&req).unwrap();
     assert_eq!(res["result"]["isError"], true);
-    let text = res["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(text.contains("not registered"));
 }
