@@ -1,0 +1,12 @@
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "hello_world",
+    "arguments": {
+      "message": "Hello, World!",
+      "count": 42
+    }
+  },
+  "id": 1
+}

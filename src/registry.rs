@@ -577,6 +577,46 @@ mod tests {
     }
 
     #[test]
+    fn test_convert_tool_to_nda_success() {
+        let json_request = r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"hello_world","arguments":{"message":"Hello"}},"id":1}"#;
+        let result = call_tool("convert_tool_to_nda", &json!({"jsonRequest": json_request}));
+        assert!(result.is_ok());
+        // Should return base64-encoded binary data
+        let base64_output = result.unwrap();
+        assert!(!base64_output.is_empty());
+        // Verify it's valid base64
+        use base64::{Engine as _, engine::general_purpose};
+        let decoded = general_purpose::STANDARD.decode(&base64_output);
+        assert!(decoded.is_ok());
+        let binary_data = decoded.unwrap();
+        // Verify NMCP magic
+        assert_eq!(&binary_data[0..4], b"NMCP");
+        // Verify method type (1 = tools/call)
+        assert_eq!(binary_data[36], 1);
+    }
+
+    #[test]
+    fn test_convert_tool_to_nda_with_output_path() {
+        let json_request = r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"test_tool","arguments":{"key":"value"}},"id":1}"#;
+        // Use an absolute path in the current directory
+        let output_path = std::env::current_dir().unwrap().join("test_convert_output.nda");
+        let output_path_str = output_path.to_str().unwrap();
+        let result = call_tool("convert_tool_to_nda", &json!({
+            "jsonRequest": json_request,
+            "outputPath": output_path_str
+        }));
+        assert!(result.is_ok(), "Conversion should succeed: {:?}", result);
+        // Verify file was created
+        assert!(output_path.exists(), "NDA file should be created");
+        // Verify file contents
+        let data = std::fs::read(&output_path).unwrap();
+        assert_eq!(&data[0..4], b"NMCP", "Should have NMCP magic");
+        assert_eq!(data[36], 1, "Method type should be 1 (tools/call)");
+        // Clean up
+        let _ = std::fs::remove_file(&output_path);
+    }
+
+    #[test]
     fn test_validate_file_path_rejects_empty() {
         let result = validate_file_path("");
         assert!(result.is_err());
