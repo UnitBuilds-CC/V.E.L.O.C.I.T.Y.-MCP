@@ -198,14 +198,14 @@ pub fn run_benchmarks() {
         let test_nda = "temp_bench_test.nda";
         std::fs::write(test_file, "Benchmark test content for NDA conversion.\n").expect("Failed to create test file");
         
-        // Benchmark 1: JSON tool call (convert_to_nda)
+        // Benchmark 1: JSON tool call (convert_to_nda_document)
         let e2e_iterations = 10;
         println!("\nRunning JSON Tool Call Benchmark ({} iterations)...", e2e_iterations);
         let start_json_tool = Instant::now();
         let mut json_successes = 0;
         for _ in 0..e2e_iterations {
             let args = json!({"filePath": format!("{}\\{}", std::env::current_dir().unwrap().display(), test_file)});
-            match registry::call_tool("convert_to_nda", &args) {
+            match registry::call_tool("convert_to_nda_document", &args) {
                 Ok(_) => json_successes += 1,
                 Err(e) => eprintln!("  JSON tool error: {}", e),
             }

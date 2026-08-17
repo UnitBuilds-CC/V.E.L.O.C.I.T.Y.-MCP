@@ -222,9 +222,10 @@ mod tests {
         let req = json!({"jsonrpc": "2.0", "method": "tools/list", "id": 2});
         let res = handle_request(&req).unwrap();
         let tools = res["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 3);
+        assert_eq!(tools.len(), 4);
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert!(names.contains(&"convert_to_nda"));
+        assert!(names.contains(&"convert_to_nda_document"));
+        assert!(names.contains(&"convert_tool_to_nda"));
         assert!(names.contains(&"read_nda"));
         assert!(names.contains(&"execute_nda"));
     }
@@ -247,7 +248,7 @@ mod tests {
         let req = json!({
             "jsonrpc": "2.0",
             "method": "tools/call",
-            "params": { "name": "convert_to_nda", "arguments": {} },
+            "params": { "name": "convert_to_nda_document", "arguments": {} },
             "id": 4
         });
         let res = handle_request(&req).unwrap();

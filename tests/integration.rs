@@ -32,7 +32,7 @@ fn test_full_mcp_session_flow() {
     let list_req = json!({"jsonrpc": "2.0", "method": "tools/list", "id": 2});
     let list_res = handle_request(&list_req).expect("tools/list must return a response");
     let tools = list_res["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 3);
+    assert_eq!(tools.len(), 4);
 
     // Step 4: tools/call with unknown tool (should return error content, not crash)
     let call_req = json!({
@@ -204,9 +204,9 @@ fn test_binary_frame_parser_edge_cases() {
 #[test]
 fn test_registry_tool_definitions() {
     let tools = registry::get_tools();
-    assert_eq!(tools.len(), 3);
+    assert_eq!(tools.len(), 4);
 
-    let expected_names = ["convert_to_nda", "read_nda", "execute_nda"];
+    let expected_names = ["convert_to_nda_document", "convert_tool_to_nda", "read_nda", "execute_nda"];
     for (tool, expected) in tools.iter().zip(expected_names.iter()) {
         assert_eq!(&tool.name, expected);
         assert!(!tool.description.is_empty());
@@ -229,7 +229,7 @@ fn test_registry_path_validation_blocks_attacks() {
 
     // Relative path
     let result = registry::call_tool(
-        "convert_to_nda",
+        "convert_to_nda_document",
         &json!({"filePath": "relative/file.txt"}),
     );
     assert!(result.is_err());

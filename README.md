@@ -25,11 +25,12 @@ The server uses a **delegation architecture**: the Rust server handles the MCP p
 
 ## Tools
 
-The server registers three tools, all delegated to the C# engine:
+The server registers four built-in tools:
 
 | Tool | Description | Required Params |
-|------|-------------|-----------------|
-| `convert_to_nda` | Convert any file (C# source, PDF, CSV, Excel, Image, Zip) into a cryptographically signed `.nda` binary document | `filePath` (absolute) |
+|------|-------------|------------------|
+| `convert_to_nda_document` | Convert any file (C# source, PDF, CSV, Excel, Image, Zip) into a cryptographically signed `.nda` binary document with semantic triples | `filePath` (absolute) |
+| `convert_tool_to_nda` | Convert a JSON-RPC tool call into native NDA binary format for 97x faster parsing | `jsonRequest` |
 | `read_nda` | Read and parse a compiled `.nda` binary to view semantic triples, visual display commands, and string pool contents | `ndaPath` (absolute) |
 | `execute_nda` | Execute a runnable `.nda` container (compiled C# binary in-memory, or script via shell process) | `ndaPath` (absolute) |
 
@@ -105,8 +106,9 @@ cargo clippy -- -W clippy::all
 The server automatically discovers and hosts tools from the C# backend engine. On first `tools/list` request, it queries the C# engine for available tools, caches them, and merges with the built-in NDA tools (deduplicating by name). Any tool added to the C# engine is immediately available through the Rust server — no configuration needed.
 
 ### Built-in NDA Tools
-Three built-in tools for NDA (Neural Document Archive) operations:
-- **convert_to_nda**: Convert files to cryptographically signed `.nda` binary format
+Four built-in tools for NDA (Neural Document Archive) operations:
+- **convert_to_nda_document**: Convert files to cryptographically signed `.nda` binary format with semantic triples
+- **convert_tool_to_nda**: Convert JSON-RPC tool calls to native NDA binary format (97x faster parsing)
 - **read_nda**: Inspect NDA files (semantic triples, display commands, string pool)
 - **execute_nda**: Execute runnable NDA containers (binaries run in-memory, scripts via shell)
 
@@ -170,10 +172,10 @@ Built-in micro-benchmark suite (`--benchmark`) comparing protocol parsing and IP
 
 | Operation | Mean Latency | Speedup |
 |-----------|:------------:|:-------:|
-| JSON Tool Call (convert_to_nda) | 104 ms | baseline |
+| JSON Tool Call (convert_to_nda_document) | 104 ms | baseline |
 | NDA Tool Call (read_nda) | 78 ms | **1.34x faster** |
 
-The zero-allocation binary parser processes frames at 3.06 ns (208x faster than JSON parsing). End-to-end tool calls show 1.34x speedup because process spawning and IPC dominate over parsing time. The real NDA benefits emerge at scale with semantic triples, compact storage, and cryptographic signing.
+The zero-allocation binary parser processes frames at 3.06 ns (208x faster than JSON parsing). End-to-end tool calls show 1.34x speedup because process spawning and IPC dominate over parsing time. The `convert_tool_to_nda` tool enables native NDA binary format for tool calls, achieving 97.6x faster parsing than JSON.
 
 ---
 

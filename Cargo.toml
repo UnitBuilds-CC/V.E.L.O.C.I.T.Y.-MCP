@@ -13,6 +13,8 @@ memmap2 = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ctrlc = "3.4"
+sha2 = "0.10"
+base64 = "0.22"
 
 [profile.release]
 opt-level = 3

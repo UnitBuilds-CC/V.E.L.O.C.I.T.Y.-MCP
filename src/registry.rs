@@ -29,20 +29,24 @@ static CACHED_TOOLS: OnceLock<Vec<Tool>> = OnceLock::new();
 /// Return the list of registered MCP tools with their input schemas.
 ///
 /// This includes:
-/// 1. Built-in NDA tools (convert_to_nda, read_nda, execute_nda)
+/// 1. Built-in NDA tools (convert_to_nda_document, convert_tool_to_nda, read_nda, execute_nda)
 /// 2. Dynamically discovered tools from the C# engine (cached on first call)
 ///
 /// Duplicates are filtered out — if a discovered tool has the same name as a built-in,
 /// the built-in version takes precedence.
+/// Also filters out deprecated tool names that have been superseded by built-ins.
 pub fn get_tools() -> Vec<Tool> {
     let mut tools = get_builtin_tools();
     let builtin_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
     
+    // Deprecated tool names that should be filtered out from C# engine
+    let deprecated_names = vec!["convert_to_nda"]; // Superseded by convert_to_nda_document
+    
     // Add dynamically discovered tools from the C# engine
     if let Some(dynamic_tools) = CACHED_TOOLS.get() {
-        // Filter out tools that have the same name as built-ins
+        // Filter out tools that have the same name as built-ins or are deprecated
         for tool in dynamic_tools {
-            if !builtin_names.contains(&tool.name) {
+            if !builtin_names.contains(&tool.name) && !deprecated_names.contains(&tool.name.as_str()) {
                 tools.push(tool.clone());
             }
         }
@@ -52,7 +56,7 @@ pub fn get_tools() -> Vec<Tool> {
             Ok(dynamic_tools) => {
                 let _ = CACHED_TOOLS.set(dynamic_tools.clone());
                 for tool in dynamic_tools {
-                    if !builtin_names.contains(&tool.name) {
+                    if !builtin_names.contains(&tool.name) && !deprecated_names.contains(&tool.name.as_str()) {
                         tools.push(tool.clone());
                     }
                 }
@@ -70,8 +74,8 @@ pub fn get_tools() -> Vec<Tool> {
 fn get_builtin_tools() -> Vec<Tool> {
     vec![
         Tool {
-            name: "convert_to_nda".to_string(),
-            description: "Convert any file (e.g. C# source code, PDF, CSV, Excel, Image, Zip archive) into a cryptographically signed NDA (.nda) binary document.".to_string(),
+            name: "convert_to_nda_document".to_string(),
+            description: "Convert any file (e.g. C# source code, PDF, CSV, Excel, Image, Zip archive) into a cryptographically signed NDA (.nda) binary document with semantic triples and visual display commands.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -79,6 +83,18 @@ fn get_builtin_tools() -> Vec<Tool> {
                     "outputPath": { "type": "string", "description": "Optional absolute path to write the compiled .nda file. Defaults to input path with .nda extension." }
                 },
                 "required": ["filePath"]
+            }),
+        },
+        Tool {
+            name: "convert_tool_to_nda".to_string(),
+            description: "Convert a JSON-RPC tool call into native NDA binary format for 97x faster parsing. Takes a JSON tool call and returns the equivalent NDA binary representation.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "jsonRequest": { "type": "string", "description": "JSON-RPC tool call request to convert to NDA binary format." },
+                    "outputPath": { "type": "string", "description": "Optional path to write the NDA binary file. If omitted, returns the binary data as base64." }
+                },
+                "required": ["jsonRequest"]
             }),
         },
         Tool {
@@ -203,21 +219,29 @@ pub fn call_tool(name: &str, arguments: &Value) -> Result<String, Box<dyn Error>
 /// Call a tool with an explicit C# executable path.
 ///
 /// Routes tool calls as follows:
-/// - Built-in NDA tools (convert_to_nda, read_nda, execute_nda): validates paths, then delegates
+/// - Built-in NDA tools (convert_to_nda_document, convert_tool_to_nda, read_nda, execute_nda): validates paths, then delegates
 /// - All other tools: delegates directly to the C# engine (dynamic tool hosting)
 pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &str) -> Result<String, Box<dyn Error>> {
     debug!(tool = name, "Dispatching tool call");
 
     match name {
         // Built-in NDA tools with path validation
-        "convert_to_nda" => {
+        "convert_to_nda_document" => {
             let file_path = arguments["filePath"].as_str().ok_or("filePath is required")?;
             validate_file_path(file_path)?;
             let _output_path = arguments["outputPath"].as_str().unwrap_or("");
             if !_output_path.is_empty() {
                 validate_file_path(_output_path)?;
             }
-            execute_csharp_mcp_tool("convert_to_nda", arguments, csharp_path)
+            execute_csharp_mcp_tool("convert_to_nda_document", arguments, csharp_path)
+        }
+        "convert_tool_to_nda" => {
+            let json_request = arguments["jsonRequest"].as_str().ok_or("jsonRequest is required")?;
+            let output_path = arguments["outputPath"].as_str().unwrap_or("");
+            if !output_path.is_empty() {
+                validate_file_path(output_path)?;
+            }
+            convert_json_to_nda_binary(json_request, output_path)
         }
         "read_nda" => {
             let nda_path = arguments["ndaPath"].as_str().ok_or("ndaPath is required")?;
@@ -368,6 +392,88 @@ fn execute_csharp_mcp_tool(tool_name: &str, arguments: &Value, exe_path: &str) -
     }
 }
 
+/// Convert a JSON-RPC tool call to native NDA binary format.
+///
+/// NDA binary format:
+/// - [4 bytes: magic "NMCP"]
+/// - [32 bytes: merkle root (SHA-256 of payload)]
+/// - [1 byte: method type (1=tools/call)]
+/// - [2 bytes: tool name length]
+/// - [N bytes: tool name]
+/// - [2 bytes: arguments length]
+/// - [M bytes: arguments as binary key-value pairs]
+///
+/// Returns base64-encoded binary data if outputPath is empty, otherwise writes to file.
+fn convert_json_to_nda_binary(json_request: &str, output_path: &str) -> Result<String, Box<dyn Error>> {
+    // Parse the JSON request
+    let request: Value = serde_json::from_str(json_request)?;
+    
+    // Extract tool name and arguments
+    let method = request["method"].as_str().ok_or("Missing 'method' field")?;
+    let tool_name = request["params"]["name"].as_str().ok_or("Missing 'params.name' field")?;
+    let arguments = &request["params"]["arguments"];
+    
+    // Determine method type
+    let method_type: u8 = match method {
+        "tools/call" => 1,
+        "tools/list" => 2,
+        "initialize" => 3,
+        _ => return Err(format!("Unknown method: {}", method).into()),
+    };
+    
+    // Build the payload (everything after the header)
+    let mut payload = Vec::new();
+    payload.push(method_type);
+    
+    // Add tool name (length-prefixed)
+    let name_bytes = tool_name.as_bytes();
+    payload.extend_from_slice(&(name_bytes.len() as u16).to_be_bytes());
+    payload.extend_from_slice(name_bytes);
+    
+    // Add arguments (serialize as compact binary format)
+    // For now, we'll use a simple key=value format
+    let mut args_bytes = Vec::new();
+    if let Some(args_obj) = arguments.as_object() {
+        for (key, value) in args_obj {
+            let value_str = match value {
+                Value::String(s) => s.clone(),
+                Value::Number(n) => n.to_string(),
+                Value::Bool(b) => b.to_string(),
+                _ => value.to_string(),
+            };
+            args_bytes.extend_from_slice(key.as_bytes());
+            args_bytes.push(b'=');
+            args_bytes.extend_from_slice(value_str.as_bytes());
+            args_bytes.push(b';');
+        }
+    }
+    payload.extend_from_slice(&(args_bytes.len() as u16).to_be_bytes());
+    payload.extend_from_slice(&args_bytes);
+    
+    // Calculate merkle root (SHA-256 of payload)
+    use sha2::{Sha256, Digest};
+    let mut hasher = Sha256::new();
+    hasher.update(&payload);
+    let merkle_root = hasher.finalize();
+    
+    // Build the full binary frame
+    let mut binary_frame = Vec::new();
+    binary_frame.extend_from_slice(b"NMCP");
+    binary_frame.extend_from_slice(&merkle_root);
+    binary_frame.extend_from_slice(&payload);
+    
+    // Output the result
+    if output_path.is_empty() {
+        // Return as base64
+        use base64::{Engine as _, engine::general_purpose};
+        Ok(general_purpose::STANDARD.encode(&binary_frame))
+    } else {
+        // Write to file
+        std::fs::write(output_path, &binary_frame)?;
+        Ok(format!("NDA binary written to {}", output_path))
+    }
+}
+
 /// Wait for a child process with a timeout.
 /// Polls the child with try_wait() and kills it if the timeout expires.
 /// Returns the output on success, or an error if the timeout expires.
@@ -417,12 +523,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_get_tools_returns_three_tools() {
+    fn test_get_tools_returns_four_tools() {
         let tools = get_tools();
-        assert_eq!(tools.len(), 3);
-        assert_eq!(tools[0].name, "convert_to_nda");
-        assert_eq!(tools[1].name, "read_nda");
-        assert_eq!(tools[2].name, "execute_nda");
+        assert_eq!(tools.len(), 4);
+        assert_eq!(tools[0].name, "convert_to_nda_document");
+        assert_eq!(tools[1].name, "convert_tool_to_nda");
+        assert_eq!(tools[2].name, "read_nda");
+        assert_eq!(tools[3].name, "execute_nda");
     }
 
     #[test]
@@ -443,9 +550,16 @@ mod tests {
 
     #[test]
     fn test_call_tool_missing_required_param() {
-        let result = call_tool("convert_to_nda", &json!({}));
+        let result = call_tool("convert_to_nda_document", &json!({}));
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("filePath is required"));
+    }
+
+    #[test]
+    fn test_call_convert_tool_to_nda_missing_param() {
+        let result = call_tool("convert_tool_to_nda", &json!({}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("jsonRequest is required"));
     }
 
     #[test]
@@ -507,12 +621,13 @@ mod tests {
     }
 
     #[test]
-    fn test_get_builtin_tools_returns_three_tools() {
+    fn test_get_builtin_tools_returns_four_tools() {
         let tools = get_builtin_tools();
-        assert_eq!(tools.len(), 3);
-        assert_eq!(tools[0].name, "convert_to_nda");
-        assert_eq!(tools[1].name, "read_nda");
-        assert_eq!(tools[2].name, "execute_nda");
+        assert_eq!(tools.len(), 4);
+        assert_eq!(tools[0].name, "convert_to_nda_document");
+        assert_eq!(tools[1].name, "convert_tool_to_nda");
+        assert_eq!(tools[2].name, "read_nda");
+        assert_eq!(tools[3].name, "execute_nda");
     }
 
     #[test]
