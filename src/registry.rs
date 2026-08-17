@@ -392,6 +392,155 @@ fn execute_csharp_mcp_tool(tool_name: &str, arguments: &Value, exe_path: &str) -
     }
 }
 
+/// Encode a JSON value into TLV binary format.
+///
+/// Type tags:
+/// - 0x01 String: u32 length + UTF-8 bytes
+/// - 0x02 Number: 8 bytes (f64 big-endian)
+/// - 0x03 Bool: 1 byte (0 or 1)
+/// - 0x04 Null: (no data)
+/// - 0x05 Array: u32 count + elements
+/// - 0x06 Object: u32 count + (key_len:u16 + key_bytes + value) pairs
+fn encode_json_value(value: &Value, buf: &mut Vec<u8>) {
+    match value {
+        Value::String(s) => {
+            buf.push(0x01);
+            let bytes = s.as_bytes();
+            buf.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+            buf.extend_from_slice(bytes);
+        }
+        Value::Number(n) => {
+            // Preserve integer vs float distinction
+            if let Some(i) = n.as_i64() {
+                buf.push(0x02); // Integer tag
+                buf.extend_from_slice(&i.to_be_bytes());
+            } else if let Some(f) = n.as_f64() {
+                buf.push(0x07); // Float tag
+                buf.extend_from_slice(&f.to_be_bytes());
+            } else {
+                // Fallback: encode as 0
+                buf.push(0x02);
+                buf.extend_from_slice(&0i64.to_be_bytes());
+            }
+        }
+        Value::Bool(b) => {
+            buf.push(0x03);
+            buf.push(if *b { 1 } else { 0 });
+        }
+        Value::Null => {
+            buf.push(0x04);
+        }
+        Value::Array(arr) => {
+            buf.push(0x05);
+            buf.extend_from_slice(&(arr.len() as u32).to_be_bytes());
+            for item in arr {
+                encode_json_value(item, buf);
+            }
+        }
+        Value::Object(obj) => {
+            buf.push(0x06);
+            buf.extend_from_slice(&(obj.len() as u32).to_be_bytes());
+            for (key, val) in obj {
+                let key_bytes = key.as_bytes();
+                buf.extend_from_slice(&(key_bytes.len() as u16).to_be_bytes());
+                buf.extend_from_slice(key_bytes);
+                encode_json_value(val, buf);
+            }
+        }
+    }
+}
+
+/// Decode a TLV-encoded binary buffer back into a JSON value.
+/// Returns the decoded value and the number of bytes consumed.
+fn decode_json_value(buf: &[u8]) -> Result<(Value, usize), Box<dyn Error>> {
+    if buf.is_empty() {
+        return Err("Unexpected end of TLV buffer".into());
+    }
+    let type_tag = buf[0];
+    match type_tag {
+        0x01 => {
+            // String
+            if buf.len() < 5 {
+                return Err("TLV string: missing length".into());
+            }
+            let len = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+            if buf.len() < 5 + len {
+                return Err("TLV string: truncated data".into());
+            }
+            let s = std::str::from_utf8(&buf[5..5 + len])?.to_string();
+            Ok((Value::String(s), 5 + len))
+        }
+        0x02 => {
+            // Integer
+            if buf.len() < 9 {
+                return Err("TLV integer: missing data".into());
+            }
+            let i = i64::from_be_bytes([buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8]]);
+            Ok((json!(i), 9))
+        }
+        0x07 => {
+            // Float
+            if buf.len() < 9 {
+                return Err("TLV float: missing data".into());
+            }
+            let f = f64::from_be_bytes([buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8]]);
+            Ok((json!(f), 9))
+        }
+        0x03 => {
+            // Bool
+            if buf.len() < 2 {
+                return Err("TLV bool: missing data".into());
+            }
+            Ok((Value::Bool(buf[1] != 0), 2))
+        }
+        0x04 => {
+            // Null
+            Ok((Value::Null, 1))
+        }
+        0x05 => {
+            // Array
+            if buf.len() < 5 {
+                return Err("TLV array: missing count".into());
+            }
+            let count = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+            let mut offset = 5;
+            let mut items = Vec::with_capacity(count);
+            for _ in 0..count {
+                let (val, consumed) = decode_json_value(&buf[offset..])?;
+                items.push(val);
+                offset += consumed;
+            }
+            Ok((Value::Array(items), offset))
+        }
+        0x06 => {
+            // Object
+            if buf.len() < 5 {
+                return Err("TLV object: missing count".into());
+            }
+            let count = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+            let mut offset = 5;
+            let mut map = serde_json::Map::new();
+            for _ in 0..count {
+                if offset + 2 > buf.len() {
+                    return Err("TLV object: missing key length".into());
+                }
+                let key_len = u16::from_be_bytes([buf[offset], buf[offset + 1]]) as usize;
+                offset += 2;
+                if offset + key_len > buf.len() {
+                    return Err("TLV object: truncated key".into());
+                }
+                let key = std::str::from_utf8(&buf[offset..offset + key_len])?.to_string();
+                offset += key_len;
+                let (val, consumed) = decode_json_value(&buf[offset..])?;
+                map.insert(key, val);
+                offset += consumed;
+            }
+            Ok((Value::Object(map), offset))
+        }
+        _ => Err(format!("Unknown TLV type tag: 0x{:02x}", type_tag).into()),
+    }
+}
+
 /// Convert a JSON-RPC tool call to native NDA binary format.
 ///
 /// NDA binary format:
@@ -400,8 +549,16 @@ fn execute_csharp_mcp_tool(tool_name: &str, arguments: &Value, exe_path: &str) -
 /// - [1 byte: method type (1=tools/call)]
 /// - [2 bytes: tool name length]
 /// - [N bytes: tool name]
-/// - [2 bytes: arguments length]
-/// - [M bytes: arguments as binary key-value pairs]
+/// - [4 bytes: arguments length]
+/// - [M bytes: arguments as TLV-encoded JSON values]
+///
+/// TLV encoding preserves all JSON types and supports round-trip conversion:
+/// - 0x01 String: u32 length + UTF-8 bytes
+/// - 0x02 Number: 8 bytes (f64 big-endian)
+/// - 0x03 Bool: 1 byte (0 or 1)
+/// - 0x04 Null: (no data)
+/// - 0x05 Array: u32 count + elements
+/// - 0x06 Object: u32 count + (key_len:u16 + key_bytes + value) pairs
 ///
 /// Returns base64-encoded binary data if outputPath is empty, otherwise writes to file.
 fn convert_json_to_nda_binary(json_request: &str, output_path: &str) -> Result<String, Box<dyn Error>> {
@@ -430,24 +587,11 @@ fn convert_json_to_nda_binary(json_request: &str, output_path: &str) -> Result<S
     payload.extend_from_slice(&(name_bytes.len() as u16).to_be_bytes());
     payload.extend_from_slice(name_bytes);
     
-    // Add arguments (serialize as compact binary format)
-    // For now, we'll use a simple key=value format
+    // Add arguments using Type-Length-Value (TLV) binary encoding
+    // This preserves all JSON types and supports round-trip conversion
     let mut args_bytes = Vec::new();
-    if let Some(args_obj) = arguments.as_object() {
-        for (key, value) in args_obj {
-            let value_str = match value {
-                Value::String(s) => s.clone(),
-                Value::Number(n) => n.to_string(),
-                Value::Bool(b) => b.to_string(),
-                _ => value.to_string(),
-            };
-            args_bytes.extend_from_slice(key.as_bytes());
-            args_bytes.push(b'=');
-            args_bytes.extend_from_slice(value_str.as_bytes());
-            args_bytes.push(b';');
-        }
-    }
-    payload.extend_from_slice(&(args_bytes.len() as u16).to_be_bytes());
+    encode_json_value(&arguments, &mut args_bytes);
+    payload.extend_from_slice(&(args_bytes.len() as u32).to_be_bytes());
     payload.extend_from_slice(&args_bytes);
     
     // Calculate merkle root (SHA-256 of payload)
@@ -614,6 +758,80 @@ mod tests {
         assert_eq!(data[36], 1, "Method type should be 1 (tools/call)");
         // Clean up
         let _ = std::fs::remove_file(&output_path);
+    }
+
+    #[test]
+    fn test_tlv_round_trip_all_types() {
+        // Test that encode -> decode produces the original JSON for all types
+        let test_value = json!({
+            "string": "hello world",
+            "number": 42.5,
+            "bool_true": true,
+            "bool_false": false,
+            "null_val": null,
+            "array": [1, "two", true, null],
+            "nested": {
+                "inner_string": "deep",
+                "inner_array": [1, 2, 3],
+                "inner_obj": {"a": "b"}
+            },
+            "special_chars": "value=with;special=chars"
+        });
+        
+        // Encode
+        let mut encoded = Vec::new();
+        encode_json_value(&test_value, &mut encoded);
+        
+        // Decode
+        let (decoded, consumed) = decode_json_value(&encoded).unwrap();
+        assert_eq!(consumed, encoded.len(), "Should consume all bytes");
+        
+        // Verify round-trip
+        assert_eq!(test_value, decoded, "Round-trip should preserve all values");
+    }
+
+    #[test]
+    fn test_convert_complex_tool_to_nda() {
+        // Test with nested objects, arrays, special characters
+        let json_request = r#"{
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {
+                "name": "complex_tool",
+                "arguments": {
+                    "config": {"timeout": 30, "retries": 3},
+                    "items": [1, "two", true, null],
+                    "query": "a=b;c",
+                    "nested": {"deep": {"value": "found"}}
+                }
+            },
+            "id": 1
+        }"#;
+        
+        let result = call_tool("convert_tool_to_nda", &json!({"jsonRequest": json_request}));
+        assert!(result.is_ok(), "Complex conversion should succeed: {:?}", result);
+        
+        // Decode the base64 output and verify structure
+        let base64_output = result.unwrap();
+        use base64::{Engine as _, engine::general_purpose};
+        let binary_data = general_purpose::STANDARD.decode(&base64_output).unwrap();
+        assert_eq!(&binary_data[0..4], b"NMCP");
+        assert_eq!(binary_data[36], 1); // tools/call
+        
+        // Extract and decode the arguments
+        let name_len = u16::from_be_bytes([binary_data[37], binary_data[38]]) as usize;
+        let args_start = 39 + name_len;
+        let args_len = u32::from_be_bytes([binary_data[args_start], binary_data[args_start+1], binary_data[args_start+2], binary_data[args_start+3]]) as usize;
+        let args_data = &binary_data[args_start+4..args_start+4+args_len];
+        
+        // Decode the TLV arguments
+        let (decoded_args, _) = decode_json_value(args_data).unwrap();
+        
+        // Verify the decoded arguments match the original
+        assert_eq!(decoded_args["config"]["timeout"], 30.0);
+        assert_eq!(decoded_args["items"][1], "two");
+        assert_eq!(decoded_args["query"], "a=b;c");
+        assert_eq!(decoded_args["nested"]["deep"]["value"], "found");
     }
 
     #[test]
