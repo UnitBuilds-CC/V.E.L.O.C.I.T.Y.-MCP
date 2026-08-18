@@ -21,6 +21,9 @@ quick-xml = "0.41"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand = "0.8"
 
+[dev-dependencies]
+proptest = "1"
+
 [profile.release]
 opt-level = 3
 lto = true
