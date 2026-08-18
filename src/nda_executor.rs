@@ -78,7 +78,7 @@ fn execute_binary_payload(base64_data: &Option<String>, args: &[String]) -> Resu
         .map_err(|e| format!("Failed to decode BASE64_DATA: {}", e))?;
 
     // Execute inside sandbox with isolated temp directory
-    let sandbox = Sandbox::new()?;
+    let mut sandbox = Sandbox::new()?;
     let dll_name = format!("nda_run_{}.dll", random_suffix());
     sandbox.write_file(&dll_name, &assembly_bytes)?;
 
@@ -127,7 +127,7 @@ fn execute_source_code(
         .unwrap_or("py");
 
     // Execute inside sandbox with isolated temp directory
-    let sandbox = Sandbox::new()?;
+    let mut sandbox = Sandbox::new()?;
     let file_name = format!("nda_run_{}.{}", random_suffix(), ext);
     sandbox.write_file(&file_name, code.as_bytes())?;
 

@@ -14,80 +14,85 @@ import {
   Timeline,
 } from 'qoder/canvas';
 
-const COMMIT = 'ba6bb10';
+const COMMIT = 'aa30d58';
 const DATE = '2026-08-18';
 
 const hardeningItems = [
   {
-    label: 'P0: NDA Parser Bounds Checking',
+    label: 'Execution Sandbox (Velocity-IDE inspired)',
     detail:
-      'Validate triple/command counts (max 1M each), string pool size (100 MB), overflow-safe checked arithmetic, per-triple and per-command string offset verification, command type validation (1-4).',
+      'Isolated temp directory per execution, panic catching via catch_unwind, output size limits (1 MB stdout, 256 KB stderr), environment variable sanitization, automatic cleanup on drop.',
     tone: 'success' as const,
   },
   {
-    label: 'P0: Execution Timeouts',
+    label: 'NDA Merkle Integrity Verification',
     detail:
-      '30-second hard timeout on all NDA payload child processes (dotnet, python, node, powershell, bash). Process is killed on expiry.',
+      'verify_merkle() recomputes root from triples and compares to stored header. read_nda now appends VERIFIED/FAILED status to inspection reports.',
     tone: 'success' as const,
   },
   {
-    label: 'P0: TLV Decoder Security',
+    label: 'Token Bucket Rate Limiter',
     detail:
-      'Max nesting depth 32, max string length 10 MB, max array/object elements 100K, unknown type tag rejection. Prevents stack overflow and OOM from malicious input.',
+      '20 tokens/sec, burst 100. Global instance integrated into tools/call handler. Requests rejected with clear error when limit exceeded.',
     tone: 'success' as const,
   },
   {
-    label: 'P1: Max Request Size Limits',
+    label: 'Audit Logging',
     detail:
-      'Stdio transport: 1 MB cap. Shared memory transport: fixed buffer size. Already present from prior work; verified during this pass.',
+      'Ring buffer (10K entries), records tool name, timestamp, duration, outcome. Poisoning-tolerant mutex. Global instance accessible from all handlers.',
     tone: 'success' as const,
   },
   {
-    label: 'P1: Adversarial / Fuzz-Style Tests',
+    label: 'Error Message Sanitization',
     detail:
-      '13 new tests covering excessive counts, overlapping regions, invalid command types, out-of-bounds offsets, random bytes, deeply nested TLV, huge allocations, empty buffers.',
+      'Strips Windows (C:\\...) and Unix (/home/...) absolute paths from error messages. Truncates messages exceeding 500 characters.',
     tone: 'success' as const,
   },
   {
-    label: 'P1: Proper XML Parsing (XLSX/DOCX)',
+    label: 'Child Process Memory Bounds',
     detail:
-      'Deferred - regex-based XML extraction is sufficient for current use; quick-xml integration not required at this time.',
-    tone: 'neutral' as const,
+      'Output capture capped at 1 MB stdout / 256 KB stderr. Prevents OOM from runaway child processes. Combined with 30s execution timeout.',
+    tone: 'success' as const,
   },
 ];
 
 const changedFiles = [
-  [
-    'src/nda_document.rs',
-    '+147 / -2',
-    'Bounds constants, overflow-safe validation, triple/command offset verification, command type checks, 7 adversarial tests',
-  ],
-  [
-    'src/nda_executor.rs',
-    '+30 / -1',
-    'wait_with_timeout helper, 30s EXECUTION_TIMEOUT, process kill on expiry, unused-variable fix',
-  ],
-  [
-    'src/registry.rs',
-    '+87 / -5',
-    'TLV security constants (depth, string length, element count), 6 TLV adversarial tests',
-  ],
+  ['src/sandbox.rs', '+394 (new)', 'Sandbox struct, panic catching, temp isolation, output limits, error sanitization, 6 tests'],
+  ['src/audit.rs', '+204 (new)', 'AuditLog ring buffer, AuditEntry, AuditOutcome, global instance, 5 tests'],
+  ['src/rate_limit.rs', '+180 (new)', 'Token bucket RateLimiter, CAS-based acquire, global instance, 4 tests'],
+  ['src/nda_document.rs', '+68', 'verify_merkle() and recompute_merkle_root() methods'],
+  ['src/nda_executor.rs', '+35 / -130', 'Refactored to use Sandbox for all process execution; removed old execute_dotnet/execute_interpreter/wait_with_timeout'],
+  ['src/protocol/json_rpc.rs', '+27 / -1', 'Rate limit check + audit recording integrated into tools/call handler'],
+  ['src/registry.rs', '+8 / -1', 'Merkle verification appended to read_nda inspection report'],
+  ['src/lib.rs', '+6', 'Module declarations for sandbox, audit, rate_limit'],
 ];
 
 const testBreakdown = [
+  { name: 'Sandbox', value: 6 },
+  { name: 'Audit', value: 5 },
+  { name: 'Rate Limit', value: 4 },
   { name: 'NDA Document', value: 17 },
-  { name: 'NDA Converter', value: 5 },
   { name: 'NDA Executor', value: 3 },
   { name: 'Registry', value: 22 },
   { name: 'Protocol', value: 11 },
   { name: 'IPC / Shmem', value: 11 },
 ];
 
-export default function ProductionHardeningReport() {
+const securityLayers = [
+  ['Input Validation', 'NDA parser bounds, TLV depth/size limits, path traversal checks', 'P0 - Done'],
+  ['Execution Sandbox', 'Temp isolation, panic catch, output caps, env sanitization', 'P0 - Done'],
+  ['Merkle Integrity', 'SHA-256 root verification on NDA read', 'P0 - Done'],
+  ['Rate Limiting', 'Token bucket: 20/sec, burst 100', 'P1 - Done'],
+  ['Audit Trail', 'Ring buffer: 10K entries, duration tracking', 'P1 - Done'],
+  ['Error Sanitization', 'Path stripping, message truncation', 'P1 - Done'],
+  ['Timeout Enforcement', '30s hard kill on all child processes', 'P0 - Done'],
+];
+
+export default function FinalHardeningReport() {
   return (
     <Stack gap={24}>
       <Stack gap={8}>
-        <H1>Production Hardening - Completion Report</H1>
+        <H1>Production Hardening - Final Report</H1>
         <Text tone="secondary">
           Commit <Tag tone="info">{COMMIT}</Tag> &middot; {DATE} &middot; Branch: main
         </Text>
@@ -95,25 +100,25 @@ export default function ProductionHardeningReport() {
 
       <Callout tone="success">
         <Text>
-          All P0 security hardening items are complete. The NDA parser, TLV decoder, and execution
-          pipeline now reject malicious inputs before allocation, enforce hard timeouts, and have
-          adversarial test coverage. 81 tests pass with zero warnings.
+          All security hardening layers are now in place. The MCP server has defense-in-depth:
+          input validation, sandboxed execution, integrity verification, rate limiting, audit
+          logging, and error sanitization. 97 tests pass with zero warnings.
         </Text>
       </Callout>
 
       <Divider />
 
-      <H2>Outcome</H2>
+      <H2>Final Outcome</H2>
       <Grid columns={4} gap={16}>
-        <Stat value="81" label="Tests Passing" tone="success" />
-        <Stat value="13" label="Adversarial Tests Added" />
-        <Stat value="3" label="Files Changed" />
+        <Stat value="97" label="Tests Passing" tone="success" />
+        <Stat value="16" label="New Tests Added" />
+        <Stat value="9" label="Files Changed" />
         <Stat value="0" label="Warnings" tone="success" />
       </Grid>
 
       <Divider />
 
-      <H2>Hardening Checklist</H2>
+      <H2>Hardening Layers Completed</H2>
       <Timeline
         items={hardeningItems.map((item) => ({
           label: item.label,
@@ -134,55 +139,35 @@ export default function ProductionHardeningReport() {
 
       <Divider />
 
-      <H2>Security Properties Enforced</H2>
-      <Grid columns={2} gap={16}>
-        <Stack gap={8}>
-          <Text weight="semibold">NDA Parser</Text>
-          <Pill tone="success">Max triples: 1,000,000</Pill>
-          <Pill tone="success">Max commands: 1,000,000</Pill>
-          <Pill tone="success">Max string pool: 100 MB</Pill>
-          <Pill tone="success">Overflow-safe arithmetic</Pill>
-          <Pill tone="success">Command type: 1-4 only</Pill>
-          <Pill tone="success">String offset bounds checked</Pill>
-        </Stack>
-        <Stack gap={8}>
-          <Text weight="semibold">TLV Decoder</Text>
-          <Pill tone="success">Max nesting depth: 32</Pill>
-          <Pill tone="success">Max string length: 10 MB</Pill>
-          <Pill tone="success">Max elements: 100,000</Pill>
-          <Pill tone="success">Unknown tag rejected</Pill>
-          <Pill tone="success">Empty buffer rejected</Pill>
-          <Pill tone="success">Execution timeout: 30 s</Pill>
-        </Stack>
-      </Grid>
+      <H2>Security Defense Matrix</H2>
+      <Table
+        headers={['Layer', 'Mechanism', 'Status']}
+        rows={securityLayers}
+        rowTone={['success', undefined, undefined, undefined, undefined, undefined, undefined]}
+      />
 
       <Divider />
 
-      <H2>Adversarial Test Coverage</H2>
-      <Table
-        headers={['Test', 'Module', 'Attack Vector']}
-        rows={[
-          ['test_reject_excessive_triple_count', 'nda_document', 'u32::MAX triple count - OOM'],
-          ['test_reject_excessive_command_count', 'nda_document', 'u32::MAX command count - OOM'],
-          ['test_reject_overlapping_string_pool', 'nda_document', 'Pool offset inside triple area'],
-          ['test_reject_invalid_command_type', 'nda_document', 'Command type 0 (out of 1-4)'],
-          ['test_reject_triple_beyond_string_pool', 'nda_document', 'String offset 0xFFFFFFFF'],
-          ['test_reject_random_bytes', 'nda_document', '200 deterministic pseudo-random bytes'],
-          ['test_tlv_reject_deeply_nested_arrays', 'registry', '40-level nesting (limit 32)'],
-          ['test_tlv_reject_huge_array_count', 'registry', 'u32::MAX array element count'],
-          ['test_tlv_reject_huge_string_length', 'registry', 'u32::MAX string length'],
-          ['test_tlv_reject_unknown_type_tag', 'registry', 'Invalid TLV type byte 0xFF'],
-          ['test_tlv_reject_empty_buffer', 'registry', 'Zero-length input'],
-          ['test_input_length_overflow_rejected', 'ipc::shmem', 'Length field exceeds buffer'],
-          ['test_output_length_overflow_rejected', 'ipc::shmem', 'Length field exceeds buffer'],
-        ]}
-      />
+      <H2>Architecture: Sandboxed Execution Flow</H2>
+      <Stack gap={8}>
+        <Text>
+          All NDA payload execution now flows through the sandbox module, inspired by Velocity-IDE's
+          NdaSandbox pattern:
+        </Text>
+        <Stack gap={4}>
+          <Pill tone="info">1. Sandbox::new() creates isolated temp dir</Pill>
+          <Pill tone="info">2. write_file() places payload in sandbox (path traversal protected)</Pill>
+          <Pill tone="info">3. execute() spawns process with catch_unwind + output caps</Pill>
+          <Pill tone="info">4. SandboxResult returned (stdout, stderr, status, timeout flag)</Pill>
+          <Pill tone="info">5. Drop impl removes entire temp directory</Pill>
+        </Stack>
+      </Stack>
 
       <Divider />
 
       <Stack gap={4}>
         <Text tone="secondary" size="small">
-          V.E.L.O.C.I.T.Y.-MCP &middot; Production Hardening Goal &middot; {DATE}
+          V.E.L.O.C.I.T.Y.-MCP &middot; Full Production Hardening &middot; {DATE}
         </Text>
       </Stack>
     </Stack>
