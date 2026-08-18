@@ -4,8 +4,11 @@ use std::error::Error;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread;
+use std::time::Instant;
 use tracing::{info, warn, debug, error};
 use crate::registry;
+use crate::audit::{self, AuditOutcome};
+use crate::rate_limit;
 
 /// Maximum allowed request size in bytes (1 MB).
 /// Requests exceeding this limit are rejected before JSON parsing.
@@ -54,12 +57,34 @@ pub fn handle_request(request: &Value) -> Option<Value> {
             let name = request["params"]["name"].as_str().unwrap_or("");
             let arguments = &request["params"]["arguments"];
 
+            // Rate limiting check
+            if !rate_limit::check_rate_limit() {
+                warn!(tool = name, "Rate limit exceeded");
+                audit::record_tool_call(name, Instant::now(), AuditOutcome::Rejected("rate limited".into()));
+                return Some(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "content": [{
+                            "type": "text",
+                            "text": format!("Rate limit exceeded for tool '{}'. Please slow down.", name)
+                        }],
+                        "isError": true
+                    }
+                }));
+            }
+
+            let call_start = Instant::now();
             let mut is_error = false;
             let output_text = match registry::call_tool(name, arguments) {
-                Ok(res) => res,
+                Ok(res) => {
+                    audit::record_tool_call(name, call_start, AuditOutcome::Success);
+                    res
+                }
                 Err(e) => {
                     is_error = true;
                     error!(tool = name, error = %e, "Tool execution failed");
+                    audit::record_tool_call(name, call_start, AuditOutcome::Error(e.to_string()));
                     format!("Error running tool '{}': {}", name, e)
                 }
             };

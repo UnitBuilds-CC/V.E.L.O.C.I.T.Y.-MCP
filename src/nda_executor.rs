@@ -12,12 +12,7 @@
 //!   file, and executes via the appropriate interpreter (python, node, etc.).
 
 use crate::nda_document::NdaDocument;
-use std::io::{BufReader, Read};
-use std::process::Command;
-use std::time::{Duration, Instant};
-
-/// Maximum execution time for NDA payload execution (30 seconds).
-const EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
+use crate::sandbox::{self, Sandbox};
 
 /// Execute an NDA document's payload.
 ///
@@ -82,57 +77,25 @@ fn execute_binary_payload(base64_data: &Option<String>, args: &[String]) -> Resu
     let assembly_bytes = general_purpose::STANDARD.decode(b64)
         .map_err(|e| format!("Failed to decode BASE64_DATA: {}", e))?;
 
-    // Write assembly to temp file
-    let temp_dir = std::env::temp_dir();
-    let temp_dll = temp_dir.join(format!("nda_run_{}.dll", random_suffix()));
-    std::fs::write(&temp_dll, &assembly_bytes)
-        .map_err(|e| format!("Failed to write temp assembly: {}", e))?;
+    // Execute inside sandbox with isolated temp directory
+    let sandbox = Sandbox::new()?;
+    let dll_name = format!("nda_run_{}.dll", random_suffix());
+    sandbox.write_file(&dll_name, &assembly_bytes)?;
 
-    let result = execute_dotnet(&temp_dll, args);
+    let dll_path = sandbox.work_dir().join(&dll_name);
+    let mut cmd_args = vec!["exec".to_string(), dll_path.to_string_lossy().to_string()];
+    cmd_args.extend_from_slice(args);
 
-    // Cleanup
-    let _ = std::fs::remove_file(&temp_dll);
+    let result = sandbox.execute("dotnet", &cmd_args);
 
-    result
-}
-
-/// Execute a .NET assembly via the `dotnet` CLI.
-fn execute_dotnet(dll_path: &std::path::Path, args: &[String]) -> Result<String, String> {
-    let mut cmd = Command::new("dotnet");
-    cmd.arg("exec").arg(dll_path);
-    for arg in args {
-        cmd.arg(arg);
+    if result.timed_out {
+        return Err(format!("Execution timed out after {} seconds", 30));
     }
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
 
-    let mut child = cmd.spawn()
-        .map_err(|e| format!("Failed to start dotnet process: {}. Is .NET runtime installed?", e))?;
-
-    let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
-    let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
-
-    let stdout_reader = std::thread::spawn(move || {
-        let mut s = String::new();
-        let mut reader = BufReader::new(stdout);
-        reader.read_to_string(&mut s).ok();
-        s
-    });
-
-    let stderr_text = {
-        let mut s = String::new();
-        let mut reader = BufReader::new(stderr);
-        reader.read_to_string(&mut s).ok();
-        s
-    };
-
-    let stdout_text = stdout_reader.join().unwrap_or_default();
-    let status = wait_with_timeout(&mut child, EXECUTION_TIMEOUT)?;
-
-    if !status.success() && !stderr_text.is_empty() {
-        Ok(format!("{}\nError Output:\n{}", stdout_text, stderr_text))
+    if !result.stderr.is_empty() {
+        Ok(format!("{}\nError Output:\n{}", result.stdout, sandbox::sanitize_error(&result.stderr)))
     } else {
-        Ok(stdout_text)
+        Ok(result.stdout)
     }
 }
 
@@ -163,26 +126,31 @@ fn execute_source_code(
         .and_then(|e| e.to_str())
         .unwrap_or("py");
 
-    let temp_dir = std::env::temp_dir();
-    let temp_file = temp_dir.join(format!("nda_run_{}.{}", random_suffix(), ext));
-    std::fs::write(&temp_file, &code)
-        .map_err(|e| format!("Failed to write temp source file: {}", e))?;
+    // Execute inside sandbox with isolated temp directory
+    let sandbox = Sandbox::new()?;
+    let file_name = format!("nda_run_{}.{}", random_suffix(), ext);
+    sandbox.write_file(&file_name, code.as_bytes())?;
 
-    let result = execute_interpreter(&temp_file, ext, args);
+    let script_path = sandbox.work_dir().join(&file_name);
+    let (program, mut cmd_args) = interpreter_command(ext, &script_path);
+    cmd_args.extend_from_slice(args);
 
-    // Cleanup
-    let _ = std::fs::remove_file(&temp_file);
+    let result = sandbox.execute(program, &cmd_args);
 
-    result
+    if result.timed_out {
+        return Err(format!("Execution timed out after {} seconds", 30));
+    }
+
+    if !result.stderr.is_empty() {
+        Ok(format!("{}\nError Output:\n{}", result.stdout, sandbox::sanitize_error(&result.stderr)))
+    } else {
+        Ok(result.stdout)
+    }
 }
 
-/// Execute a script file via the appropriate interpreter.
-fn execute_interpreter(
-    script_path: &std::path::Path,
-    ext: &str,
-    args: &[String],
-) -> Result<String, String> {
-    let (program, program_args) = match ext.to_lowercase().as_str() {
+/// Map a file extension to the interpreter program and initial arguments.
+fn interpreter_command(ext: &str, script_path: &std::path::Path) -> (&'static str, Vec<String>) {
+    match ext.to_lowercase().as_str() {
         "py" => ("python", vec![script_path.to_string_lossy().to_string()]),
         "js" => ("node", vec![script_path.to_string_lossy().to_string()]),
         "ps1" => ("powershell", vec![
@@ -197,68 +165,7 @@ fn execute_interpreter(
             "/c".to_string(),
             script_path.to_string_lossy().to_string(),
         ]),
-        other => return Err(format!("Script execution for extension '{}' is not supported.", other)),
-    };
-
-    let mut cmd = Command::new(program);
-    for arg in &program_args {
-        cmd.arg(arg);
-    }
-    for arg in args {
-        cmd.arg(arg);
-    }
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
-
-    let mut child = cmd.spawn()
-        .map_err(|e| format!("Failed to start interpreter '{}': {}", program, e))?;
-
-    let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
-    let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
-
-    let stdout_reader = std::thread::spawn(move || {
-        let mut s = String::new();
-        let mut reader = BufReader::new(stdout);
-        reader.read_to_string(&mut s).ok();
-        s
-    });
-
-    let stderr_text = {
-        let mut s = String::new();
-        let mut reader = BufReader::new(stderr);
-        reader.read_to_string(&mut s).ok();
-        s
-    };
-
-    let stdout_text = stdout_reader.join().unwrap_or_default();
-    let _status = wait_with_timeout(&mut child, EXECUTION_TIMEOUT)?;
-
-    if !stderr_text.is_empty() {
-        Ok(format!("{}\nError Output:\n{}", stdout_text, stderr_text))
-    } else {
-        Ok(stdout_text)
-    }
-}
-
-/// Wait for a child process with a timeout. Kills the process if it exceeds the limit.
-fn wait_with_timeout(child: &mut std::process::Child, timeout: Duration) -> Result<std::process::ExitStatus, String> {
-    let start = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Ok(status),
-            Ok(None) => {
-                if start.elapsed() > timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!("Execution timed out after {} seconds", timeout.as_secs()));
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(e) => {
-                let _ = child.kill();
-                return Err(format!("Failed to wait for process: {}", e));
-            }
-        }
+        other => ("echo", vec![format!("Script execution for extension '{}' is not supported.", other)]),
     }
 }
 

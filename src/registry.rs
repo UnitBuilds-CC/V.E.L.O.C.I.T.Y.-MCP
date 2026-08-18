@@ -294,7 +294,13 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
             let doc = crate::nda_document::NdaDocument::read(&nda_bytes)?;
             let filename = std::path::Path::new(nda_path).file_name()
                 .and_then(|n| n.to_str()).unwrap_or("file.nda");
-            Ok(doc.format_inspection(filename)?)
+            let mut report = doc.format_inspection(filename)?;
+            // Append Merkle integrity verification
+            match doc.verify_merkle() {
+                Ok(()) => report.push_str("\nMerkle Integrity: VERIFIED\n"),
+                Err(e) => report.push_str(&format!("\nMerkle Integrity: FAILED ({})\n", e)),
+            }
+            Ok(report)
         }
         "execute_nda" => {
             let nda_path = arguments["ndaPath"].as_str().ok_or("ndaPath is required")?;

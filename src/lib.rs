@@ -16,6 +16,12 @@ pub mod nda_document;
 pub mod nda_converter;
 /// NDA payload executor (BinaryPayload via .NET, SourceCode via interpreters).
 pub mod nda_executor;
+/// Sandboxed process execution (temp isolation, panic catching, output limits).
+pub mod sandbox;
+/// Audit logging for tool executions (ring buffer, global instance).
+pub mod audit;
+/// Token bucket rate limiter for MCP tool calls.
+pub mod rate_limit;
 
 /// Server version string.
 pub const VERSION: &str = "1.0.0";

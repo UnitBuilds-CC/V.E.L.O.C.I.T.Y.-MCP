@@ -257,6 +257,74 @@ impl NdaDocument {
 
         Ok(out)
     }
+
+    /// Verify the document's Merkle root integrity.
+    ///
+    /// Recomputes the Merkle root from the parsed triples and compares it
+    /// against the stored root in the header. Returns `Ok(())` if they match,
+    /// or an error describing the mismatch.
+    pub fn verify_merkle(&self) -> Result<(), String> {
+        let computed = self.recompute_merkle_root()?;
+        if computed == self.merkle_root {
+            Ok(())
+        } else {
+            Err(format!(
+                "Merkle root mismatch: stored={} computed={}",
+                hex_encode(&self.merkle_root),
+                hex_encode(&computed)
+            ))
+        }
+    }
+
+    /// Recompute the Merkle root from the parsed triples.
+    /// Each leaf = SHA-256("S|P|O"). Pair-wise hash up; odd leaves promoted.
+    fn recompute_merkle_root(&self) -> Result<[u8; 32], String> {
+        use sha2::{Sha256, Digest};
+
+        if self.triples.is_empty() {
+            return Ok([0u8; 32]);
+        }
+
+        let mut leaves: Vec<[u8; 32]> = Vec::with_capacity(self.triples.len());
+        for t in &self.triples {
+            let s = self.get_string(t.subject_offset)?;
+            let p = self.get_string(t.predicate_offset)?;
+            let o = self.get_string(t.object_offset)?;
+            let repr = format!("{}|{}|{}", s, p, o);
+            let mut h = Sha256::new();
+            h.update(repr.as_bytes());
+            let result = h.finalize();
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&result);
+            leaves.push(arr);
+        }
+
+        let mut current_level = leaves;
+        while current_level.len() > 1 {
+            let mut next_level = Vec::new();
+            let mut i = 0;
+            while i < current_level.len() {
+                if i + 1 < current_level.len() {
+                    let mut combined = [0u8; 64];
+                    combined[..32].copy_from_slice(&current_level[i]);
+                    combined[32..].copy_from_slice(&current_level[i + 1]);
+                    let mut h = Sha256::new();
+                    h.update(&combined);
+                    let result = h.finalize();
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&result);
+                    next_level.push(arr);
+                    i += 2;
+                } else {
+                    next_level.push(current_level[i]);
+                    i += 1;
+                }
+            }
+            current_level = next_level;
+        }
+
+        Ok(current_level[0])
+    }
 }
 
 // ─── Compiler ─────────────────────────────────────────────────────────────────
