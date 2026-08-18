@@ -603,9 +603,27 @@ fn encode_json_value(value: &Value, buf: &mut Vec<u8>) {
     }
 }
 
+/// Maximum TLV nesting depth (prevents stack overflow from malicious input).
+const TLV_MAX_DEPTH: u32 = 32;
+
+/// Maximum string length in TLV encoding (10 MB).
+const TLV_MAX_STRING_LEN: usize = 10_000_000;
+
+/// Maximum array/object element count in TLV encoding.
+const TLV_MAX_ELEMENTS: usize = 100_000;
+
 /// Decode a TLV-encoded binary buffer back into a JSON value.
 /// Returns the decoded value and the number of bytes consumed.
+/// Entry point — starts with depth 0.
 fn decode_json_value(buf: &[u8]) -> Result<(Value, usize), Box<dyn Error>> {
+    decode_json_value_inner(buf, 0)
+}
+
+/// Inner recursive decoder with depth tracking.
+fn decode_json_value_inner(buf: &[u8], depth: u32) -> Result<(Value, usize), Box<dyn Error>> {
+    if depth > TLV_MAX_DEPTH {
+        return Err(format!("TLV nesting depth exceeds maximum {}", TLV_MAX_DEPTH).into());
+    }
     if buf.is_empty() {
         return Err("Unexpected end of TLV buffer".into());
     }
@@ -617,6 +635,9 @@ fn decode_json_value(buf: &[u8]) -> Result<(Value, usize), Box<dyn Error>> {
                 return Err("TLV string: missing length".into());
             }
             let len = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+            if len > TLV_MAX_STRING_LEN {
+                return Err(format!("TLV string length {} exceeds maximum {}", len, TLV_MAX_STRING_LEN).into());
+            }
             if buf.len() < 5 + len {
                 return Err("TLV string: truncated data".into());
             }
@@ -656,10 +677,13 @@ fn decode_json_value(buf: &[u8]) -> Result<(Value, usize), Box<dyn Error>> {
                 return Err("TLV array: missing count".into());
             }
             let count = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+            if count > TLV_MAX_ELEMENTS {
+                return Err(format!("TLV array count {} exceeds maximum {}", count, TLV_MAX_ELEMENTS).into());
+            }
             let mut offset = 5;
-            let mut items = Vec::with_capacity(count);
+            let mut items = Vec::with_capacity(count.min(1024)); // cap initial allocation
             for _ in 0..count {
-                let (val, consumed) = decode_json_value(&buf[offset..])?;
+                let (val, consumed) = decode_json_value_inner(&buf[offset..], depth + 1)?;
                 items.push(val);
                 offset += consumed;
             }
@@ -671,8 +695,11 @@ fn decode_json_value(buf: &[u8]) -> Result<(Value, usize), Box<dyn Error>> {
                 return Err("TLV object: missing count".into());
             }
             let count = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+            if count > TLV_MAX_ELEMENTS {
+                return Err(format!("TLV object count {} exceeds maximum {}", count, TLV_MAX_ELEMENTS).into());
+            }
             let mut offset = 5;
-            let mut map = serde_json::Map::new();
+            let mut map = serde_json::Map::with_capacity(count.min(1024));
             for _ in 0..count {
                 if offset + 2 > buf.len() {
                     return Err("TLV object: missing key length".into());
@@ -684,7 +711,7 @@ fn decode_json_value(buf: &[u8]) -> Result<(Value, usize), Box<dyn Error>> {
                 }
                 let key = std::str::from_utf8(&buf[offset..offset + key_len])?.to_string();
                 offset += key_len;
-                let (val, consumed) = decode_json_value(&buf[offset..])?;
+                let (val, consumed) = decode_json_value_inner(&buf[offset..], depth + 1)?;
                 map.insert(key, val);
                 offset += consumed;
             }
@@ -1064,5 +1091,57 @@ mod tests {
                 println!("C# engine not available (expected in some test environments): {}", e);
             }
         }
+    }
+
+    // ── TLV Security Tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_tlv_reject_deeply_nested_arrays() {
+        // Build a TLV buffer with 40 levels of nested arrays (exceeds TLV_MAX_DEPTH=32)
+        let mut buf = Vec::new();
+        for _ in 0..40 {
+            buf.push(0x05); // Array tag
+            buf.extend_from_slice(&1u32.to_be_bytes()); // count = 1
+        }
+        // Innermost value: a simple null
+        buf.push(0x04); // Null tag
+        let result = decode_json_value(&buf);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("nesting depth"));
+    }
+
+    #[test]
+    fn test_tlv_reject_huge_string_length() {
+        let mut buf = Vec::new();
+        buf.push(0x01); // String tag
+        buf.extend_from_slice(&0x7FFF_FFFFu32.to_be_bytes()); // length = ~2GB
+        let result = decode_json_value(&buf);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("string length"));
+    }
+
+    #[test]
+    fn test_tlv_reject_huge_array_count() {
+        let mut buf = Vec::new();
+        buf.push(0x05); // Array tag
+        buf.extend_from_slice(&0x7FFF_FFFFu32.to_be_bytes()); // count = ~2B
+        let result = decode_json_value(&buf);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("array count"));
+    }
+
+    #[test]
+    fn test_tlv_reject_unknown_type_tag() {
+        let buf = vec![0xFF]; // Unknown tag
+        let result = decode_json_value(&buf);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Unknown TLV type tag"));
+    }
+
+    #[test]
+    fn test_tlv_reject_empty_buffer() {
+        let buf: Vec<u8> = vec![];
+        let result = decode_json_value(&buf);
+        assert!(result.is_err());
     }
 }

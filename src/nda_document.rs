@@ -44,6 +44,15 @@ pub const TRIPLE_SIZE: usize = 12;
 /// Size of a serialized display command in bytes.
 pub const COMMAND_SIZE: usize = 17;
 
+/// Maximum number of triples in a single NDA document (prevents OOM from malicious files).
+pub const MAX_TRIPLES: usize = 1_000_000;
+
+/// Maximum number of display commands in a single NDA document.
+pub const MAX_COMMANDS: usize = 1_000_000;
+
+/// Maximum string pool size (100 MB).
+pub const MAX_STRING_POOL_SIZE: usize = 100_000_000;
+
 /// A semantic triple (subject, predicate, object) with string pool offsets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SemanticTriple {
@@ -76,6 +85,9 @@ pub struct NdaDocument {
 
 impl NdaDocument {
     /// Parse an NDA document from raw bytes.
+    ///
+    /// Validates all bounds, counts, and offsets before allocating.
+    /// Rejects malicious files with excessive counts or corrupted offsets.
     pub fn read(data: &[u8]) -> Result<Self, String> {
         if data.len() < HEADER_SIZE {
             return Err(format!("Buffer too small for NDA header: {} bytes", data.len()));
@@ -96,13 +108,34 @@ impl NdaDocument {
         let command_count = read_u32_le(&mut cur)? as usize;
         let string_pool_offset = read_u32_le(&mut cur)? as usize;
 
-        // Validate sizes
-        let expected_min = HEADER_SIZE + triple_count * TRIPLE_SIZE + command_count * COMMAND_SIZE;
+        // ── Bounds validation (overflow-safe) ──────────────────────────
+        if triple_count > MAX_TRIPLES {
+            return Err(format!("Triple count {} exceeds maximum {}", triple_count, MAX_TRIPLES));
+        }
+        if command_count > MAX_COMMANDS {
+            return Err(format!("Command count {} exceeds maximum {}", command_count, MAX_COMMANDS));
+        }
+
+        let triples_size = triple_count.checked_mul(TRIPLE_SIZE)
+            .ok_or("Integer overflow computing triples size")?;
+        let commands_size = command_count.checked_mul(COMMAND_SIZE)
+            .ok_or("Integer overflow computing commands size")?;
+        let expected_min = HEADER_SIZE.checked_add(triples_size)
+            .and_then(|v| v.checked_add(commands_size))
+            .ok_or("Integer overflow computing expected size")?;
+
         if data.len() < expected_min {
             return Err(format!("NDA buffer corrupted: need {} bytes, have {}", expected_min, data.len()));
         }
         if string_pool_offset > data.len() {
             return Err(format!("String pool offset {} exceeds buffer size {}", string_pool_offset, data.len()));
+        }
+        if string_pool_offset < expected_min {
+            return Err(format!("String pool offset {} overlaps with triples/commands (min {})", string_pool_offset, expected_min));
+        }
+        let string_pool_size = data.len() - string_pool_offset;
+        if string_pool_size > MAX_STRING_POOL_SIZE {
+            return Err(format!("String pool size {} exceeds maximum {}", string_pool_size, MAX_STRING_POOL_SIZE));
         }
 
         // Read triples
@@ -135,6 +168,39 @@ impl NdaDocument {
 
         // String pool
         let string_pool = data[string_pool_offset..].to_vec();
+
+        // ── Validate string pool offsets for all triples ───────────────
+        for (i, t) in triples.iter().enumerate() {
+            for (name, off) in [("subject", t.subject_offset), ("predicate", t.predicate_offset), ("object", t.object_offset)] {
+                if off != 0 {
+                    let o = off as usize;
+                    if o + 2 > string_pool.len() {
+                        return Err(format!("Triple {} {} offset {} exceeds string pool size {}", i, name, o, string_pool.len()));
+                    }
+                    let slen = u16::from_le_bytes([string_pool[o], string_pool[o + 1]]) as usize;
+                    if o + 2 + slen > string_pool.len() {
+                        return Err(format!("Triple {} {} string at offset {} extends beyond pool", i, name, o));
+                    }
+                }
+            }
+        }
+
+        // ── Validate display command types and content offsets ──────────
+        for (i, c) in commands.iter().enumerate() {
+            if c.command_type < 1 || c.command_type > 4 {
+                return Err(format!("Command {} has invalid type {} (expected 1-4)", i, c.command_type));
+            }
+            if c.content_offset != 0 {
+                let o = c.content_offset as usize;
+                if o + 2 > string_pool.len() {
+                    return Err(format!("Command {} content offset {} exceeds string pool size {}", i, o, string_pool.len()));
+                }
+                let slen = u16::from_le_bytes([string_pool[o], string_pool[o + 1]]) as usize;
+                if o + 2 + slen > string_pool.len() {
+                    return Err(format!("Command {} content string at offset {} extends beyond pool", i, o));
+                }
+            }
+        }
 
         Ok(NdaDocument {
             flags,
@@ -524,5 +590,82 @@ mod tests {
         let data = compiler.compile();
         let doc = NdaDocument::read(&data).unwrap();
         assert_eq!(doc.get_string(0).unwrap(), "");
+    }
+
+    // ── Adversarial / Security Tests ─────────────────────────────────────
+
+    /// Craft a binary with huge triple_count → should be rejected before allocation.
+    #[test]
+    fn test_reject_excessive_triple_count() {
+        let mut data = vec![0u8; HEADER_SIZE];
+        data[0..4].copy_from_slice(&NDA_MAGIC.to_le_bytes());
+        // Set triple_count to u32::MAX at offset 40
+        data[40..44].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        let result = NdaDocument::read(&data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("exceeds maximum"));
+    }
+
+    /// Craft a binary with huge command_count → should be rejected.
+    #[test]
+    fn test_reject_excessive_command_count() {
+        let mut data = vec![0u8; HEADER_SIZE];
+        data[0..4].copy_from_slice(&NDA_MAGIC.to_le_bytes());
+        // Set command_count to u32::MAX at offset 44
+        data[44..48].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        let result = NdaDocument::read(&data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("exceeds maximum"));
+    }
+
+    /// Craft a binary with string_pool_offset overlapping triples/commands.
+    #[test]
+    fn test_reject_overlapping_string_pool() {
+        let mut data = vec![0u8; HEADER_SIZE + 100];
+        data[0..4].copy_from_slice(&NDA_MAGIC.to_le_bytes());
+        // 1 triple (12 bytes), string_pool_offset = HEADER_SIZE (overlaps triple area)
+        data[40..44].copy_from_slice(&1u32.to_le_bytes()); // triple_count = 1
+        data[48..52].copy_from_slice(&(HEADER_SIZE as u32).to_le_bytes()); // string_pool_offset = 52 (overlaps)
+        let result = NdaDocument::read(&data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("overlaps"));
+    }
+
+    /// Craft a binary with invalid command type (0 or 5).
+    #[test]
+    fn test_reject_invalid_command_type() {
+        let mut compiler = NdaCompiler::new();
+        compiler.add_triple("s", "p", "o");
+        compiler.add_command(1, 0xFFFFFF, 0, 0, 100, 20, "test");
+        let mut data = compiler.compile();
+        // Find the command area (after header + 1 triple) and set type to 0
+        let cmd_start = HEADER_SIZE + 1 * TRIPLE_SIZE;
+        data[cmd_start] = 0; // Invalid type
+        let result = NdaDocument::read(&data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("invalid type"));
+    }
+
+    /// Craft a binary with a triple whose string offset points beyond the pool.
+    #[test]
+    fn test_reject_triple_beyond_string_pool() {
+        let mut compiler = NdaCompiler::new();
+        compiler.add_triple("s", "p", "o");
+        let mut data = compiler.compile();
+        // Corrupt the first triple's subject_offset to point beyond the string pool
+        let triple_start = HEADER_SIZE;
+        let bad_offset = 0xFFFF_FFFFu32;
+        data[triple_start..triple_start+4].copy_from_slice(&bad_offset.to_le_bytes());
+        let result = NdaDocument::read(&data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("exceeds string pool"));
+    }
+
+    /// Random bytes should not parse as valid NDA.
+    #[test]
+    fn test_reject_random_bytes() {
+        let data: Vec<u8> = (0..200).map(|i| (i * 37 + 13) as u8).collect();
+        let result = NdaDocument::read(&data);
+        assert!(result.is_err());
     }
 }

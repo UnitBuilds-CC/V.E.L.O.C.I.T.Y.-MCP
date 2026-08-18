@@ -14,6 +14,10 @@
 use crate::nda_document::NdaDocument;
 use std::io::{BufReader, Read};
 use std::process::Command;
+use std::time::{Duration, Instant};
+
+/// Maximum execution time for NDA payload execution (30 seconds).
+const EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Execute an NDA document's payload.
 ///
@@ -123,8 +127,7 @@ fn execute_dotnet(dll_path: &std::path::Path, args: &[String]) -> Result<String,
     };
 
     let stdout_text = stdout_reader.join().unwrap_or_default();
-    let status = child.wait()
-        .map_err(|e| format!("Failed to wait for dotnet process: {}", e))?;
+    let status = wait_with_timeout(&mut child, EXECUTION_TIMEOUT)?;
 
     if !status.success() && !stderr_text.is_empty() {
         Ok(format!("{}\nError Output:\n{}", stdout_text, stderr_text))
@@ -228,11 +231,34 @@ fn execute_interpreter(
     };
 
     let stdout_text = stdout_reader.join().unwrap_or_default();
+    let _status = wait_with_timeout(&mut child, EXECUTION_TIMEOUT)?;
 
     if !stderr_text.is_empty() {
         Ok(format!("{}\nError Output:\n{}", stdout_text, stderr_text))
     } else {
         Ok(stdout_text)
+    }
+}
+
+/// Wait for a child process with a timeout. Kills the process if it exceeds the limit.
+fn wait_with_timeout(child: &mut std::process::Child, timeout: Duration) -> Result<std::process::ExitStatus, String> {
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("Execution timed out after {} seconds", timeout.as_secs()));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                return Err(format!("Failed to wait for process: {}", e));
+            }
+        }
     }
 }
 
