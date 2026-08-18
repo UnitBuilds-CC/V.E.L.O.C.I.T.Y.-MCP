@@ -191,77 +191,130 @@ fn parse_xlsx_data(data: &[u8]) -> Result<(Vec<String>, std::collections::HashMa
 }
 
 /// Extract text content from XML elements with the given tag name.
-/// Simple regex-based extraction to avoid heavy XML parser dependency.
+/// Uses quick-xml for safe, spec-compliant XML parsing.
 fn extract_xml_texts(xml: &str, tag: &str) -> Vec<String> {
+    use quick_xml::Reader;
+    use quick_xml::events::Event;
+
     let mut results = Vec::new();
-    // Match <tag ...>content</tag> and <tag>content</tag>
-    let pattern = format!(r"<{}[^>]*>([^<]*)</{}>", regex_escape(tag), regex_escape(tag));
-    if let Ok(re) = regex::Regex::new(&pattern) {
-        for cap in re.captures_iter(xml) {
-            if let Some(m) = cap.get(1) {
-                results.push(m.as_str().to_string());
+    let mut reader = Reader::from_str(xml);
+    let mut buf = Vec::new();
+    let mut inside_target = false;
+    let mut text_buf = String::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) if e.name().as_ref() == tag.as_bytes() => {
+                inside_target = true;
+                text_buf.clear();
             }
+            Ok(Event::Text(ref e)) if inside_target => {
+                let text = std::str::from_utf8(e.as_ref()).unwrap_or("");
+                if let Ok(unescaped) = quick_xml::escape::unescape(text) {
+                    text_buf.push_str(&unescaped);
+                } else {
+                    text_buf.push_str(text);
+                }
+            }
+            Ok(Event::End(ref e)) if e.name().as_ref() == tag.as_bytes() && inside_target => {
+                results.push(text_buf.clone());
+                inside_target = false;
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
         }
+        buf.clear();
     }
     results
 }
 
 /// Parse XLSX cell elements from sheet XML.
-/// Extracts coordinate (r attribute), type (t attribute), and value (v element).
+/// Uses quick-xml for safe, spec-compliant XML parsing.
 fn parse_xlsx_cells(xml: &str, shared_strings: &[String]) -> std::collections::HashMap<String, String> {
+    use quick_xml::Reader;
+    use quick_xml::events::Event;
     use std::collections::HashMap;
+
     let mut cells: HashMap<String, String> = HashMap::new();
+    let mut reader = Reader::from_str(xml);
+    let mut buf = Vec::new();
 
-    // Match <c ...> elements with their content
-    let c_re = regex::Regex::new(r"<c\s([^>]*)>(.*?)</c>").unwrap();
-    let v_re = regex::Regex::new(r"<v>([^<]*)</v>").unwrap();
+    // State tracking for nested parsing
+    let mut in_cell = false;
+    let mut in_v = false;
+    let mut cell_coord = String::new();
+    let mut cell_type = String::new();
+    let mut cell_value = String::new();
 
-    for cap in c_re.captures_iter(xml) {
-        let attrs = cap.get(1).map_or("", |m| m.as_str());
-        let inner = cap.get(2).map_or("", |m| m.as_str());
-
-        let coord = extract_attr(attrs, "r").unwrap_or_default();
-        let cell_type = extract_attr(attrs, "t").unwrap_or_default();
-
-        if coord.is_empty() { continue; }
-
-        if let Some(v_cap) = v_re.captures(inner) {
-            let raw_value = v_cap.get(1).map_or("", |m| m.as_str());
-            if cell_type == "s" {
-                // Shared string reference
-                if let Ok(idx) = raw_value.parse::<usize>() {
-                    if idx < shared_strings.len() {
-                        cells.insert(coord, shared_strings[idx].clone());
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                let name = e.name();
+                match name.as_ref() {
+                    b"c" => {
+                        in_cell = true;
+                        cell_coord.clear();
+                        cell_type.clear();
+                        cell_value.clear();
+                        // Extract attributes
+                        for attr in e.attributes().flatten() {
+                            match attr.key.as_ref() {
+                                b"r" => {
+                                    cell_coord = String::from_utf8_lossy(&attr.value).to_string();
+                                }
+                                b"t" => {
+                                    cell_type = String::from_utf8_lossy(&attr.value).to_string();
+                                }
+                                _ => {}
+                            }
+                        }
                     }
+                    b"v" if in_cell => {
+                        in_v = true;
+                    }
+                    _ => {}
                 }
-            } else {
-                cells.insert(coord, raw_value.to_string());
             }
+            Ok(Event::Text(ref e)) if in_v => {
+                let text = std::str::from_utf8(e.as_ref()).unwrap_or("");
+                if let Ok(unescaped) = quick_xml::escape::unescape(text) {
+                    cell_value.push_str(&unescaped);
+                } else {
+                    cell_value.push_str(text);
+                }
+            }
+            Ok(Event::End(ref e)) => {
+                match e.name().as_ref() {
+                    b"v" if in_v => {
+                        in_v = false;
+                    }
+                    b"c" if in_cell => {
+                        // Process completed cell
+                        if !cell_coord.is_empty() && !cell_value.is_empty() {
+                            if cell_type == "s" {
+                                if let Ok(idx) = cell_value.parse::<usize>() {
+                                    if idx < shared_strings.len() {
+                                        cells.insert(cell_coord.clone(), shared_strings[idx].clone());
+                                    }
+                                }
+                            } else {
+                                cells.insert(cell_coord.clone(), cell_value.clone());
+                            }
+                        }
+                        in_cell = false;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
         }
+        buf.clear();
     }
 
     cells
-}
-
-/// Extract an attribute value from an XML attribute string.
-fn extract_attr(attrs: &str, name: &str) -> Option<String> {
-    let pattern = format!(r#"{}="([^"]*)""#, regex_escape(name));
-    if let Ok(re) = regex::Regex::new(&pattern) {
-        re.captures(attrs).and_then(|c| c.get(1)).map(|m| m.as_str().to_string())
-    } else {
-        None
-    }
-}
-
-fn regex_escape(s: &str) -> String {
-    let mut result = String::new();
-    for c in s.chars() {
-        if r"\.^$*+?{}[]|()".contains(c) {
-            result.push('\\');
-        }
-        result.push(c);
-    }
-    result
 }
 
 // ─── DOCX ─────────────────────────────────────────────────────────────────────
@@ -315,6 +368,8 @@ fn convert_docx(file_path: &str) -> Result<Vec<u8>, String> {
 
 /// Parse paragraphs from a DOCX zip archive.
 fn parse_docx_paragraphs(data: &[u8]) -> Result<Vec<String>, String> {
+    use quick_xml::Reader;
+    use quick_xml::events::Event;
     use zip::ZipArchive;
     use std::io::Read;
 
@@ -330,21 +385,54 @@ fn parse_docx_paragraphs(data: &[u8]) -> Result<Vec<String>, String> {
         return Err("DOCX does not contain word/document.xml".to_string());
     }
 
-    // Extract paragraphs: <w:p ...>...</w:p>
+    // Parse paragraphs using quick-xml
     let mut paragraphs = Vec::new();
-    let p_re = regex::Regex::new(r"<w:p\b[^>]*>(.*?)</w:p>").unwrap();
-    let t_re = regex::Regex::new(r"<w:t[^>]*>([^<]*)</w:t>").unwrap();
+    let mut reader = Reader::from_str(&doc_xml);
+    let mut buf = Vec::new();
 
-    for p_cap in p_re.captures_iter(&doc_xml) {
-        let p_inner = p_cap.get(1).map_or("", |m| m.as_str());
-        let mut text = String::new();
-        for t_cap in t_re.captures_iter(p_inner) {
-            text.push_str(t_cap.get(1).map_or("", |m| m.as_str()));
+    let mut in_paragraph = false;
+    let mut in_text = false;
+    let mut para_text = String::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                let name = e.name();
+                let local = name.as_ref();
+                // Match w:p (paragraph) and w:t (text) with namespace prefix
+                if local == b"p" || local.ends_with(b":p") {
+                    in_paragraph = true;
+                    para_text.clear();
+                } else if (local == b"t" || local.ends_with(b":t")) && in_paragraph {
+                    in_text = true;
+                }
+            }
+            Ok(Event::Text(ref e)) if in_text => {
+                let text = std::str::from_utf8(e.as_ref()).unwrap_or("");
+                if let Ok(unescaped) = quick_xml::escape::unescape(text) {
+                    para_text.push_str(&unescaped);
+                } else {
+                    para_text.push_str(text);
+                }
+            }
+            Ok(Event::End(ref e)) => {
+                let name = e.name();
+                let local = name.as_ref();
+                if (local == b"t" || local.ends_with(b":t")) && in_text {
+                    in_text = false;
+                } else if (local == b"p" || local.ends_with(b":p")) && in_paragraph {
+                    let trimmed = para_text.trim().to_string();
+                    if !trimmed.is_empty() {
+                        paragraphs.push(trimmed);
+                    }
+                    in_paragraph = false;
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
         }
-        let trimmed = text.trim().to_string();
-        if !trimmed.is_empty() {
-            paragraphs.push(trimmed);
-        }
+        buf.clear();
     }
 
     Ok(paragraphs)

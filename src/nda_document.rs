@@ -512,6 +512,116 @@ impl NdaCompiler {
     }
 }
 
+// ─── Ed25519 Signature Support ───────────────────────────────────────────────
+
+/// Size of the Ed25519 signature section appended after the string pool.
+/// Format: signature_len (u32 LE) + signature (64 bytes) + public_key (32 bytes)
+pub const SIGNATURE_SECTION_SIZE: usize = 4 + 64 + 32; // 100 bytes
+
+/// Ed25519 signature section appended to signed NDA documents.
+#[derive(Debug, Clone)]
+pub struct NdaSignature {
+    /// The 64-byte Ed25519 signature.
+    pub signature: [u8; 64],
+    /// The 32-byte Ed25519 public key of the signer.
+    pub public_key: [u8; 32],
+}
+
+impl NdaDocument {
+    /// Check if this document has a signature section.
+    pub fn has_signature(data: &[u8]) -> bool {
+        // After the string pool, there must be exactly SIGNATURE_SECTION_SIZE bytes
+        // We check if the data is large enough to contain a signature after the pool
+        if data.len() < HEADER_SIZE + SIGNATURE_SECTION_SIZE {
+            return false;
+        }
+        // Read the signature_len at the expected position
+        // We need to know where the string pool ends, which requires parsing the header
+        if let Ok(_doc) = NdaDocument::read(data) {
+            // The string pool starts at string_pool_offset and extends to end of pool data
+            // If there's a signature section, data.len() > string_pool_offset + pool_len + SIGNATURE_SECTION_SIZE
+            // For simplicity, check if the last SIGNATURE_SECTION_SIZE bytes look like a signature
+            let sig_start = data.len().saturating_sub(SIGNATURE_SECTION_SIZE);
+            let sig_len = u32::from_le_bytes([
+                data[sig_start], data[sig_start+1], data[sig_start+2], data[sig_start+3]
+            ]);
+            sig_len == 64
+        } else {
+            false
+        }
+    }
+
+    /// Read the signature section from raw NDA bytes (if present).
+    pub fn read_signature(data: &[u8]) -> Result<Option<NdaSignature>, String> {
+        if !Self::has_signature(data) {
+            return Ok(None);
+        }
+        let sig_start = data.len() - SIGNATURE_SECTION_SIZE;
+        let sig_len = u32::from_le_bytes([
+            data[sig_start], data[sig_start+1], data[sig_start+2], data[sig_start+3]
+        ]);
+        if sig_len != 64 {
+            return Err("Invalid signature section length".to_string());
+        }
+
+        let mut signature = [0u8; 64];
+        signature.copy_from_slice(&data[sig_start + 4..sig_start + 68]);
+
+        let mut public_key = [0u8; 32];
+        public_key.copy_from_slice(&data[sig_start + 68..sig_start + 100]);
+
+        Ok(Some(NdaSignature { signature, public_key }))
+    }
+
+    /// Verify the Ed25519 signature of this document.
+    ///
+    /// The signature covers all bytes from the start of the NDA up to (but not
+    /// including) the signature section. Returns Ok(()) if the signature is valid.
+    pub fn verify_signature(data: &[u8]) -> Result<(), String> {
+        use ed25519_dalek::{Verifier, VerifyingKey, Signature};
+
+        let nda_sig = Self::read_signature(data)?
+            .ok_or("Document is not signed")?;
+
+        let signed_data_len = data.len() - SIGNATURE_SECTION_SIZE;
+        let signed_data = &data[..signed_data_len];
+
+        let verifying_key = VerifyingKey::from_bytes(&nda_sig.public_key)
+            .map_err(|e| format!("Invalid public key: {}", e))?;
+
+        let signature = Signature::from_bytes(&nda_sig.signature);
+
+        verifying_key.verify(signed_data, &signature)
+            .map_err(|e| format!("Signature verification failed: {}", e))
+    }
+}
+
+impl NdaCompiler {
+    /// Compile the NDA document and sign it with the given Ed25519 keypair.
+    ///
+    /// Appends a signature section after the string pool. The signature covers
+    /// the entire unsigned NDA binary.
+    pub fn compile_signed(
+        self,
+        signing_key: &ed25519_dalek::SigningKey,
+    ) -> Vec<u8> {
+        use ed25519_dalek::Signer;
+
+        let mut data = self.compile();
+
+        // Sign the entire unsigned NDA binary
+        let signature = signing_key.sign(&data);
+        let public_key = signing_key.verifying_key();
+
+        // Append signature section
+        data.extend_from_slice(&64u32.to_le_bytes()); // signature_len = 64
+        data.extend_from_slice(&signature.to_bytes());
+        data.extend_from_slice(public_key.as_bytes());
+
+        data
+    }
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 fn read_u32_le(cur: &mut Cursor<&[u8]>) -> Result<u32, String> {
@@ -735,5 +845,193 @@ mod tests {
         let data: Vec<u8> = (0..200).map(|i| (i * 37 + 13) as u8).collect();
         let result = NdaDocument::read(&data);
         assert!(result.is_err());
+    }
+
+    // ── Ed25519 Signature Tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_sign_and_verify_round_trip() {
+        use ed25519_dalek::SigningKey;
+        let signing_key = SigningKey::from_bytes(&[42u8; 32]);
+
+        let mut compiler = NdaCompiler::new();
+        compiler.add_triple("DOC_1", "TYPE", "SignedDoc");
+        compiler.add_command(1, 0xFFFFFFFF, 10, 20, 100, 50, "Signed Content");
+
+        // Compile unsigned version of the same document
+        let mut unsigned_compiler = NdaCompiler::new();
+        unsigned_compiler.add_triple("DOC_1", "TYPE", "SignedDoc");
+        unsigned_compiler.add_command(1, 0xFFFFFFFF, 10, 20, 100, 50, "Signed Content");
+        let unsigned_data = unsigned_compiler.compile();
+
+        let signed_data = compiler.compile_signed(&signing_key);
+
+        // Signed should be exactly SIGNATURE_SECTION_SIZE bytes larger
+        assert_eq!(signed_data.len() - unsigned_data.len(), SIGNATURE_SECTION_SIZE);
+
+        // Verify signature
+        assert!(NdaDocument::has_signature(&signed_data));
+        let result = NdaDocument::verify_signature(&signed_data);
+        assert!(result.is_ok(), "Signature should verify: {:?}", result);
+    }
+
+    #[test]
+    fn test_unsigned_document_not_detected_as_signed() {
+        let mut compiler = NdaCompiler::new();
+        compiler.add_triple("DOC_1", "TYPE", "UnsignedDoc");
+        let data = compiler.compile();
+
+        assert!(!NdaDocument::has_signature(&data));
+        let result = NdaDocument::verify_signature(&data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_tampered_signed_document_fails_verification() {
+        use ed25519_dalek::SigningKey;
+        let signing_key = SigningKey::from_bytes(&[42u8; 32]);
+
+        let mut compiler = NdaCompiler::new();
+        compiler.add_triple("DOC_1", "TYPE", "TamperedDoc");
+        let mut signed_data = compiler.compile_signed(&signing_key);
+
+        // Tamper with the document (flip a byte in the header area)
+        signed_data[10] ^= 0xFF;
+
+        let result = NdaDocument::verify_signature(&signed_data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("verification failed"));
+    }
+
+    #[test]
+    fn test_wrong_key_fails_verification() {
+        use ed25519_dalek::SigningKey;
+        let signing_key = SigningKey::from_bytes(&[42u8; 32]);
+        let wrong_key = SigningKey::from_bytes(&[99u8; 32]);
+
+        let mut compiler = NdaCompiler::new();
+        compiler.add_triple("DOC_1", "TYPE", "TestDoc");
+        let signed_data = compiler.compile_signed(&signing_key);
+
+        // Try to verify with a different key's public key
+        let mut tampered = signed_data.clone();
+        let sig_start = tampered.len() - SIGNATURE_SECTION_SIZE;
+        // Replace public key with the wrong key's public key
+        tampered[sig_start + 68..sig_start + 100].copy_from_slice(wrong_key.verifying_key().as_bytes());
+
+        let result = NdaDocument::verify_signature(&tampered);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_signed_document_still_parses() {
+        use ed25519_dalek::SigningKey;
+        let signing_key = SigningKey::from_bytes(&[42u8; 32]);
+
+        let mut compiler = NdaCompiler::new();
+        compiler.add_triple("DOC_1", "TYPE", "ParseTest");
+        compiler.add_command(1, 0xFFFFFFFF, 10, 20, 100, 50, "Content");
+        let signed_data = compiler.compile_signed(&signing_key);
+
+        // The document should still parse correctly
+        let doc = NdaDocument::read(&signed_data).unwrap();
+        assert_eq!(doc.triples.len(), 1);
+        assert_eq!(doc.commands.len(), 1);
+        assert_eq!(doc.get_string(doc.triples[0].subject_offset).unwrap(), "DOC_1");
+    }
+
+    // ── Comprehensive Fuzz / Adversarial Tests ───────────────────────────
+
+    /// Test that truncating a signed document at various points is handled.
+    #[test]
+    fn test_truncated_signed_document() {
+        use ed25519_dalek::SigningKey;
+        let signing_key = SigningKey::from_bytes(&[42u8; 32]);
+
+        let mut compiler = NdaCompiler::new();
+        compiler.add_triple("DOC_1", "TYPE", "TestDoc");
+        let signed_data = compiler.compile_signed(&signing_key);
+
+        // Truncate at various points
+        for truncate_at in [10, 52, 100, signed_data.len() - 10] {
+            if truncate_at >= signed_data.len() { continue; }
+            let truncated = &signed_data[..truncate_at];
+            // Should either fail to parse or fail signature verification
+            if let Ok(_) = NdaDocument::read(truncated) {
+                assert!(!NdaDocument::has_signature(truncated));
+            }
+        }
+    }
+
+    /// Test that corrupting signature bytes is detected.
+    #[test]
+    fn test_corrupted_signature_bytes() {
+        use ed25519_dalek::SigningKey;
+        let signing_key = SigningKey::from_bytes(&[42u8; 32]);
+
+        let mut compiler = NdaCompiler::new();
+        compiler.add_triple("s", "p", "o");
+        let signed_data = compiler.compile_signed(&signing_key);
+
+        // Corrupt each byte of the signature section
+        let sig_start = signed_data.len() - SIGNATURE_SECTION_SIZE;
+        for i in sig_start..signed_data.len() {
+            let mut tampered = signed_data.clone();
+            tampered[i] ^= 0x01;
+            // Either parsing fails or verification fails
+            if NdaDocument::has_signature(&tampered) {
+                assert!(NdaDocument::verify_signature(&tampered).is_err());
+            }
+        }
+    }
+
+    /// Test header with all flags set.
+    #[test]
+    fn test_all_flags_set() {
+        let mut compiler = NdaCompiler::new();
+        compiler.add_triple("s", "p", "o");
+        let mut data = compiler.compile();
+        // Set all flag bits
+        data[4..8].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        // Should still parse (flags are informational)
+        let doc = NdaDocument::read(&data).unwrap();
+        assert_eq!(doc.flags, 0xFFFF_FFFF);
+    }
+
+    /// Test with maximum valid string pool offset.
+    #[test]
+    fn test_string_pool_at_exact_end() {
+        let mut compiler = NdaCompiler::new();
+        compiler.add_triple("s", "p", "o");
+        let data = compiler.compile();
+        // This is the normal case — string pool at exact end of triples/commands
+        let doc = NdaDocument::read(&data).unwrap();
+        assert_eq!(doc.triples.len(), 1);
+    }
+
+    /// Test that a document with zero-length strings works correctly.
+    #[test]
+    fn test_zero_length_strings() {
+        let mut compiler = NdaCompiler::new();
+        compiler.add_triple("", "", "");
+        let data = compiler.compile();
+        let doc = NdaDocument::read(&data).unwrap();
+        assert_eq!(doc.get_string(doc.triples[0].subject_offset).unwrap(), "");
+        assert_eq!(doc.get_string(doc.triples[0].predicate_offset).unwrap(), "");
+        assert_eq!(doc.get_string(doc.triples[0].object_offset).unwrap(), "");
+    }
+
+    /// Test Merkle verification on a signed document.
+    #[test]
+    fn test_merkle_verification_on_signed_document() {
+        use ed25519_dalek::SigningKey;
+        let signing_key = SigningKey::from_bytes(&[42u8; 32]);
+
+        let mut compiler = NdaCompiler::new();
+        compiler.add_triple("a", "b", "c");
+        let signed_data = compiler.compile_signed(&signing_key);
+
+        let doc = NdaDocument::read(&signed_data).unwrap();
+        assert!(doc.verify_merkle().is_ok());
     }
 }

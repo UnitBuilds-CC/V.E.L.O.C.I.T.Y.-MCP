@@ -300,6 +300,12 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
                 Ok(()) => report.push_str("\nMerkle Integrity: VERIFIED\n"),
                 Err(e) => report.push_str(&format!("\nMerkle Integrity: FAILED ({})\n", e)),
             }
+            // Append Ed25519 signature verification (if signed)
+            match crate::nda_document::NdaDocument::verify_signature(&nda_bytes) {
+                Ok(()) => report.push_str("Signature: VERIFIED (Ed25519)\n"),
+                Err(e) if e.contains("not signed") => report.push_str("Signature: UNSIGNED\n"),
+                Err(e) => report.push_str(&format!("Signature: FAILED ({})\n", e)),
+            }
             Ok(report)
         }
         "execute_nda" => {

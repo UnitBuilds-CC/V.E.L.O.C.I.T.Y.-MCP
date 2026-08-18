@@ -17,6 +17,9 @@ sha2 = "0.10"
 base64 = "0.22"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 regex = "1"
+quick-xml = "0.41"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
 
 [profile.release]
 opt-level = 3
