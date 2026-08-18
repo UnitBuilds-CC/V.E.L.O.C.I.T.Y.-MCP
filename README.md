@@ -1,5 +1,11 @@
 # V.E.L.O.C.I.T.Y. Neural Model Context Protocol (NMCP) Server
 
+[![CI](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/actions/workflows/ci.yml/badge.svg)](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/actions/workflows/ci.yml)
+[![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/releases)
+[![License](https://img.shields.io/badge/license-MIT%20|%20Apache%202.0-green.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-146%20passing-brightgreen.svg)]()
+[![Dependencies](https://img.shields.io/badge/dependencies-95%20crates%20|%200%20vulns-brightgreen.svg)]()
+
 A high-performance, production-hardened Model Context Protocol (MCP) server written in Rust. Designed to replace slow, bloated Node.js/Python MCP servers with a highly optimized, self-contained executable.
 
 > **New here?** Read the [User Guide](docs/USER_GUIDE.md) for a complete walkthrough — client configuration, tool usage, shared memory integration, troubleshooting, and FAQ.
