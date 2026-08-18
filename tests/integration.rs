@@ -250,9 +250,10 @@ fn test_registry_path_validation_blocks_attacks() {
 /// Verify that calling a non-existent C# path returns a clear error.
 #[test]
 fn test_registry_missing_csharp_engine() {
+    // Dynamic tools still require C# engine
     let result = registry::call_tool_with_csharp_path(
-        "read_nda",
-        &json!({"ndaPath": "C:\\test.nda"}),
+        "some_dynamic_tool",
+        &json!({}),
         "C:\\nonexistent\\NdaMcpServer.exe",
     );
     assert!(result.is_err());

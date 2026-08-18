@@ -249,22 +249,35 @@ pub fn call_tool(name: &str, arguments: &Value) -> Result<String, Box<dyn Error>
 /// Call a tool with an explicit C# executable path.
 ///
 /// Routes tool calls as follows:
-/// - Built-in NDA tools (convert_to_nda_document, convert_to_nda_tool, read_nda, execute_nda): validates paths, then delegates
+/// - Built-in NDA tools (convert_to_nda_document, read_nda, execute_nda): native Rust implementation
+/// - convert_to_nda_tool: JSON-to-NDA binary conversion with auto-registration
 /// - NDA-converted tools: executes via fast binary path (no JSON parsing)
 /// - All other tools: delegates directly to the C# engine (dynamic tool hosting)
 pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &str) -> Result<String, Box<dyn Error>> {
     debug!(tool = name, "Dispatching tool call");
 
     match name {
-        // Built-in NDA tools with path validation
+        // Built-in NDA tools — native Rust implementations (no C# dependency)
         "convert_to_nda_document" => {
             let file_path = arguments["filePath"].as_str().ok_or("filePath is required")?;
             validate_file_path(file_path)?;
-            let _output_path = arguments["outputPath"].as_str().unwrap_or("");
-            if !_output_path.is_empty() {
-                validate_file_path(_output_path)?;
+            let output_path = arguments["outputPath"].as_str().unwrap_or("");
+            if !output_path.is_empty() {
+                validate_file_path(output_path)?;
             }
-            execute_csharp_mcp_tool("convert_to_nda_document", arguments, csharp_path)
+            let nda_bytes = crate::nda_converter::convert_to_nda(file_path)?;
+            let out = if output_path.is_empty() {
+                // Default: write alongside input with .nda extension
+                let default_out = std::path::Path::new(file_path)
+                    .with_extension("nda");
+                default_out.to_string_lossy().to_string()
+            } else {
+                output_path.to_string()
+            };
+            std::fs::write(&out, &nda_bytes)?;
+            let filename = std::path::Path::new(file_path).file_name()
+                .and_then(|n| n.to_str()).unwrap_or("file");
+            Ok(format!("Successfully converted {} to {} ({} bytes).", filename, out, nda_bytes.len()))
         }
         "convert_to_nda_tool" => {
             let json_request = arguments["jsonRequest"].as_str().ok_or("jsonRequest is required")?;
@@ -277,12 +290,25 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
         "read_nda" => {
             let nda_path = arguments["ndaPath"].as_str().ok_or("ndaPath is required")?;
             validate_file_path(nda_path)?;
-            execute_csharp_mcp_tool("read_nda", arguments, csharp_path)
+            let nda_bytes = std::fs::read(nda_path)?;
+            let doc = crate::nda_document::NdaDocument::read(&nda_bytes)?;
+            let filename = std::path::Path::new(nda_path).file_name()
+                .and_then(|n| n.to_str()).unwrap_or("file.nda");
+            Ok(doc.format_inspection(filename)?)
         }
         "execute_nda" => {
             let nda_path = arguments["ndaPath"].as_str().ok_or("ndaPath is required")?;
             validate_file_path(nda_path)?;
-            execute_csharp_mcp_tool("execute_nda", arguments, csharp_path)
+            let nda_bytes = std::fs::read(nda_path)?;
+            let mut exec_args: Vec<String> = Vec::new();
+            if let Some(args_arr) = arguments["arguments"].as_array() {
+                for a in args_arr {
+                    if let Some(s) = a.as_str() {
+                        exec_args.push(s.to_string());
+                    }
+                }
+            }
+            Ok(crate::nda_executor::execute_nda(&nda_bytes, &exec_args)?)
         }
         // Dynamic tools: check NDA registry first, then route to C# engine
         _ => {
@@ -999,9 +1025,10 @@ mod tests {
 
     #[test]
     fn test_csharp_path_not_found_returns_error() {
+        // Dynamic tools still require C# engine — verify error when engine is missing
         let result = call_tool_with_csharp_path(
-            "read_nda",
-            &json!({"ndaPath": "C:\\test.nda"}),
+            "some_dynamic_tool",
+            &json!({}),
             "C:\\nonexistent\\path\\NdaMcpServer.exe",
         );
         assert!(result.is_err());
