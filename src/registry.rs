@@ -51,7 +51,7 @@ pub fn get_tools() -> Vec<Tool> {
     let mut known_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
     
     // Deprecated tool names that should be filtered out from C# engine
-    let deprecated_names = vec!["convert_to_nda"]; // Superseded by convert_to_nda_document
+    let deprecated_names = ["convert_to_nda"]; // Superseded by convert_to_nda_document
     
     // Add dynamically discovered tools from the C# engine
     if let Some(dynamic_tools) = CACHED_TOOLS.get() {
@@ -202,10 +202,11 @@ fn discover_csharp_tools() -> Result<Vec<Tool>, Box<dyn Error>> {
                 Ok(0) => break,
                 Ok(_) => {
                     response_str.push_str(&line);
-                    if response_str.trim().starts_with('{') && response_str.trim().ends_with('}') {
-                        if serde_json::from_str::<Value>(response_str.trim()).is_ok() {
-                            break;
-                        }
+                    let trimmed = response_str.trim();
+                    if trimmed.starts_with('{') && trimmed.ends_with('}')
+                        && serde_json::from_str::<Value>(trimmed).is_ok()
+                    {
+                        break;
                     }
                 }
                 Err(_) => break,
@@ -782,7 +783,7 @@ fn convert_json_to_nda_binary(json_request: &str, output_path: &str) -> Result<S
     // Add arguments using Type-Length-Value (TLV) binary encoding
     // This preserves all JSON types and supports round-trip conversion
     let mut args_bytes = Vec::new();
-    encode_json_value(&arguments, &mut args_bytes);
+    encode_json_value(arguments, &mut args_bytes);
     payload.extend_from_slice(&(args_bytes.len() as u32).to_be_bytes());
     payload.extend_from_slice(&args_bytes);
     
@@ -807,50 +808,6 @@ fn convert_json_to_nda_binary(json_request: &str, output_path: &str) -> Result<S
         // Write to file
         std::fs::write(output_path, &binary_frame)?;
         Ok(format!("NDA binary written to {}", output_path))
-    }
-}
-
-/// Wait for a child process with a timeout.
-/// Polls the child with try_wait() and kills it if the timeout expires.
-/// Returns the output on success, or an error if the timeout expires.
-#[allow(dead_code)]
-fn wait_with_timeout(mut child: std::process::Child, timeout: Duration) -> Result<std::process::Output, Box<dyn Error>> {
-    let start = std::time::Instant::now();
-    let poll_interval = Duration::from_millis(50);
-
-    loop {
-        match child.try_wait()? {
-            Some(_status) => {
-                // Child exited — collect stdout/stderr
-                let mut stdout = Vec::new();
-                let mut stderr = Vec::new();
-                if let Some(mut out) = child.stdout {
-                    use std::io::Read;
-                    let _ = out.read_to_end(&mut stdout);
-                }
-                if let Some(mut err) = child.stderr {
-                    use std::io::Read;
-                    let _ = err.read_to_end(&mut stderr);
-                }
-                return Ok(std::process::Output {
-                    status: _status,
-                    stdout,
-                    stderr,
-                });
-            }
-            None => {
-                if start.elapsed() >= timeout {
-                    // Kill the child process on timeout to prevent orphans
-                    let _ = child.kill();
-                    let _ = child.wait(); // Reap the zombie
-                    return Err(format!(
-                        "C# process timed out after {:.0}s",
-                        timeout.as_secs_f64()
-                    ).into());
-                }
-                std::thread::sleep(poll_interval);
-            }
-        }
     }
 }
 

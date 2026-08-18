@@ -261,7 +261,7 @@ The zero-allocation binary parser processes frames at 3.06 ns (208x faster than 
 
 ```
 ├── src/
-│   ├── lib.rs               # Library crate root (public API)
+│   ├── lib.rs               # Library crate root (public API, VERSION constant)
 │   ├── main.rs              # CLI entry point, arg parsing, shutdown
 │   ├── registry.rs          # Tool registration, dispatch, path validation
 │   ├── nda_document.rs      # NDA binary format (compile, read, Merkle tree, Ed25519 signatures)
@@ -283,11 +283,15 @@ The zero-allocation binary parser processes frames at 3.06 ns (208x faster than 
 │   └── fuzz_tests.rs        # Property-based fuzz tests with proptest (10 tests)
 ├── .github/
 │   └── workflows/
-│       └── ci.yml           # GitHub Actions CI (build, test, audit, fuzz)
+│       ├── ci.yml           # GitHub Actions CI (build, test, audit, fuzz)
+│       └── release.yml      # Automated release binary build on version tags
 ├── docs/
 │   └── USER_GUIDE.md        # Comprehensive user guide
-├── Cargo.toml               # Dependencies
+├── Cargo.toml               # Dependencies and build configuration
+├── Cargo.lock               # Locked dependency versions (reproducible builds)
+├── CHANGELOG.md             # Release history (Keep a Changelog format)
 ├── LICENSE                  # Apache-2.0 / MIT dual license
+├── .gitignore               # Git exclusions
 └── README.md                # This file
 ```
 
@@ -295,7 +299,14 @@ The zero-allocation binary parser processes frames at 3.06 ns (208x faster than 
 
 ## CI/CD
 
-GitHub Actions workflow (`.github/workflows/ci.yml`) runs on every push and PR to `main`:
+Two GitHub Actions workflows run automatically:
+
+| Workflow | Trigger | Description |
+|----------|---------|-------------|
+| **CI** (`ci.yml`) | Every push/PR to `main` | Build + run all 146 tests + cargo audit + fuzz tests |
+| **Release** (`release.yml`) | Version tags (`v*`) | Build release binary + test + audit + create GitHub Release |
+
+Three CI jobs run on every push:
 
 | Job | Description |
 |-----|-------------|

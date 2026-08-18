@@ -309,7 +309,7 @@ impl NdaDocument {
                     combined[..32].copy_from_slice(&current_level[i]);
                     combined[32..].copy_from_slice(&current_level[i + 1]);
                     let mut h = Sha256::new();
-                    h.update(&combined);
+                    h.update(combined);
                     let result = h.finalize();
                     let mut arr = [0u8; 32];
                     arr.copy_from_slice(&result);
@@ -351,6 +351,12 @@ pub struct CommandInfo {
     pub content: String,
 }
 
+impl Default for NdaCompiler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NdaCompiler {
     pub fn new() -> Self {
         let mut string_pool = HashMap::new();
@@ -373,6 +379,7 @@ impl NdaCompiler {
     }
 
     /// Add a visual display command.
+    #[allow(clippy::too_many_arguments)]
     pub fn add_command(&mut self, command_type: u8, color: u32, x: u16, y: u16, w: u16, h: u16, content: &str) {
         self.commands.push(CommandInfo {
             command_type,
@@ -494,7 +501,7 @@ impl NdaCompiler {
                     combined[..32].copy_from_slice(&current_level[i]);
                     combined[32..].copy_from_slice(&current_level[i + 1]);
                     let mut h = Sha256::new();
-                    h.update(&combined);
+                    h.update(combined);
                     let result = h.finalize();
                     let mut arr = [0u8; 32];
                     arr.copy_from_slice(&result);

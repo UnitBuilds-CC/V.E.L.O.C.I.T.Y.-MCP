@@ -66,15 +66,15 @@ fn convert_csv(file_path: &str) -> Result<Vec<u8>, String> {
         let cells: Vec<&str> = rows[r_idx].split(',').collect();
         compiler.add_command(3, 0x222530FF, 20, current_y.saturating_sub(18), 600, 1, "");
 
-        for c_idx in 0..std::cmp::min(cells.len(), 4) {
-            let cell_val = cells[c_idx].trim();
+        for (c_idx, cell) in cells.iter().take(4).enumerate() {
+            let cell_val = cell.trim();
             let cell_id = format!("{}_R{}C{}", sheet_id, r_idx, c_idx);
 
             compiler.add_triple(&sheet_id, "HAS_CELL", &cell_id);
             compiler.add_triple(&cell_id, "COORDINATE", &format!("{}{}", (b'A' + c_idx as u8) as char, r_idx + 1));
             compiler.add_triple(&cell_id, "VALUE", cell_val);
 
-            let cell_x: u16 = (30 + c_idx as u16 * col_width).min(65535);
+            let cell_x: u16 = 30 + c_idx as u16 * col_width;
 
             if r_idx == 0 {
                 let h = ((rows.len() as u16).min(15)) * row_height;
@@ -135,10 +135,10 @@ fn convert_xlsx(file_path: &str) -> Result<Vec<u8>, String> {
             compiler.add_triple(&cell_id, "COORDINATE", &coord);
             compiler.add_triple(&cell_id, "VALUE", &cell_val);
 
-            let cell_x: u16 = (30 + c as u16 * col_width).min(65535);
+            let cell_x: u16 = 30 + c as u16 * col_width;
 
             if r == 0 {
-                compiler.add_command(3, 0x00E5FFFF, cell_x.saturating_sub(5), 60, 1, (15 * row_height) as u16, "");
+                compiler.add_command(3, 0x00E5FFFF, cell_x.saturating_sub(5), 60, 1, 15 * row_height, "");
             }
 
             let color = if r == 0 {
@@ -638,7 +638,7 @@ fn convert_binary(file_path: &str) -> Result<Vec<u8>, String> {
             if idx < bytes.len() {
                 hex_parts.push_str(&format!("{:02X} ", bytes[idx]));
                 let ch = bytes[idx];
-                ascii_parts.push(if ch >= 32 && ch <= 126 { ch as char } else { '.' });
+                ascii_parts.push(if (32..=126).contains(&ch) { ch as char } else { '.' });
             } else {
                 hex_parts.push_str("   ");
             }

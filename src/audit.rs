@@ -42,6 +42,12 @@ pub struct AuditLog {
     entries: std::sync::Mutex<Vec<AuditEntry>>,
 }
 
+impl Default for AuditLog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AuditLog {
     /// Create a new audit log.
     pub fn new() -> Self {
@@ -107,6 +113,11 @@ impl AuditLog {
         }
     }
 
+    /// Returns true if the audit log contains no entries.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Clear all entries.
     pub fn clear(&self) {
         match self.entries.lock() {
@@ -118,7 +129,7 @@ impl AuditLog {
 
 /// Global audit log instance.
 static GLOBAL_AUDIT: std::sync::LazyLock<AuditLog> =
-    std::sync::LazyLock::new(|| AuditLog::new());
+    std::sync::LazyLock::new(AuditLog::default);
 
 /// Get a reference to the global audit log.
 pub fn global_audit() -> &'static AuditLog {

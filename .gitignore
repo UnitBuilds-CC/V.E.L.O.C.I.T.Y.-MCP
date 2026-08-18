@@ -16,9 +16,3 @@ desktop.ini
 # Test artifacts
 *.bin
 *.exe
-
-# Proptest regression files
-tests/*.proptest-regressions
-
-# Qoder project files
-.qoder/

@@ -24,6 +24,12 @@ pub struct RateLimiter {
     rate: u32,
 }
 
+impl Default for RateLimiter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RateLimiter {
     /// Create a new rate limiter with default settings (20 tokens/sec, burst 100).
     pub fn new() -> Self {
@@ -76,7 +82,7 @@ impl RateLimiter {
         let elapsed_ms = now - last;
 
         // Calculate new tokens to add
-        let new_tokens_scaled = (elapsed_ms as u64) * (self.rate as u64); // tokens * 1000 / 1000ms
+        let new_tokens_scaled = elapsed_ms * (self.rate as u64); // tokens * 1000 / 1000ms
 
         // Try to update the refill timestamp (only one thread wins)
         if self
@@ -119,7 +125,7 @@ fn current_time_ms() -> u64 {
 
 /// Global rate limiter instance.
 static GLOBAL_RATE_LIMITER: std::sync::LazyLock<RateLimiter> =
-    std::sync::LazyLock::new(|| RateLimiter::new());
+    std::sync::LazyLock::new(RateLimiter::default);
 
 /// Check if a tool call is allowed by the global rate limiter.
 pub fn check_rate_limit() -> bool {

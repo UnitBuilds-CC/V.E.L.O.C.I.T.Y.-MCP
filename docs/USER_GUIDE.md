@@ -25,7 +25,6 @@ A complete guide to installing, configuring, and using the V.E.L.O.C.I.T.Y. NMCP
 ### Prerequisites
 
 - **Rust toolchain** (rustc 1.70+, cargo) — [Install via rustup](https://rustup.rs/)
-- **C# NdaMcpServer executable** — Required for tool execution. The server delegates all tool operations to this C# engine.
 - **Windows** — The server uses Windows-specific file paths and memory-mapped files.
 
 ### Building from Source
@@ -139,17 +138,17 @@ Server → Client (stdout): {"jsonrpc":"2.0","id":1,"result":{...}}
 
 ### Dynamic Tool Hosting
 
-The V.E.L.O.C.I.T.Y. server is a **self-hosting MCP server** that automatically discovers and hosts tools from the C# backend engine. When a client sends a `tools/list` request:
+The V.E.L.O.C.I.T.Y. server provides four **built-in NDA tools** implemented natively in Rust, and can also automatically discover additional tools from a C# backend engine. When a client sends a `tools/list` request:
 
-1. The server queries the C# engine for its available tools
-2. Results are cached for subsequent requests
-3. Built-in NDA tools are merged with discovered tools (deduplicated)
-4. All tool calls are routed to the C# engine for execution
+1. The server returns the 4 built-in NDA tools (always available)
+2. It queries the C# engine for additional tools (if present)
+3. Results are cached for subsequent requests
+4. Built-in and discovered tools are merged (deduplicated by name)
 
 **What this means for users:**
-- Add a tool to the C# engine → it's immediately available through the Rust server
-- No configuration or restart needed
-- The Rust server provides high-performance protocol handling while the C# engine handles tool logic
+- The 4 core NDA tools run natively in Rust — no external process needed
+- Additional tools from the C# engine are immediately available through the Rust server
+- The Rust server provides high-performance protocol handling and native NDA operations
 
 ### Built-in NDA Tools
 
@@ -630,14 +629,14 @@ Both modes support the `health/check` JSON-RPC method for monitoring.
 
 ```json
 → {"jsonrpc":"2.0","method":"health/check","id":1}
-← {"jsonrpc":"2.0","id":1,"result":{"status":"healthy","mode":"stdio","version":"1.0.0"}}
+← {"jsonrpc":"2.0","id":1,"result":{"status":"healthy","mode":"stdio","version":"2.0.0"}}
 ```
 
 ### Shared Memory Mode
 
 ```json
 → {"jsonrpc":"2.0","method":"health/check","id":1}
-← {"jsonrpc":"2.0","id":1,"result":{"status":"healthy","mode":"shmem","version":"1.0.0","buffer_path":"nmcp_buffer.bin"}}
+← {"jsonrpc":"2.0","id":1,"result":{"status":"healthy","mode":"shmem","version":"2.0.0","buffer_path":"nmcp_buffer.bin"}}
 ```
 
 Use health checks to verify the server is responsive before sending tool calls, or for periodic monitoring in production deployments.
@@ -655,7 +654,7 @@ The server uses structured logging via the `tracing` crate. Set the log level wi
 | `error` | Only errors (tool failures, process crashes) |
 | `warn` | Errors + warnings (unknown methods, path rejections) |
 | `info` | Errors + warnings + info (startup, tool dispatch, shutdown) — **default** |
-| `debug` | All above + debug (per-request method names, C# delegation details) |
+| `debug` | All above + debug (per-request method names, tool dispatch details) |
 | `trace` | Maximum verbosity |
 
 ### Examples
@@ -922,7 +921,7 @@ A: In stdio mode, each client needs its own server process (one stdin/stdout pai
 
 ### Q: What happens if the C# engine crashes?
 
-A: The server captures stderr from the child process and returns an error response to the MCP client. The error includes the child's exit status and stderr output.
+A: The server captures stderr from child processes and returns an error response to the MCP client. The error includes the child's exit status and stderr output. For built-in NDA tools, errors are handled natively in Rust.
 
 ### Q: How do I update the server?
 
@@ -930,15 +929,15 @@ A: Rebuild from source with `cargo build --release` and replace the executable. 
 
 ### Q: Can I add custom tools?
 
-A: Tools are defined in `src/registry.rs`. Add a new `Tool` entry to `get_tools()` and a new match arm in `call_tool_with_csharp_path()`. The tool must be supported by the C# engine.
+A: Tools are defined in `src/registry.rs`. Add a new `Tool` entry to `get_tools()` and a new match arm in `call_tool_with_csharp_path()`. Built-in NDA tools (convert_to_nda_document, read_nda, etc.) are implemented natively in Rust.
 
 ### Q: Is the server compatible with Linux or macOS?
 
-A: The server is designed for Windows. The shared memory mode uses Windows file-based memory mapping. The stdio mode may work on other platforms with the Rust toolchain, but the C# engine path defaults and file path validation assume Windows paths.
+A: The server is designed for Windows. The shared memory mode uses Windows file-based memory mapping. The stdio mode may work on other platforms with the Rust toolchain, but file path validation assumes Windows paths.
 
 ### Q: What's the maximum file size that can be converted?
 
-A: The file size is limited by the C# engine's capabilities, not the Rust server. The Rust server passes the file path to the C# engine without reading the file itself.
+A: For built-in NDA tools, file size is limited by available memory. For C# engine tools, the file size is limited by the C# engine's capabilities — the server passes the file path without reading the file itself.
 
 ### Q: How do I enable verbose logging?
 
