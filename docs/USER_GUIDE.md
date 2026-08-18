@@ -45,7 +45,7 @@ cargo build --release
 ### Verifying the Build
 
 ```bash
-# Run the test suite (46 tests)
+# Run the test suite (146 tests)
 cargo test
 
 # Run the benchmark suite
@@ -730,24 +730,97 @@ The binary parser is **208x faster** than JSON parsing because it performs zero-
 
 ## 9. Security Model
 
+The V.E.L.O.C.I.T.Y. server implements 12 defense layers providing comprehensive protection for a local MCP server.
+
+### Defense Layers
+
+| # | Layer | Description |
+|---|-------|-------------|
+| 1 | **Input Validation** | Bounds-checked NDA parser, spec-compliant XML (quick-xml), path traversal rejection |
+| 2 | **Capability-Based Sandbox** | Restricted profile: no network, filesystem isolated to work dir, 6 approved interpreters |
+| 3 | **OS-Level Resource Limits** | Windows Job Object memory cap (256 MB) for sandboxed processes |
+| 4 | **Execution Timeout** | 30-second hard deadline with process kill |
+| 5 | **Output Size Limits** | stdout: 1 MB, stderr: 256 KB — prevents OOM from runaway output |
+| 6 | **Ed25519 Signatures** | Sign and verify NDA documents for authenticity and tamper detection |
+| 7 | **Merkle Tree Integrity** | SHA-256 root verification of NDA binary content |
+| 8 | **Rate Limiting** | Token bucket: 20 req/sec, burst 100 — prevents abuse |
+| 9 | **Audit Logging** | 10K entry ring buffer, poisoning-tolerant mutex, global instance |
+| 10 | **Error Sanitization** | Strips internal paths (Win/Unix), truncates at 500 chars |
+| 11 | **Dependency Audit** | 0 vulnerabilities across 95 crate dependencies (`cargo audit`) |
+| 12 | **CI/CD Automation** | GitHub Actions: build + test + cargo audit on every push/PR |
+
 ### Path Validation
 
 All file paths provided to tools are validated before execution:
 
 | Check | Rejects | Example |
-|-------|---------|---------|
+|-------|---------|--------|
 | Empty path | `""` | Missing parameter |
 | Relative path | `"documents\file.nda"` | Not anchored to a drive |
 | Path traversal | `"C:\Users\..\..\Windows\System32"` | Directory traversal attack |
 | Must be absolute | `"./relative/file"` | Relative with `./` prefix |
 
-### Process Isolation
+### Capability-Based Sandbox
 
-- Tool execution is delegated to a separate C# child process
-- Each tool call spawns a new process with piped stdin/stdout/stderr
-- A 30-second timeout prevents hung processes
-- Timed-out processes are killed (`SIGKILL`) and reaped to prevent orphans
-- The child process runs with the same permissions as the server process
+All NDA execution goes through a capability-based sandbox adapted from Velocity-IDE's TabSandbox:
+
+**ProcessCapabilities (restricted profile):**
+- No network access
+- File system isolated to sandbox temp directory
+- 6 approved interpreters: python, node, powershell, bash, cmd.exe, dotnet
+- Binary payload execution allowed
+- 256 MB memory cap via Windows Job Objects
+
+**Violation tracking:**
+- Categories: FileSystem, Network, Interpreter, Memory, Timeout
+- All violations logged to the global audit trail
+- Each violation records category, detail, and timestamp
+
+### Ed25519 NDA Signatures
+
+NDA documents support cryptographic signing for authenticity:
+
+- **Signing**: `compile_signed()` signs the entire NDA binary with an Ed25519 key
+- **Verification**: `verify_signature()` authenticates the document and detects tampering
+- **Backward compatible**: Unsigned documents still parse correctly
+- **Status reporting**: `read_nda` shows signature status: VERIFIED / UNSIGNED / FAILED
+
+The signature section (100 bytes) is appended after the string pool:
+- 4 bytes: signature length
+- 64 bytes: Ed25519 signature
+- 32 bytes: public key
+
+### Merkle Tree Integrity
+
+Every NDA document contains a SHA-256 Merkle tree root in its header:
+- Each leaf is hashed from `"S|P|O"` (subject|predicate|object)
+- Pair-wise hashing builds up to the root
+- `verify_merkle()` recomputes and compares against the header
+- Detects any content modification
+
+### Rate Limiting
+
+Token bucket rate limiter protects against abuse:
+- 20 tokens per second refill rate
+- Burst capacity: 100 tokens
+- Exceeded requests receive a clear error message
+- Global across all tool calls
+
+### Audit Logging
+
+Every tool execution is recorded in a global audit log:
+- Ring buffer: 10,000 entries maximum
+- Each entry: sequence number, timestamp, tool name, duration, outcome
+- Poisoning-tolerant mutex (recovers from panics in other threads)
+- `recent(N)` retrieves the N most recent entries
+
+### Error Sanitization
+
+Error messages are sanitized before being returned to clients:
+- Windows paths (`C:\Users\...`) stripped to `<path>`
+- Unix paths (`/home/...`, `/etc/...`) stripped to `<path>`
+- Long errors truncated at 500 characters
+- Prevents leaking internal file system structure
 
 ### Input Size Limits
 
@@ -756,6 +829,16 @@ All file paths provided to tools are validated before execution:
 | Max JSON-RPC request size (stdio) | 1 MB | Rejected with parse error before JSON parsing |
 | Max shared memory input | 4,086 bytes | Rejected with buffer overflow error |
 | Max shared memory output | 61,440 bytes | Rejected with buffer overflow error |
+| Max captured stdout | 1 MB | Truncated to prevent OOM |
+| Max captured stderr | 256 KB | Truncated to prevent OOM |
+| Max process memory | 256 MB | Windows Job Object limit |
+
+### Testing and Verification
+
+146 tests verify all security layers:
+- **109 unit tests**: Parser bounds checking, sandbox capabilities, signature verification
+- **27 integration tests**: 15 adversarial tests covering path traversal, network blocking, XML attacks, tamper detection
+- **10 property-based fuzz tests**: 2,250+ random cases proving parser never panics and signatures always verify
 
 ### Recommendations
 
@@ -763,6 +846,7 @@ All file paths provided to tools are validated before execution:
 - Set `VELOCITY_CSHARP_PATH` to a trusted, integrity-verified executable
 - Do not expose the server's stdin to untrusted network input without additional validation
 - In shared memory mode, restrict buffer file permissions to the server and trusted host processes
+- Run `cargo audit` periodically to check for dependency vulnerabilities
 
 ---
 

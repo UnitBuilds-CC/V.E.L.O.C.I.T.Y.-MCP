@@ -24,4 +24,4 @@ pub mod audit;
 pub mod rate_limit;
 
 /// Server version string.
-pub const VERSION: &str = "1.0.0";
+pub const VERSION: &str = "2.0.0";

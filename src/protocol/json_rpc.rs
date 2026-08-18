@@ -232,7 +232,7 @@ mod tests {
         assert_eq!(res["id"], 1);
         assert_eq!(res["result"]["protocolVersion"], "2024-11-05");
         assert_eq!(res["result"]["serverInfo"]["name"], "velocity-mcp-rust-server");
-        assert_eq!(res["result"]["serverInfo"]["version"], "1.0.0");
+        assert_eq!(res["result"]["serverInfo"]["version"], crate::VERSION);
         assert!(res["result"]["capabilities"]["tools"].is_object());
     }
 
@@ -288,7 +288,7 @@ mod tests {
         let res = handle_request(&req).unwrap();
         assert_eq!(res["result"]["status"], "healthy");
         assert_eq!(res["result"]["mode"], "stdio");
-        assert_eq!(res["result"]["version"], "1.0.0");
+        assert_eq!(res["result"]["version"], crate::VERSION);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 [package]
 name = "velocity_mcp"
-version = "1.0.0"
+version = "2.0.0"
 edition = "2021"
 authors = ["UnitBuilds <ian@unitbuilds.com>"]
 description = "A high-performance, zero-allocation Model Context Protocol (MCP) server in Rust"
