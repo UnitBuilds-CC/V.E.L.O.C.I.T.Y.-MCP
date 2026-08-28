@@ -44,7 +44,7 @@ cargo build --release
 ### Verifying the Build
 
 ```bash
-# Run the test suite (146 tests)
+# Run the test suite (172 tests)
 cargo test
 
 # Run the benchmark suite
@@ -129,8 +129,13 @@ Server → Client (stdout): {"jsonrpc":"2.0","id":1,"result":{...}}
 **Initialization sequence:**
 1. Send `initialize` — receive server capabilities and version
 2. Send `notifications/initialized` — confirm initialization (no response)
-3. Send `tools/list` — discover available tools
+3. Send `tools/list` — discover available tools (supports cursor pagination)
 4. Send `tools/call` — invoke a tool
+
+**Additional methods (MCP spec compliant):**
+- `ping` — keepalive check, returns empty result
+- `logging/setLevel` — set server log verbosity (`debug`, `info`, `warning`, `error`)
+- `notifications/cancelled` — cancel an in-flight request by ID
 
 ---
 
@@ -580,6 +585,26 @@ Offset      Size     Field
 4096–65535  61440 B  Output response buffer
 ```
 
+### Wire Formats
+
+The server auto-detects the wire format by checking the first 4 bytes of the input buffer:
+
+**NDA-native** (starts with `NMCP`):
+```
+[4 bytes: magic "NMCP"]
+[32 bytes: Merkle root (SHA-256 of payload)]
+[1 byte:  method type]
+[TLV:     request id]
+[TLV:     method-specific data]
+```
+Method types: `0x01`=initialize, `0x02`=tools/list, `0x03`=tools/call, `0x04`=ping, `0x05`=logging/setLevel, `0x06`=health/check.
+
+**JSON-RPC** (anything else): Standard JSON-RPC v2.0 string, backwards-compatible with existing clients.
+
+### Win32 Event Signaling
+
+On Windows, the server uses `CreateEventW`/`WaitForSingleObject`/`SetEvent` for zero-poll blocking waits. Events are named `Global\VELOCITY_NMCP_REQ_{buffer}` and `Global\VELOCITY_NMCP_RES_{buffer}`. The host signals the request event after writing a request; the server signals the response event after writing a response. This replaces polling with instant wake-up.
+
 ### State Machine Protocol
 
 ```
@@ -598,13 +623,14 @@ Offset      Size     Field
 ### Host Integration Steps
 
 1. **Create/open** the buffer file at the agreed path
-2. **Write** your JSON-RPC request string into the input buffer (offset 10)
+2. **Write** your request into the input buffer (offset 10) — either JSON-RPC string or NDA binary frame
 3. **Set** the input length field (offset 1, u32 LE)
 4. **Set** state to `1` (REQ_READY) with a Release store
-5. **Poll** the state byte until it reads `3` (RES_READY) with an Acquire load
-6. **Read** the output length field (offset 5, u32 LE)
-7. **Read** the response string from the output buffer (offset 4096)
-8. **Set** state back to `0` (IDLE) or `1` (REQ_READY) for the next request
+5. **Signal** the request event (`Global\VELOCITY_NMCP_REQ_{buffer}`) on Windows, or wait for the server to pick up the request
+6. **Wait** for the response event (`Global\VELOCITY_NMCP_RES_{buffer}`) on Windows, or poll the state byte until it reads `3` (RES_READY) with an Acquire load
+7. **Read** the output length field (offset 5, u32 LE)
+8. **Read** the response from the output buffer (offset 4096)
+9. **Set** state back to `0` (IDLE) or `1` (REQ_READY) for the next request
 
 ### Synchronization Requirements
 
@@ -629,14 +655,14 @@ Both modes support the `health/check` JSON-RPC method for monitoring.
 
 ```json
 → {"jsonrpc":"2.0","method":"health/check","id":1}
-← {"jsonrpc":"2.0","id":1,"result":{"status":"healthy","mode":"stdio","version":"2.0.0"}}
+← {"jsonrpc":"2.0","id":1,"result":{"status":"healthy","mode":"stdio","version":"3.0.0"}}
 ```
 
 ### Shared Memory Mode
 
 ```json
 → {"jsonrpc":"2.0","method":"health/check","id":1}
-← {"jsonrpc":"2.0","id":1,"result":{"status":"healthy","mode":"shmem","version":"2.0.0","buffer_path":"nmcp_buffer.bin"}}
+← {"jsonrpc":"2.0","id":1,"result":{"status":"healthy","mode":"shmem","version":"3.0.0","buffer_path":"nmcp_buffer.bin"}}
 ```
 
 Use health checks to verify the server is responsive before sending tool calls, or for periodic monitoring in production deployments.
@@ -647,7 +673,14 @@ Use health checks to verify the server is responsive before sending tool calls, 
 
 ### Log Levels
 
-The server uses structured logging via the `tracing` crate. Set the log level with the `RUST_LOG` environment variable:
+The server uses structured logging via the `tracing` crate. Set the log level with the `RUST_LOG` environment variable or dynamically via the `logging/setLevel` MCP method:
+
+**Dynamic (MCP method):**
+```json
+{"jsonrpc":"2.0","method":"logging/setLevel","params":{"level":"debug"},"id":1}
+```
+
+**Environment variable:**
 
 | Level | Usage |
 |-------|-------|
@@ -834,10 +867,10 @@ Error messages are sanitized before being returned to clients:
 
 ### Testing and Verification
 
-146 tests verify all security layers:
-- **109 unit tests**: Parser bounds checking, sandbox capabilities, signature verification
+172 tests verify all security layers:
+- **128 unit tests**: Parser bounds checking, sandbox capabilities, signature verification, NDA-native protocol, MCP spec compliance
 - **27 integration tests**: 15 adversarial tests covering path traversal, network blocking, XML attacks, tamper detection
-- **10 property-based fuzz tests**: 2,250+ random cases proving parser never panics and signatures always verify
+- **17 property-based fuzz tests**: 3,400+ random cases proving parser never panics, signatures always verify, NDA frames resist tampering and truncation
 
 ### Recommendations
 
@@ -899,7 +932,7 @@ set VELOCITY_CSHARP_PATH=C:\correct\path\to\NdaMcpServer.exe
 
 **Cause:** The requested method is not supported by this server.
 
-**Supported methods:** `initialize`, `notifications/initialized`, `tools/list`, `tools/call`, `health/check`
+**Supported methods:** `initialize`, `notifications/initialized`, `notifications/cancelled`, `ping`, `logging/setLevel`, `tools/list`, `tools/call`, `health/check`
 
 ### Graceful shutdown not working
 
@@ -913,7 +946,7 @@ set VELOCITY_CSHARP_PATH=C:\correct\path\to\NdaMcpServer.exe
 
 ### Q: What MCP protocol version does this server support?
 
-A: Protocol version `2024-11-05`. The server reports this in the `initialize` response.
+A: Protocol version `2024-11-05`. The server reports this in the `initialize` response. The server supports `ping`, `logging/setLevel`, `notifications/cancelled`, and cursor pagination on `tools/list`.
 
 ### Q: Can I use this server with multiple MCP clients simultaneously?
 

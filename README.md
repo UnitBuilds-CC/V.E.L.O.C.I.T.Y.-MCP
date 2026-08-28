@@ -1,9 +1,9 @@
 # V.E.L.O.C.I.T.Y. Neural Model Context Protocol (NMCP) Server
 
 [![CI](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/actions/workflows/ci.yml/badge.svg)](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/releases)
+[![Version](https://img.shields.io/badge/version-3.0.0-blue.svg)](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/releases)
 [![License](https://img.shields.io/badge/license-MIT%20|%20Apache%202.0-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-146%20passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-172%20passing-brightgreen.svg)]()
 [![Dependencies](https://img.shields.io/badge/dependencies-95%20crates%20|%200%20vulns-brightgreen.svg)]()
 
 A high-performance, production-hardened Model Context Protocol (MCP) server written in Rust. Designed to replace slow, bloated Node.js/Python MCP servers with a highly optimized, self-contained executable.
@@ -23,9 +23,15 @@ The server uses a **native Rust architecture** with all NDA (Neural Document Arc
 | **Stdio JSON-RPC v2.0** (`--mode stdio`) | Standard input/output | Compatible with MCP clients (Claude Desktop, Cursor, IDE plugins) |
 | **Shared Memory** (`--mode shmem`) | Memory-mapped file IPC | Zero-copy, lowest-latency communication for custom hosts |
 
-**Stdio mode** uses a reader thread + channel architecture so that stdin reads never block shutdown checks. Requests are parsed, validated, and dispatched natively.
+**Stdio mode** uses a reader thread + channel architecture so that stdin reads never block shutdown checks. Full MCP spec compliance: `ping`, `logging/setLevel`, `notifications/cancelled`, cursor pagination on `tools/list`.
 
-**Shared memory mode** uses a 64 KB memory-mapped file with a state machine protocol (Idle → Request Ready → Processing → Response Ready). Cross-process synchronization uses `AtomicU8` with Acquire/Release ordering on the state byte and `SeqCst` fences on length fields to ensure correct visibility across processes on x86_64.
+**Shared memory mode** supports two wire formats with auto-detection:
+- **NDA-native** (binary): Frames with `NMCP` magic + SHA-256 Merkle root + TLV-encoded payloads. Zero JSON parsing on the hot path.
+- **JSON-RPC** (backwards-compatible): Standard JSON-RPC strings for existing clients.
+
+The server detects the frame type by checking for the `NMCP` magic bytes. NDA-native frames bypass JSON serialization entirely — method types are single bytes, arguments use TLV binary encoding, and Merkle roots verify integrity.
+
+Cross-process synchronization uses `AtomicU8` with Acquire/Release ordering on the state byte, `SeqCst` fences on length fields, and **Win32 Events** (`CreateEventW`/`WaitForSingleObject`/`SetEvent`) for zero-poll blocking waits on Windows.
 
 ---
 
@@ -84,14 +90,14 @@ All NDA execution goes through a capability-based sandbox (adapted from Velocity
 
 ## Testing
 
-**146 tests** across 4 test suites — 0 failures, 0 warnings:
+**172 tests** across 4 test suites — 0 failures:
 
 | Suite | Tests | Coverage |
 |-------|:-----:|----------|
-| Unit tests | 109 | Parser, sandbox, signatures, Merkle, rate limiter, audit, error sanitization |
+| Unit tests | 128 | Parser, sandbox, signatures, Merkle, rate limiter, audit, error sanitization, NDA-native protocol, MCP spec compliance |
 | Integration tests | 27 | Full pipeline, path validation, registry dispatch, 15 adversarial tests |
-| Property-based fuzz (proptest) | 10 | 2,250+ random cases: round-trips, random bytes, Unicode, signature corruption |
-| **Total** | **146** | |
+| Property-based fuzz (proptest) | 17 | 3,400+ random cases: round-trips, random bytes, Unicode, signature corruption, NDA-native frame integrity, TLV encoding, Merkle tampering, truncation |
+| **Total** | **172** | |
 
 ### Adversarial Tests
 
@@ -221,14 +227,29 @@ The shared memory buffer is a 64 KB memory-mapped file with the following layout
 | 10–4095 | 4086 bytes | Input request buffer |
 | 4096–65535 | 61440 bytes | Output response buffer |
 
+### Wire Formats
+
+The server auto-detects the wire format by checking the first 4 bytes of the input buffer:
+
+**NDA-native** (starts with `NMCP`):
+```
+[4 bytes: magic "NMCP"]
+[32 bytes: Merkle root (SHA-256 of payload)]
+[1 byte:  method type (0x01=initialize, 0x02=tools/list, 0x03=tools/call, 0x04=ping, ...)]
+[TLV:     request id]
+[TLV:     method-specific data]
+```
+
+**JSON-RPC** (anything else): Standard JSON-RPC v2.0 string.
+
 ### Synchronization Protocol
 
 ```
-WRITER: write data → write length → SeqCst fence → set state (Release)
-READER: read state (Acquire) → SeqCst fence → read length → read data
+WRITER: write data → write length → SeqCst fence → set state (Release) → signal event
+READER: wait for event → read state (Acquire) → SeqCst fence → read length → read data
 ```
 
-The Acquire/Release pair on the state byte combined with SeqCst fences ensures that length field writes are globally visible before state transitions, and that the reader observes the correct length after observing the state change.
+On Windows, `CreateEventW`/`WaitForSingleObject`/`SetEvent` provide zero-poll blocking waits. On other platforms, a 100μs sleep fallback is used. The Acquire/Release pair on the state byte combined with SeqCst fences ensures that length field writes are globally visible before state transitions.
 
 ---
 
@@ -263,7 +284,7 @@ The zero-allocation binary parser processes frames at 3.06 ns (208x faster than 
 ├── src/
 │   ├── lib.rs               # Library crate root (public API, VERSION constant)
 │   ├── main.rs              # CLI entry point, arg parsing, shutdown
-│   ├── registry.rs          # Tool registration, dispatch, path validation
+│   ├── registry.rs          # Tool registration, dispatch, path validation, TLV encoding
 │   ├── nda_document.rs      # NDA binary format (compile, read, Merkle tree, Ed25519 signatures)
 │   ├── nda_converter.rs     # File-to-NDA converters (CSV, XLSX, DOCX, PDF, Image, Code, Binary)
 │   ├── nda_executor.rs      # NDA payload execution (BinaryPayload, SourceCode)
@@ -273,14 +294,15 @@ The zero-allocation binary parser processes frames at 3.06 ns (208x faster than 
 │   ├── benchmark.rs         # Performance benchmark suite
 │   ├── ipc/
 │   │   ├── mod.rs           # IPC module
-│   │   └── shmem.rs         # Memory-mapped buffer, atomic state machine
+│   │   └── shmem.rs         # Memory-mapped buffer, atomic state machine, Win32 Events
 │   └── protocol/
 │       ├── mod.rs           # Protocol module
-│       ├── json_rpc.rs      # Stdio JSON-RPC handler
-│       └── nmcp_binary.rs   # Shared memory protocol loop + binary parser
+│       ├── json_rpc.rs      # Stdio JSON-RPC handler (MCP spec compliant)
+│       ├── nmcp_binary.rs   # Shared memory protocol loop (auto-detect NDA/JSON)
+│       └── nda_native.rs    # NDA-native binary protocol (frames, TLV, Merkle)
 ├── tests/
 │   ├── integration.rs       # Cross-module integration + adversarial tests (27 tests)
-│   └── fuzz_tests.rs        # Property-based fuzz tests with proptest (10 tests)
+│   └── fuzz_tests.rs        # Property-based fuzz tests with proptest (17 tests)
 ├── .github/
 │   └── workflows/
 │       ├── ci.yml           # GitHub Actions CI (build, test, audit, fuzz)
@@ -303,14 +325,14 @@ Two GitHub Actions workflows run automatically:
 
 | Workflow | Trigger | Description |
 |----------|---------|-------------|
-| **CI** (`ci.yml`) | Every push/PR to `main` | Build + run all 146 tests + cargo audit + fuzz tests |
+| **CI** (`ci.yml`) | Every push/PR to `main` | Build + run all 172 tests + cargo audit + fuzz tests |
 | **Release** (`release.yml`) | Version tags (`v*`) | Build release binary + test + audit + create GitHub Release |
 
 Three CI jobs run on every push:
 
 | Job | Description |
 |-----|-------------|
-| **Build & Test** | Compile + run all 146 tests on Windows |
+| **Build & Test** | Compile + run all 172 tests on Windows |
 | **Security Audit** | `cargo audit` for dependency vulnerabilities |
 | **Fuzz Tests** | Run all proptest property-based tests |
 

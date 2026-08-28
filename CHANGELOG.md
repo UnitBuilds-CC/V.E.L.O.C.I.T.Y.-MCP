@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.0.0] — 2026-08-28
+
+### Added
+
+- **NDA-native binary protocol**: Shared memory transport now supports NDA binary frames (`NMCP` magic + SHA-256 Merkle root + TLV-encoded payloads) as the native wire format. Zero JSON parsing on the hot path. Auto-detects NDA vs JSON frames for backwards compatibility.
+- **MCP spec compliance**: `ping`, `logging/setLevel`, `notifications/cancelled`, cursor pagination on `tools/list`, `tools.listChanged` capability advertisement. Server now fully compliant with MCP protocol version 2024-11-05.
+- **Win32 Event IPC**: `CreateEventW`/`WaitForSingleObject`/`SetEvent` for zero-poll blocking waits on Windows. Replaces 100μs polling sleep with instant event signaling. `Drop` impl for handle cleanup. Non-Windows platforms use 100μs sleep fallback.
+- **NDA-native fuzz tests**: 7 new property-based tests (1,700+ cases): random payload resilience, Merkle tampering, TLV round-trip for arbitrary JSON, truncation safety, frame detection correctness, request/response round-trips.
+- **Cancellation support**: Pre- and post-execution cancellation checks via `notifications/cancelled` tracking.
+
+### Changed
+
+- **Shared memory protocol**: Auto-detects NDA-native vs JSON-RPC frames by checking for `NMCP` magic bytes. Both formats supported simultaneously.
+- **Initialize response**: Now advertises `tools.listChanged: true` and `logging` capability.
+- **Test count**: 146 → 172 tests (128 unit + 27 integration + 17 fuzz).
+- **Version**: 2.0.0 → 3.0.0.
+
+### Security
+
+- NDA-native frames verified with SHA-256 Merkle roots — any payload tampering detected.
+- TLV decoder enforces depth limit (32), max string length (10 MB), max element count (100K).
+- Cancellation tracker uses poisoning-tolerant mutex.
+
+---
+
 ## [2.0.0] — 2026-08-18
 
 ### Added
@@ -57,5 +82,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Path validation**: Rejects empty, relative, and traversal paths.
 - **46 tests**: 34 unit + 12 integration.
 
+[3.0.0]: https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/releases/tag/v1.0.0

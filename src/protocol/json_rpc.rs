@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 use std::io::{self, BufRead};
 use std::error::Error;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
+use std::sync::{mpsc, Mutex};
 use std::thread;
 use std::time::Instant;
 use tracing::{info, warn, debug, error};
@@ -10,12 +10,27 @@ use crate::registry;
 use crate::audit::{self, AuditOutcome};
 use crate::rate_limit;
 
-/// Maximum allowed request size in bytes (1 MB).
-/// Requests exceeding this limit are rejected before JSON parsing.
 const MAX_REQUEST_SIZE: usize = 1_048_576;
+const DEFAULT_PAGE_SIZE: usize = 100;
 
-/// Process a single JSON-RPC request and return the response.
-/// Returns None for notifications (no response needed).
+static LOG_LEVEL: Mutex<tracing::Level> = Mutex::new(tracing::Level::INFO);
+
+static CANCELLED_IDS: Mutex<Vec<Value>> = Mutex::new(Vec::new());
+
+pub fn is_cancelled(id: &Value) -> bool {
+    if let Ok(ids) = CANCELLED_IDS.lock() {
+        ids.iter().any(|cid| cid == id)
+    } else {
+        false
+    }
+}
+
+fn remove_cancelled(id: &Value) {
+    if let Ok(mut ids) = CANCELLED_IDS.lock() {
+        ids.retain(|cid| cid != id);
+    }
+}
+
 pub fn handle_request(request: &Value) -> Option<Value> {
     let method = request["method"].as_str().unwrap_or("");
     let id = &request["id"];
@@ -24,13 +39,19 @@ pub fn handle_request(request: &Value) -> Option<Value> {
 
     match method {
         "initialize" => {
+            let client_name = request["params"]["clientInfo"]["name"].as_str().unwrap_or("unknown");
+            let client_version = request["params"]["clientInfo"]["version"].as_str().unwrap_or("unknown");
+            info!(client = client_name, version = client_version, "Client initializing");
             Some(json!({
                 "jsonrpc": "2.0",
                 "id": id,
                 "result": {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {
-                        "tools": {}
+                        "tools": {
+                            "listChanged": true
+                        },
+                        "logging": {}
                     },
                     "serverInfo": {
                         "name": "velocity-mcp-rust-server",
@@ -41,23 +62,101 @@ pub fn handle_request(request: &Value) -> Option<Value> {
         }
         "notifications/initialized" => {
             debug!("Client confirmed initialization");
-            None // Notification — no response
+            None
         }
-        "tools/list" => {
-            let tools = registry::get_tools();
+        "notifications/cancelled" => {
+            let request_id = &request["params"]["requestId"];
+            if !request_id.is_null() {
+                if let Ok(mut ids) = CANCELLED_IDS.lock() {
+                    ids.push(request_id.clone());
+                }
+                let reason = request["params"]["reason"].as_str().unwrap_or("");
+                debug!(request_id = %request_id, reason = reason, "Request cancelled by client");
+            }
+            None
+        }
+        "ping" => {
             Some(json!({
                 "jsonrpc": "2.0",
                 "id": id,
-                "result": {
-                    "tools": tools
+                "result": {}
+            }))
+        }
+        "logging/setLevel" => {
+            let level_str = request["params"]["level"].as_str().unwrap_or("info");
+            let level = match level_str {
+                "debug" => tracing::Level::DEBUG,
+                "info" => tracing::Level::INFO,
+                "notice" | "warning" => tracing::Level::WARN,
+                "error" => tracing::Level::ERROR,
+                "critical" | "alert" | "emergency" => tracing::Level::ERROR,
+                _ => {
+                    return Some(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": {
+                            "code": -32602,
+                            "message": format!("Invalid log level: '{}'", level_str)
+                        }
+                    }));
                 }
+            };
+            if let Ok(mut current) = LOG_LEVEL.lock() {
+                *current = level;
+            }
+            info!(level = level_str, "Log level changed");
+            Some(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {}
+            }))
+        }
+        "tools/list" => {
+            let all_tools = registry::get_tools();
+            let cursor = request["params"]["cursor"].as_str();
+            let start = match cursor {
+                Some(c) => c.parse::<usize>().unwrap_or(0),
+                None => 0,
+            };
+            let end = (start + DEFAULT_PAGE_SIZE).min(all_tools.len());
+            let page_tools = if start < all_tools.len() {
+                &all_tools[start..end]
+            } else {
+                &[]
+            };
+            let next_cursor = if end < all_tools.len() {
+                Some(json!(end.to_string()))
+            } else {
+                None
+            };
+            let mut result = json!({
+                "tools": page_tools
+            });
+            if let Some(nc) = next_cursor {
+                result["nextCursor"] = nc;
+            }
+            Some(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": result
             }))
         }
         "tools/call" => {
             let name = request["params"]["name"].as_str().unwrap_or("");
             let arguments = &request["params"]["arguments"];
 
-            // Rate limiting check
+            if is_cancelled(id) {
+                remove_cancelled(id);
+                return Some(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "content": [{"type": "text", "text": "Request was cancelled"}],
+                        "isError": true
+                    }
+                }));
+            }
+
             if !rate_limit::check_rate_limit() {
                 warn!(tool = name, "Rate limit exceeded");
                 audit::record_tool_call(name, Instant::now(), AuditOutcome::Rejected("rate limited".into()));
@@ -88,6 +187,18 @@ pub fn handle_request(request: &Value) -> Option<Value> {
                     format!("Error running tool '{}': {}", name, e)
                 }
             };
+
+            if is_cancelled(id) {
+                remove_cancelled(id);
+                return Some(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "content": [{"type": "text", "text": "Request was cancelled during execution"}],
+                        "isError": true
+                    }
+                }));
+            }
 
             Some(json!({
                 "jsonrpc": "2.0",
@@ -226,7 +337,7 @@ mod tests {
 
     #[test]
     fn test_initialize_returns_protocol_info() {
-        let req = json!({"jsonrpc": "2.0", "method": "initialize", "id": 1});
+        let req = json!({"jsonrpc": "2.0", "method": "initialize", "id": 1, "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "test", "version": "0.1"}}});
         let res = handle_request(&req).unwrap();
         assert_eq!(res["jsonrpc"], "2.0");
         assert_eq!(res["id"], 1);
@@ -234,12 +345,50 @@ mod tests {
         assert_eq!(res["result"]["serverInfo"]["name"], "velocity-mcp-rust-server");
         assert_eq!(res["result"]["serverInfo"]["version"], crate::VERSION);
         assert!(res["result"]["capabilities"]["tools"].is_object());
+        assert_eq!(res["result"]["capabilities"]["tools"]["listChanged"], true);
+        assert!(res["result"]["capabilities"]["logging"].is_object());
     }
 
     #[test]
     fn test_notifications_initialized_returns_none() {
         let req = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
         assert!(handle_request(&req).is_none());
+    }
+
+    #[test]
+    fn test_ping_returns_empty_result() {
+        let req = json!({"jsonrpc": "2.0", "method": "ping", "id": 10});
+        let res = handle_request(&req).unwrap();
+        assert_eq!(res["jsonrpc"], "2.0");
+        assert_eq!(res["id"], 10);
+        assert!(res["result"].is_object());
+        assert_eq!(res["result"].as_object().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_logging_set_level_valid() {
+        for level in &["debug", "info", "warning", "error"] {
+            let req = json!({"jsonrpc": "2.0", "method": "logging/setLevel", "id": 11, "params": {"level": level}});
+            let res = handle_request(&req).unwrap();
+            assert_eq!(res["result"], json!({}));
+        }
+    }
+
+    #[test]
+    fn test_logging_set_level_invalid() {
+        let req = json!({"jsonrpc": "2.0", "method": "logging/setLevel", "id": 12, "params": {"level": "banana"}});
+        let res = handle_request(&req).unwrap();
+        assert_eq!(res["error"]["code"], -32602);
+        assert!(res["error"]["message"].as_str().unwrap().contains("banana"));
+    }
+
+    #[test]
+    fn test_notifications_cancelled_tracks_id() {
+        let req = json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 42, "reason": "timeout"}});
+        assert!(handle_request(&req).is_none());
+        assert!(is_cancelled(&json!(42)));
+        remove_cancelled(&json!(42));
+        assert!(!is_cancelled(&json!(42)));
     }
 
     #[test]
@@ -256,6 +405,22 @@ mod tests {
     }
 
     #[test]
+    fn test_tools_list_pagination_no_next_cursor_when_all_fit() {
+        let req = json!({"jsonrpc": "2.0", "method": "tools/list", "id": 20});
+        let res = handle_request(&req).unwrap();
+        assert!(res["result"]["nextCursor"].is_null(), "No nextCursor when all tools fit in one page");
+    }
+
+    #[test]
+    fn test_tools_list_pagination_cursor_beyond_range() {
+        let req = json!({"jsonrpc": "2.0", "method": "tools/list", "id": 21, "params": {"cursor": "99999"}});
+        let res = handle_request(&req).unwrap();
+        let tools = res["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 0);
+        assert!(res["result"]["nextCursor"].is_null());
+    }
+
+    #[test]
     fn test_tools_call_unknown_tool_returns_error_content() {
         let req = json!({
             "jsonrpc": "2.0",
@@ -265,7 +430,6 @@ mod tests {
         });
         let res = handle_request(&req).unwrap();
         assert_eq!(res["result"]["isError"], true);
-        // Unknown tools are routed to the C# engine, which returns an error
     }
 
     #[test]
@@ -280,6 +444,23 @@ mod tests {
         assert_eq!(res["result"]["isError"], true);
         let text = res["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("Error running tool"));
+    }
+
+    #[test]
+    fn test_tools_call_respects_cancellation() {
+        let id = json!(9999);
+        if let Ok(mut ids) = CANCELLED_IDS.lock() {
+            ids.push(id.clone());
+        }
+        let req = json!({
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": { "name": "read_nda", "arguments": {"ndaPath": "x"} },
+            "id": 9999
+        });
+        let res = handle_request(&req).unwrap();
+        assert_eq!(res["result"]["isError"], true);
+        assert!(res["result"]["content"][0]["text"].as_str().unwrap().contains("cancelled"));
     }
 
     #[test]
@@ -302,18 +483,15 @@ mod tests {
 
     #[test]
     fn test_unknown_method_without_id_returns_none() {
-        // Notifications (no id) for unknown methods should return None
         let req = json!({"jsonrpc": "2.0", "method": "some/notification"});
         assert!(handle_request(&req).is_none());
     }
 
     #[test]
     fn test_parse_error_response_format() {
-        // Verify the error format for unparseable JSON
         let bad_json = "not valid json{{{";
         let result: Result<Value, _> = serde_json::from_str(bad_json);
         assert!(result.is_err());
-        // Verify the error response we'd generate
         let err_res = json!({
             "jsonrpc": "2.0",
             "error": { "code": -32700, "message": "Parse error" },

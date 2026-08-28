@@ -1,158 +1,267 @@
 use crate::ipc::shmem::{self, SharedMemoryBuffer};
+use crate::protocol::nda_native;
 use crate::registry;
+use crate::audit::{self, AuditOutcome};
+use crate::rate_limit;
 use serde_json::{json, Value};
 use std::error::Error;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
-use std::time::Duration;
+use std::time::Instant;
 use tracing::{info, warn, error, debug};
 
-/// Run the shared memory protocol loop.
-///
-/// Polls the shared memory buffer for incoming requests (state = `REQ_READY`),
-/// processes them through the JSON-RPC handler, and writes responses back.
-/// Uses `SeqCst` fences between write_output and set_state to ensure
-/// correct cross-process synchronization of length fields.
-///
-/// On graceful shutdown, drops the mmap and removes the buffer file.
+fn handle_nda_native(buffer: &mut SharedMemoryBuffer, raw: &[u8]) -> Result<(), Box<dyn Error>> {
+    let req = match nda_native::parse_nda_request(raw) {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(error = %e, "NDA frame parse error");
+            let err_frame = nda_native::build_nda_error(&Value::Null, &format!("Parse error: {}", e));
+            buffer.write_output_raw(&err_frame)?;
+            SharedMemoryBuffer::sync_fence();
+            buffer.set_state(shmem::STATE_ERROR);
+            buffer.flush()?;
+            buffer.signal_response();
+            return Ok(());
+        }
+    };
+
+    debug!(method = nda_native::method_name(req.method), "NDA-native request");
+
+    let response_frame = match req.method {
+        nda_native::METHOD_PING => {
+            nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &json!({}))
+        }
+        nda_native::METHOD_INITIALIZE => {
+            let result = json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {
+                    "tools": { "listChanged": true },
+                    "logging": {}
+                },
+                "serverInfo": {
+                    "name": "velocity-mcp-rust-server",
+                    "version": crate::VERSION
+                }
+            });
+            nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &result)
+        }
+        nda_native::NOTIF_INITIALIZED => {
+            nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &json!({}))
+        }
+        nda_native::METHOD_LOGGING_SET_LEVEL => {
+            let level = req.data.as_str().unwrap_or("info");
+            info!(level = level, "Log level changed (NDA-native)");
+            nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &json!({}))
+        }
+        nda_native::METHOD_TOOLS_LIST => {
+            let tools = registry::get_tools();
+            let tools_json: Vec<Value> = tools.iter().map(|t| {
+                json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "inputSchema": t.input_schema
+                })
+            }).collect();
+            nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &json!({"tools": tools_json}))
+        }
+        nda_native::METHOD_TOOLS_CALL => {
+            let name = req.data["name"].as_str().unwrap_or("");
+            let arguments = &req.data["arguments"];
+
+            if !rate_limit::check_rate_limit() {
+                warn!(tool = name, "Rate limit exceeded (NDA-native)");
+                audit::record_tool_call(name, Instant::now(), AuditOutcome::Rejected("rate limited".into()));
+                nda_native::build_nda_error(&req.request_id, &format!("Rate limit exceeded for tool '{}'.", name))
+            } else {
+                let call_start = Instant::now();
+                match registry::call_tool(name, arguments) {
+                    Ok(res) => {
+                        audit::record_tool_call(name, call_start, AuditOutcome::Success);
+                        let result_val: Value = serde_json::from_str(&res).unwrap_or_else(|_| json!(res));
+                        nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &result_val)
+                    }
+                    Err(e) => {
+                        error!(tool = name, error = %e, "Tool execution failed (NDA-native)");
+                        audit::record_tool_call(name, call_start, AuditOutcome::Error(e.to_string()));
+                        nda_native::build_nda_error(&req.request_id, &format!("Error running tool '{}': {}", name, e))
+                    }
+                }
+            }
+        }
+        nda_native::METHOD_HEALTH_CHECK => {
+            nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &json!({
+                "status": "healthy",
+                "mode": "shmem-nda",
+                "version": crate::VERSION
+            }))
+        }
+        _ => {
+            warn!(method = req.method, "Unknown NDA method");
+            nda_native::build_nda_error(&req.request_id, &format!("Unknown method: 0x{:02x}", req.method))
+        }
+    };
+
+    buffer.write_output_raw(&response_frame)?;
+    SharedMemoryBuffer::sync_fence();
+    buffer.set_state(shmem::STATE_RES_READY);
+    buffer.flush()?;
+    buffer.signal_response();
+    Ok(())
+}
+
+fn handle_json_shmem(buffer: &mut SharedMemoryBuffer, input_str: &str) -> Result<(), Box<dyn Error>> {
+    let request: Value = match serde_json::from_str(input_str) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(error = %e, "JSON parse error in shmem request");
+            let err_res = json!({
+                "jsonrpc": "2.0",
+                "error": { "code": -32700, "message": format!("Parse error: {}", e) },
+                "id": null
+            });
+            let res_str = serde_json::to_string(&err_res)?;
+            let _ = buffer.write_output(&res_str);
+            SharedMemoryBuffer::sync_fence();
+            buffer.set_state(shmem::STATE_ERROR);
+            let _ = buffer.flush();
+            buffer.signal_response();
+            return Ok(());
+        }
+    };
+
+    let method = request["method"].as_str().unwrap_or("");
+    let id = &request["id"];
+
+    debug!(method = method, "Processing shmem request (JSON)");
+
+    let response = match method {
+        "initialize" => {
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {
+                        "tools": { "listChanged": true },
+                        "logging": {}
+                    },
+                    "serverInfo": {
+                        "name": "velocity-mcp-rust-server",
+                        "version": crate::VERSION
+                    }
+                }
+            })
+        }
+        "notifications/initialized" => {
+            debug!("Client confirmed initialization via shmem");
+            json!({"jsonrpc": "2.0", "id": id, "result": {}})
+        }
+        "ping" => {
+            json!({"jsonrpc": "2.0", "id": id, "result": {}})
+        }
+        "logging/setLevel" => {
+            let level_str = request["params"]["level"].as_str().unwrap_or("info");
+            info!(level = level_str, "Log level changed (shmem)");
+            json!({"jsonrpc": "2.0", "id": id, "result": {}})
+        }
+        "tools/list" => {
+            let tools = registry::get_tools();
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": { "tools": tools }
+            })
+        }
+        "tools/call" => {
+            let name = request["params"]["name"].as_str().unwrap_or("");
+            let arguments = &request["params"]["arguments"];
+
+            if !rate_limit::check_rate_limit() {
+                warn!(tool = name, "Rate limit exceeded (shmem)");
+                audit::record_tool_call(name, Instant::now(), audit::AuditOutcome::Rejected("rate limited".into()));
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "content": [{"type": "text", "text": format!("Rate limit exceeded for tool '{}'.", name)}],
+                        "isError": true
+                    }
+                })
+            } else {
+                let call_start = Instant::now();
+                let mut is_error = false;
+                let output_text = match registry::call_tool(name, arguments) {
+                    Ok(res) => {
+                        audit::record_tool_call(name, call_start, AuditOutcome::Success);
+                        res
+                    }
+                    Err(e) => {
+                        is_error = true;
+                        error!(tool = name, error = %e, "Tool execution failed in shmem");
+                        audit::record_tool_call(name, call_start, AuditOutcome::Error(e.to_string()));
+                        format!("Error running tool '{}': {}", name, e)
+                    }
+                };
+
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "content": [{"type": "text", "text": output_text}],
+                        "isError": is_error
+                    }
+                })
+            }
+        }
+        "health/check" => {
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "status": "healthy",
+                    "mode": "shmem",
+                    "version": crate::VERSION
+                }
+            })
+        }
+        _ => {
+            warn!(method = method, "Method not supported in shmem mode");
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": { "code": -32601, "message": format!("Method '{}' not supported", method) }
+            })
+        }
+    };
+
+    let res_str = serde_json::to_string(&response)?;
+    buffer.write_output(&res_str)?;
+    SharedMemoryBuffer::sync_fence();
+    buffer.set_state(shmem::STATE_RES_READY);
+    buffer.flush()?;
+    buffer.signal_response();
+    Ok(())
+}
+
 pub fn run_shmem_loop(buffer_path: &str, shutdown: &AtomicBool) -> Result<(), Box<dyn Error>> {
     info!(path = buffer_path, "Initializing Shared Memory Buffer");
     let mut buffer = SharedMemoryBuffer::create_or_open(buffer_path)?;
     info!("Shared Memory Server initialized. Waiting for host requests...");
 
     loop {
-        // Check for shutdown signal
         if shutdown.load(Ordering::Relaxed) {
             info!("Shutdown signal received, exiting shmem loop");
             break;
         }
 
+        buffer.wait_for_request();
+
         let state = buffer.get_state();
         if state == shmem::STATE_REQ_READY {
-            // Set state to processing instantly to lock the buffer
             buffer.set_state(shmem::STATE_PROCESSING);
             buffer.flush()?;
 
-            // Read the binary JSON-RPC input from the shared memory request region
-            match buffer.read_input() {
-                Ok(input_str) => {
-                    debug!("Received request from shared memory");
-                    let request: Value = match serde_json::from_str(&input_str) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            warn!(error = %e, "JSON parse error in shmem request");
-                            let err_res = json!({
-                                "jsonrpc": "2.0",
-                                "error": { "code": -32700, "message": format!("Parse error: {}", e) },
-                                "id": null
-                            });
-                            let res_str = serde_json::to_string(&err_res)?;
-                            let _ = buffer.write_output(&res_str);
-                            SharedMemoryBuffer::sync_fence();
-                            buffer.set_state(shmem::STATE_ERROR);
-                            let _ = buffer.flush();
-                            continue;
-                        }
-                    };
-
-                    let method = request["method"].as_str().unwrap_or("");
-                    let id = &request["id"];
-
-                    debug!(method = method, "Processing shmem request");
-
-                    let response = match method {
-                        "initialize" => {
-                            json!({
-                                "jsonrpc": "2.0",
-                                "id": id,
-                                "result": {
-                                    "protocolVersion": "2024-11-05",
-                                    "capabilities": {
-                                        "tools": {}
-                                    },
-                                    "serverInfo": {
-                                        "name": "velocity-mcp-rust-server",
-                                        "version": crate::VERSION
-                                    }
-                                }
-                            })
-                        }
-                        "notifications/initialized" => {
-                            // No response for notifications, but write an ack for shmem protocol
-                            debug!("Client confirmed initialization via shmem");
-                            json!({
-                                "jsonrpc": "2.0",
-                                "id": id,
-                                "result": {}
-                            })
-                        }
-                        "tools/list" => {
-                            let tools = registry::get_tools();
-                            json!({
-                                "jsonrpc": "2.0",
-                                "id": id,
-                                "result": { "tools": tools }
-                            })
-                        }
-                        "tools/call" => {
-                            let name = request["params"]["name"].as_str().unwrap_or("");
-                            let arguments = &request["params"]["arguments"];
-
-                            let mut is_error = false;
-                            let output_text = match registry::call_tool(name, arguments) {
-                                Ok(res) => res,
-                                Err(e) => {
-                                    is_error = true;
-                                    error!(tool = name, error = %e, "Tool execution failed in shmem");
-                                    format!("Error running tool '{}': {}", name, e)
-                                }
-                            };
-
-                            json!({
-                                "jsonrpc": "2.0",
-                                "id": id,
-                                "result": {
-                                    "content": [
-                                        {
-                                            "type": "text",
-                                            "text": output_text
-                                        }
-                                    ],
-                                    "isError": is_error
-                                }
-                            })
-                        }
-                        "health/check" => {
-                            json!({
-                                "jsonrpc": "2.0",
-                                "id": id,
-                                "result": {
-                                    "status": "healthy",
-                                    "mode": "shmem",
-                                    "version": crate::VERSION,
-                                    "buffer_path": buffer_path
-                                }
-                            })
-                        }
-                        _ => {
-                            warn!(method = method, "Method not supported in shmem mode");
-                            json!({
-                                "jsonrpc": "2.0",
-                                "id": id,
-                                "error": { "code": -32601, "message": format!("Method '{}' not supported", method) }
-                            })
-                        }
-                    };
-
-                    let res_str = serde_json::to_string(&response)?;
-                    buffer.write_output(&res_str)?;
-                    // SeqCst fence: ensures length field writes are globally
-                    // visible before the state byte transitions to RES_READY.
-                    SharedMemoryBuffer::sync_fence();
-                    buffer.set_state(shmem::STATE_RES_READY);
-                    buffer.flush()?;
-                    debug!("Response written to shared memory");
-                }
+            let raw = match buffer.read_input_raw() {
+                Ok(r) => r,
                 Err(e) => {
                     error!(error = %e, "Failed to read input from shared memory");
                     let err_res = json!({
@@ -165,15 +274,50 @@ pub fn run_shmem_loop(buffer_path: &str, shutdown: &AtomicBool) -> Result<(), Bo
                     SharedMemoryBuffer::sync_fence();
                     buffer.set_state(shmem::STATE_ERROR);
                     let _ = buffer.flush();
+                    buffer.signal_response();
+                    continue;
+                }
+            };
+
+            if nda_native::is_nda_frame(&raw) {
+                debug!("Detected NDA-native frame");
+                if let Err(e) = handle_nda_native(&mut buffer, &raw) {
+                    error!(error = %e, "NDA-native handler error");
+                    SharedMemoryBuffer::sync_fence();
+                    buffer.set_state(shmem::STATE_ERROR);
+                    let _ = buffer.flush();
+                    buffer.signal_response();
+                }
+            } else {
+                let input_str = match String::from_utf8(raw) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        warn!(error = %e, "Invalid UTF-8 in shmem request");
+                        let err_res = json!({
+                            "jsonrpc": "2.0",
+                            "error": { "code": -32700, "message": "Invalid UTF-8 in request" },
+                            "id": null
+                        });
+                        let res_str = serde_json::to_string(&err_res)?;
+                        let _ = buffer.write_output(&res_str);
+                        SharedMemoryBuffer::sync_fence();
+                        buffer.set_state(shmem::STATE_ERROR);
+                        let _ = buffer.flush();
+                        buffer.signal_response();
+                        continue;
+                    }
+                };
+                if let Err(e) = handle_json_shmem(&mut buffer, &input_str) {
+                    error!(error = %e, "JSON shmem handler error");
+                    SharedMemoryBuffer::sync_fence();
+                    buffer.set_state(shmem::STATE_ERROR);
+                    let _ = buffer.flush();
+                    buffer.signal_response();
                 }
             }
-        } else {
-            // Adaptive backoff: Sleep for 100 microseconds to prevent CPU pegging while maintaining low latency
-            thread::sleep(Duration::from_micros(100));
         }
     }
 
-    // Cleanup: drop the mmap to flush all pending writes, then remove the buffer file
     drop(buffer);
     if let Err(e) = std::fs::remove_file(buffer_path) {
         warn!(path = buffer_path, error = %e, "Failed to remove shared memory buffer file");
