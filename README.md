@@ -42,7 +42,7 @@ The server registers four built-in tools:
 | Tool | Description | Required Params |
 |------|-------------|------------------|
 | `convert_to_nda_document` | Convert any file (source code, PDF, CSV, Excel, Image) into an `.nda` binary document with semantic triples and Ed25519 signature | `filePath` (absolute) |
-| `convert_to_nda_tool` | Convert a JSON-RPC tool call into native NDA binary format for 97x faster parsing | `jsonRequest` |
+| `convert_to_nda_tool` | Convert a JSON-RPC tool call into native NDA binary format for faster binary parsing | `jsonRequest` |
 | `read_nda` | Read and parse a compiled `.nda` binary — shows triples, display commands, Merkle verification, and Ed25519 signature status | `ndaPath` (absolute) |
 | `execute_nda` | Execute a runnable `.nda` container in a capability-based sandbox with process isolation | `ndaPath` (absolute) |
 
@@ -257,24 +257,42 @@ On Windows, `CreateEventW`/`WaitForSingleObject`/`SetEvent` provide zero-poll bl
 
 Built-in micro-benchmark suite (`--benchmark`) comparing protocol parsing and IPC latency.
 
-### Benchmark Results (Intel Core i5-14400F)
+### Benchmark Results (Intel Core i5-14400F, release build)
 
-**Low-Level Parsing:**
+**Protocol Parsing (apples-to-apples, same tool call, full field extraction):**
 
-| Operation | Mean Latency | Speedup vs JSON |
-|-----------|:------------:|:---------------:|
-| JSON-RPC Parse | 637 ns | baseline |
-| Shared Memory R/W | 52 ns | 12.3x faster |
-| Zero-Alloc Binary Parse | 3.06 ns | **208x faster** |
+| Operation | Mean Latency | Throughput |
+|-----------|:------------:|:----------:|
+| JSON-RPC parse + extract | 722.6 ns | ~1.38M req/s |
+| NDA-native parse + Merkle + extract | 459.1 ns | ~2.18M req/s |
+| **NDA speedup** | | **1.6x faster** |
 
-**End-to-End Tool Calls:**
+**Shared Memory Throughput:**
 
-| Operation | Mean Latency | Speedup |
-|-----------|:------------:|:-------:|
-| JSON Tool Call (convert_to_nda_document) | 104 ms | baseline |
-| NDA Tool Call (read_nda) | 78 ms | **1.34x faster** |
+| Operation | Mean Latency | Throughput |
+|-----------|:------------:|:----------:|
+| JSON-in-shmem R/W | 38.8 ns | 25.8M ops/s |
+| NDA-native shmem R/W (raw bytes) | 12.6 ns | 79.2M ops/s |
+| **NDA speedup** | | **3.1x faster** |
 
-The zero-allocation binary parser processes frames at 3.06 ns (208x faster than JSON parsing). End-to-end tool calls show 1.34x speedup because process spawning and IPC dominate over parsing time. The `convert_to_nda_tool` tool enables native NDA binary format for tool calls, achieving 97.6x faster parsing than JSON.
+**Concurrency (NDA-native dispatch, req/s):**
+
+| Threads | Throughput |
+|:-------:|:----------:|
+| 1 | 2.86M req/s |
+| 4 | 7.01M req/s |
+| 8 | 12.7M req/s |
+
+**Rust vs Node.js MCP Server (stdio, 200 req/method):**
+
+| Method | Node.js avg | Rust avg | Speedup |
+|--------|:-----------:|:--------:|:-------:|
+| ping | 0.573 ms | 0.157 ms | **3.6x** |
+| tools/list | 1.050 ms | 0.154 ms | **6.8x** |
+| tools/call | 0.546 ms | 0.136 ms | **4.0x** |
+| **Overall** | 0.627 ms | 0.164 ms | **3.8x** |
+
+The NDA-native protocol (with SHA-256 Merkle integrity verification) is 1.6x faster than JSON for parse + field extraction. The legacy zero-copy binary frame parser (no Merkle verification) measures at ~3 ns but this includes payload iteration — the parse itself is pointer arithmetic only. The real-world wins are in shmem throughput (3.1x) and concurrent scaling (12.7M req/s at 8 threads).
 
 ---
 
