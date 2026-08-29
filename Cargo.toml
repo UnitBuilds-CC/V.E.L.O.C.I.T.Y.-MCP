@@ -25,6 +25,7 @@ regex = "1"
 quick-xml = "0.41"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand = "0.8"
+velocity_mcp_macros = { path = "macros" }
 
 # Optional: HTTP/SSE transport
 axum = { version = "0.7", optional = true }
