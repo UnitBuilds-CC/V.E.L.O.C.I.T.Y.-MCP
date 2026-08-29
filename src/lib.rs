@@ -24,6 +24,8 @@ pub mod audit;
 pub mod rate_limit;
 /// MCP Resources and Prompts support.
 pub mod resources;
+/// MCP Sampling protocol support.
+pub mod sampling;
 /// Transport layer (stdio, shmem, HTTP/SSE).
 #[cfg(feature = "http")]
 pub mod transport;

@@ -10,6 +10,7 @@ use crate::registry;
 use crate::audit::{self, AuditOutcome};
 use crate::rate_limit;
 use crate::resources;
+use crate::sampling;
 
 const MAX_REQUEST_SIZE: usize = 1_048_576;
 const DEFAULT_PAGE_SIZE: usize = 100;
@@ -278,6 +279,21 @@ pub fn handle_request(request: &Value) -> Option<Value> {
                     "jsonrpc": "2.0",
                     "id": id,
                     "result": { "content": [{"type": "text", "text": e}], "isError": true }
+                }))
+            }
+        }
+        "sampling/createMessage" => {
+            let params = &request["params"];
+            match sampling::handle_sampling_create_message(params) {
+                Ok(result) => Some(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": result
+                })),
+                Err(e) => Some(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": -32603, "message": e }
                 }))
             }
         }
