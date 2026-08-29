@@ -9,7 +9,7 @@ license = "MIT OR Apache-2.0"
 [features]
 default = []
 http = ["axum", "tokio", "tokio-stream", "tower", "tower-http", "uuid"]
-oauth2 = ["ureq", "aes-gcm"]
+oauth2 = ["ureq", "aes-gcm", "hmac"]
 database = ["rusqlite"]
 
 [dependencies]
@@ -44,6 +44,7 @@ rusqlite = { version = "0.31", features = ["bundled"], optional = true }
 
 # Optional: Encrypted token storage
 aes-gcm = { version = "0.10", optional = true }
+hmac = { version = "0.12", optional = true }
 
 [dev-dependencies]
 proptest = "1"

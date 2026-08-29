@@ -321,6 +321,150 @@ pub fn load_token_encrypted(connector_id: &str, path: &str) -> Result<OAuth2Toke
     Ok(token)
 }
 
+/// Webhook event payload.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct WebhookEvent {
+    pub event_type: String,
+    pub timestamp: u64,
+    pub data: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connector_id: Option<String>,
+}
+
+/// Webhook delivery result.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct WebhookDeliveryResult {
+    pub success: bool,
+    pub status_code: Option<u16>,
+    pub attempts: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Compute HMAC-SHA256 signature for webhook payload.
+#[cfg(feature = "oauth2")]
+pub fn compute_webhook_signature(payload: &str, secret: &str) -> String {
+    use sha2::{Sha256, Digest};
+    use hmac::{Hmac, Mac};
+    
+    type HmacSha256 = Hmac<Sha256>;
+    
+    let mut mac = <HmacSha256 as Mac>::new_from_slice(secret.as_bytes())
+        .expect("HMAC can take key of any size");
+    mac.update(payload.as_bytes());
+    let result = mac.finalize();
+    
+    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, result.into_bytes())
+}
+
+/// Verify webhook signature.
+#[cfg(feature = "oauth2")]
+pub fn verify_webhook_signature(payload: &str, signature: &str, secret: &str) -> bool {
+    let expected = compute_webhook_signature(payload, secret);
+    expected == signature
+}
+
+/// Send a webhook event to a configured endpoint.
+#[cfg(feature = "oauth2")]
+pub fn send_webhook(connector_id: &str, event: &WebhookEvent) -> Result<WebhookDeliveryResult, String> {
+    let config = get_connector_registry().lock()
+        .ok()
+        .and_then(|r| r.get(connector_id).cloned())
+        .ok_or_else(|| format!("Connector not found: {}", connector_id))?;
+    
+    let webhook_config = config.webhook_config
+        .ok_or_else(|| format!("Connector {} does not have webhook configured", connector_id))?;
+    
+    // Check if event type is subscribed
+    if let Some(events) = &webhook_config.events {
+        if !events.contains(&event.event_type) {
+            return Ok(WebhookDeliveryResult {
+                success: true,
+                status_code: None,
+                attempts: 0,
+                error: Some("Event type not subscribed".to_string()),
+            });
+        }
+    }
+    
+    // Serialize event to JSON
+    let payload = serde_json::to_string(event)
+        .map_err(|e| format!("Failed to serialize webhook event: {}", e))?;
+    
+    // Compute signature if secret is configured
+    let signature = webhook_config.secret.as_ref().map(|secret| {
+        compute_webhook_signature(&payload, secret)
+    });
+    
+    // Send webhook with retry logic
+    let max_attempts = 3;
+    let mut last_error = None;
+    
+    for attempt in 1..=max_attempts {
+        let mut req_builder = ureq::post(&webhook_config.endpoint);
+        
+        req_builder = req_builder.set("Content-Type", "application/json");
+        
+        if let Some(sig) = &signature {
+            req_builder = req_builder.set("X-Webhook-Signature", sig);
+        }
+        
+        match req_builder.send_string(&payload) {
+            Ok(response) => {
+                return Ok(WebhookDeliveryResult {
+                    success: response.status() >= 200 && response.status() < 300,
+                    status_code: Some(response.status()),
+                    attempts: attempt,
+                    error: None,
+                });
+            }
+            Err(e) => {
+                last_error = Some(format!("{}", e));
+                if attempt < max_attempts {
+                    // Wait before retry (exponential backoff)
+                    std::thread::sleep(std::time::Duration::from_millis(100 * 2u64.pow(attempt - 1)));
+                }
+            }
+        }
+    }
+    
+    Ok(WebhookDeliveryResult {
+        success: false,
+        status_code: None,
+        attempts: max_attempts,
+        error: last_error,
+    })
+}
+
+/// Handle incoming webhook (for receiving webhooks from external services).
+#[cfg(feature = "oauth2")]
+pub fn handle_incoming_webhook(
+    connector_id: &str,
+    payload: &str,
+    signature: Option<&str>,
+) -> Result<WebhookEvent, String> {
+    let config = get_connector_registry().lock()
+        .ok()
+        .and_then(|r| r.get(connector_id).cloned())
+        .ok_or_else(|| format!("Connector not found: {}", connector_id))?;
+    
+    let webhook_config = config.webhook_config
+        .ok_or_else(|| format!("Connector {} does not have webhook configured", connector_id))?;
+    
+    // Verify signature if secret is configured
+    if let (Some(secret), Some(sig)) = (&webhook_config.secret, signature) {
+        if !verify_webhook_signature(payload, sig, secret) {
+            return Err("Invalid webhook signature".to_string());
+        }
+    }
+    
+    // Parse webhook event
+    let event: WebhookEvent = serde_json::from_str(payload)
+        .map_err(|e| format!("Failed to parse webhook event: {}", e))?;
+    
+    Ok(event)
+}
+
 /// Generate an OAuth2 authorization URL.
 pub fn generate_authorize_url(connector_id: &str, state: &str, scopes: Option<Vec<String>>) -> Result<String, String> {
     let config = get_connector_registry().lock()
@@ -855,7 +999,7 @@ mod tests {
         assert!(!encrypted.is_empty());
         assert!(encrypted.len() > 12); // At least nonce + some ciphertext
         
-        // Decrypt the token
+        // Decrypt the token (key is already set)
         let decrypted = decrypt_token(&encrypted).unwrap();
         assert_eq!(decrypted.access_token, token.access_token);
         assert_eq!(decrypted.refresh_token, token.refresh_token);
@@ -890,7 +1034,7 @@ mod tests {
         // Verify file exists
         assert!(fs::metadata(temp_path).is_ok());
         
-        // Load encrypted token from file
+        // Load encrypted token from file (key is already set)
         let loaded = load_token_encrypted("file_test", temp_path).unwrap();
         assert_eq!(loaded.access_token, token.access_token);
         assert_eq!(loaded.expires_in, token.expires_in);
@@ -908,5 +1052,78 @@ mod tests {
         assert_ne!(key1, key2);
         assert_eq!(key1.len(), 32);
         assert_eq!(key2.len(), 32);
+    }
+
+    #[test]
+    #[cfg(feature = "oauth2")]
+    fn test_webhook_signature() {
+        let payload = r#"{"event_type":"push","timestamp":1234567890,"data":{"ref":"main"}}"#;
+        let secret = "webhook_secret_key";
+        
+        // Compute signature
+        let signature = compute_webhook_signature(payload, secret);
+        assert!(!signature.is_empty());
+        
+        // Verify signature
+        assert!(verify_webhook_signature(payload, &signature, secret));
+        
+        // Verify wrong signature fails
+        assert!(!verify_webhook_signature(payload, "wrong_signature", secret));
+        
+        // Verify wrong secret fails
+        assert!(!verify_webhook_signature(payload, &signature, "wrong_secret"));
+    }
+
+    #[test]
+    #[cfg(feature = "oauth2")]
+    fn test_webhook_event_serialization() {
+        let event = WebhookEvent {
+            event_type: "push".to_string(),
+            timestamp: 1234567890,
+            data: json!({"ref": "main", "commits": 3}),
+            connector_id: Some("github".to_string()),
+        };
+        
+        let serialized = serde_json::to_string(&event).unwrap();
+        let deserialized: WebhookEvent = serde_json::from_str(&serialized).unwrap();
+        
+        assert_eq!(deserialized.event_type, event.event_type);
+        assert_eq!(deserialized.timestamp, event.timestamp);
+        assert_eq!(deserialized.connector_id, event.connector_id);
+    }
+
+    #[test]
+    #[cfg(feature = "oauth2")]
+    fn test_handle_incoming_webhook() {
+        // Register a connector with webhook
+        let config = ConnectorConfig {
+            id: "webhook_test".to_string(),
+            name: "Webhook Test".to_string(),
+            base_url: "https://api.test.com".to_string(),
+            auth_type: "none".to_string(),
+            oauth2_config: None,
+            webhook_config: Some(WebhookConfig {
+                endpoint: "https://webhook.test.com/events".to_string(),
+                secret: Some("test_secret".to_string()),
+                events: Some(vec!["push".to_string()]),
+            }),
+        };
+        register_connector(config);
+        
+        let payload = r#"{"event_type":"push","timestamp":1234567890,"data":{"ref":"main"}}"#;
+        let signature = compute_webhook_signature(payload, "test_secret");
+        
+        // Handle webhook with valid signature
+        let result = handle_incoming_webhook("webhook_test", payload, Some(&signature));
+        assert!(result.is_ok());
+        
+        let event = result.unwrap();
+        assert_eq!(event.event_type, "push");
+        assert_eq!(event.timestamp, 1234567890);
+        
+        // Handle webhook with invalid signature
+        let result = handle_incoming_webhook("webhook_test", payload, Some("invalid"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid webhook signature"));
     }
 }
