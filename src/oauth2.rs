@@ -1089,7 +1089,7 @@ mod tests {
         
         // Generate and set encryption key
         let key = generate_encryption_key();
-        set_encryption_key(key);
+        set_encryption_key(key.clone());
         
         // Create a test token
         let token = OAuth2Token {
@@ -1110,7 +1110,10 @@ mod tests {
         // Verify file exists
         assert!(fs::metadata(temp_path).is_ok());
         
-        // Load encrypted token from file (key is already set)
+        // Ensure same key is set for loading (in case other tests changed it)
+        set_encryption_key(key);
+        
+        // Load encrypted token from file
         let loaded = load_token_encrypted("file_test", temp_path).unwrap();
         assert_eq!(loaded.access_token, token.access_token);
         assert_eq!(loaded.expires_in, token.expires_in);
