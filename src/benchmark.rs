@@ -19,6 +19,7 @@ pub fn run_benchmarks() {
     bench_nda_native_parsing();
     bench_protocol_overhead();
     bench_tlv_encoding();
+    bench_flat_encoding();
     bench_shmem_throughput();
     bench_nda_native_shmem();
     bench_concurrent_dispatch();
@@ -211,8 +212,76 @@ fn bench_tlv_encoding() {
     println!("  TLV decode speedup: {:.1}x over JSON parse", json_parse_ns / decode_ns);
 }
 
+fn bench_flat_encoding() {
+    println!("\n─── 5. Flat Binary vs TLV Encoding ─────────────────────────────");
+
+    let args = json!(["/Users/me/documents/report.nda", 42, true, "detailed"]);
+    let iterations = 500_000;
+
+    let mut tlv_buf = Vec::new();
+    nda_native::encode_json_value(&args, &mut tlv_buf);
+    let mut flat_buf = Vec::new();
+    nda_native::encode_flat_value(&args, &mut flat_buf);
+
+    println!("  TLV encoded size:  {} bytes", tlv_buf.len());
+    println!("  Flat encoded size: {} bytes", flat_buf.len());
+    println!("  Size reduction:    {:.1}x smaller", tlv_buf.len() as f64 / flat_buf.len() as f64);
+
+    let start = Instant::now();
+    let mut tlv_size = 0;
+    for _ in 0..iterations {
+        let mut buf = Vec::new();
+        nda_native::encode_json_value(black_box(&args), &mut buf);
+        tlv_size = buf.len();
+    }
+    let tlv_encode_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
+    black_box(tlv_size);
+
+    let start = Instant::now();
+    let mut flat_size = 0;
+    for _ in 0..iterations {
+        let mut buf = Vec::new();
+        nda_native::encode_flat_value(black_box(&args), &mut buf);
+        flat_size = buf.len();
+    }
+    let flat_encode_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
+    black_box(flat_size);
+
+    let start = Instant::now();
+    let mut checksum: u32 = 0;
+    for _ in 0..iterations {
+        let (decoded, consumed) = nda_native::decode_json_value(black_box(&tlv_buf)).unwrap();
+        checksum = checksum.wrapping_add(consumed as u32);
+        black_box(decoded);
+    }
+    let tlv_decode_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
+    black_box(checksum);
+
+    let start = Instant::now();
+    let mut checksum2: u32 = 0;
+    for _ in 0..iterations {
+        let mut offset = 0;
+        while offset < flat_buf.len() {
+            let _ = nda_native::decode_flat_value(black_box(&flat_buf), &mut offset).unwrap();
+        }
+        checksum2 = checksum2.wrapping_add(1);
+    }
+    let flat_decode_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
+    black_box(checksum2);
+
+    println!("  TLV encode:        {:.1} ns", tlv_encode_ns);
+    println!("  Flat encode:       {:.1} ns  ({:.1}x faster)", flat_encode_ns, tlv_encode_ns / flat_encode_ns);
+    println!("  TLV decode:        {:.1} ns", tlv_decode_ns);
+    println!("  Flat decode:       {:.1} ns  ({:.1}x faster)", flat_decode_ns, tlv_decode_ns / flat_decode_ns);
+
+    let flat_frame = nda_native::build_flat_request(nda_native::METHOD_TOOLS_CALL, &json!(1), "read_file", &args);
+    let tlv_frame = nda_native::build_nda_request(nda_native::METHOD_TOOLS_CALL, &json!(1), &json!({"name": "read_file", "arguments": &args}));
+    println!("  Full TLV frame:    {} bytes", tlv_frame.len());
+    println!("  Full flat frame:   {} bytes  ({:.1}x smaller)", flat_frame.len(), tlv_frame.len() as f64 / flat_frame.len() as f64);
+}
+
 fn bench_shmem_throughput() {
-    println!("\n─── 5. Shared Memory Throughput (JSON-in-shmem) ───────────────");
+    println!("\n─── 6. Shared Memory Throughput (JSON-in-shmem) ───────────────");
 
     let path = "temp_bench_shmem.bin";
     let _ = std::fs::remove_file(path);

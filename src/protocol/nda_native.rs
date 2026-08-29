@@ -290,6 +290,229 @@ pub fn build_nda_request(method: u8, request_id: &Value, data: &Value) -> Vec<u8
     build_nda_frame(&payload)
 }
 
+// ─── Deterministic Flat Binary Format ────────────────────────────────────────
+//
+// No TLV wrappers, no key names. Fields encoded in order with type tags + raw values.
+//
+// Flat request payload:
+//   [1 byte:  method type]
+//   [8 bytes: request id (u64 LE)]
+//   [2 bytes: tool name length]
+//   [N bytes: tool name]
+//   [flat fields: type tag + value, in order]
+//
+// Flat response payload:
+//   [1 byte:  status (0=ok, 1=error)]
+//   [8 bytes: request id (u64 LE)]
+//   [flat fields: type tag + value, in order]
+//
+// Field encoding:
+//   0x01 String:  [4 bytes: len LE][N bytes: UTF-8]
+//   0x02 Integer: [8 bytes: i64 LE]
+//   0x03 Bool:    [1 byte: 0 or 1]
+//   0x04 Null:    (no data)
+//   0x05 Float:   [8 bytes: f64 LE]
+
+pub fn encode_flat_value(value: &Value, buf: &mut Vec<u8>) {
+    match value {
+        Value::String(s) => {
+            buf.push(0x01);
+            let bytes = s.as_bytes();
+            buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+            buf.extend_from_slice(bytes);
+        }
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                buf.push(0x02);
+                buf.extend_from_slice(&i.to_le_bytes());
+            } else if let Some(f) = n.as_f64() {
+                buf.push(0x05);
+                buf.extend_from_slice(&f.to_le_bytes());
+            } else {
+                buf.push(0x02);
+                buf.extend_from_slice(&0i64.to_le_bytes());
+            }
+        }
+        Value::Bool(b) => {
+            buf.push(0x03);
+            buf.push(if *b { 1 } else { 0 });
+        }
+        Value::Null => {
+            buf.push(0x04);
+        }
+        Value::Array(arr) => {
+            for item in arr {
+                encode_flat_value(item, buf);
+            }
+        }
+        Value::Object(obj) => {
+            for (_, val) in obj {
+                encode_flat_value(val, buf);
+            }
+        }
+    }
+}
+
+pub fn decode_flat_value(buf: &[u8], offset: &mut usize) -> Result<Value, Box<dyn Error>> {
+    if *offset >= buf.len() {
+        return Err("Flat decode: unexpected end of buffer".into());
+    }
+    let tag = buf[*offset];
+    *offset += 1;
+    match tag {
+        0x01 => {
+            if *offset + 4 > buf.len() { return Err("Flat string: missing length".into()); }
+            let len = u32::from_le_bytes([buf[*offset], buf[*offset+1], buf[*offset+2], buf[*offset+3]]) as usize;
+            *offset += 4;
+            if *offset + len > buf.len() { return Err("Flat string: truncated".into()); }
+            let s = std::str::from_utf8(&buf[*offset..*offset+len])?.to_string();
+            *offset += len;
+            Ok(Value::String(s))
+        }
+        0x02 => {
+            if *offset + 8 > buf.len() { return Err("Flat integer: missing data".into()); }
+            let i = i64::from_le_bytes([buf[*offset], buf[*offset+1], buf[*offset+2], buf[*offset+3],
+                                        buf[*offset+4], buf[*offset+5], buf[*offset+6], buf[*offset+7]]);
+            *offset += 8;
+            Ok(json!(i))
+        }
+        0x05 => {
+            if *offset + 8 > buf.len() { return Err("Flat float: missing data".into()); }
+            let f = f64::from_le_bytes([buf[*offset], buf[*offset+1], buf[*offset+2], buf[*offset+3],
+                                        buf[*offset+4], buf[*offset+5], buf[*offset+6], buf[*offset+7]]);
+            *offset += 8;
+            Ok(json!(f))
+        }
+        0x03 => {
+            if *offset + 1 > buf.len() { return Err("Flat bool: missing data".into()); }
+            let b = buf[*offset] != 0;
+            *offset += 1;
+            Ok(Value::Bool(b))
+        }
+        0x04 => Ok(Value::Null),
+        t => Err(format!("Flat decode: unknown tag 0x{:02x}", t).into()),
+    }
+}
+
+fn value_to_u64(v: &Value) -> u64 {
+    match v {
+        Value::Number(n) => n.as_u64().unwrap_or(0),
+        Value::String(s) => s.parse::<u64>().unwrap_or(0),
+        _ => 0,
+    }
+}
+
+pub fn build_flat_request(method: u8, request_id: &Value, tool_name: &str, arguments: &Value) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(64);
+    payload.push(method);
+    payload.extend_from_slice(&value_to_u64(request_id).to_le_bytes());
+    payload.extend_from_slice(&(tool_name.len() as u16).to_le_bytes());
+    payload.extend_from_slice(tool_name.as_bytes());
+    encode_flat_value(arguments, &mut payload);
+    build_nda_frame(&payload)
+}
+
+pub struct FlatRequest {
+    pub method: u8,
+    pub request_id: u64,
+    pub tool_name: String,
+    pub fields: Vec<Value>,
+}
+
+pub fn parse_flat_request(frame: &[u8]) -> Result<FlatRequest, Box<dyn Error>> {
+    if frame.len() < FRAME_HEADER_SIZE {
+        return Err("Flat frame too small".into());
+    }
+    if &frame[0..4] != NDA_MAGIC {
+        return Err("Invalid NDA magic".into());
+    }
+
+    let stored_merkle = &frame[4..36];
+    let payload = &frame[FRAME_HEADER_SIZE..];
+    let mut hasher = Sha256::new();
+    hasher.update(payload);
+    let computed = hasher.finalize();
+    if stored_merkle != computed.as_slice() {
+        return Err("Flat frame Merkle root mismatch".into());
+    }
+
+    if payload.is_empty() {
+        return Err("Flat payload is empty".into());
+    }
+
+    let method = payload[0];
+    let mut offset = 1;
+
+    if offset + 8 > payload.len() { return Err("Flat: missing request id".into()); }
+    let request_id = u64::from_le_bytes([payload[offset], payload[offset+1], payload[offset+2], payload[offset+3],
+                                          payload[offset+4], payload[offset+5], payload[offset+6], payload[offset+7]]);
+    offset += 8;
+
+    if offset + 2 > payload.len() { return Err("Flat: missing tool name length".into()); }
+    let name_len = u16::from_le_bytes([payload[offset], payload[offset+1]]) as usize;
+    offset += 2;
+
+    if offset + name_len > payload.len() { return Err("Flat: truncated tool name".into()); }
+    let tool_name = std::str::from_utf8(&payload[offset..offset+name_len])?.to_string();
+    offset += name_len;
+
+    let mut fields = Vec::new();
+    while offset < payload.len() {
+        fields.push(decode_flat_value(payload, &mut offset)?);
+    }
+
+    Ok(FlatRequest { method, request_id, tool_name, fields })
+}
+
+pub fn build_flat_response(status: u8, request_id: u64, result: &Value) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(64);
+    payload.push(status);
+    payload.extend_from_slice(&request_id.to_le_bytes());
+    encode_flat_value(result, &mut payload);
+    build_nda_frame(&payload)
+}
+
+pub struct FlatResponse {
+    pub status: u8,
+    pub request_id: u64,
+    pub fields: Vec<Value>,
+}
+
+pub fn parse_flat_response(frame: &[u8]) -> Result<FlatResponse, Box<dyn Error>> {
+    if frame.len() < FRAME_HEADER_SIZE {
+        return Err("Flat response frame too small".into());
+    }
+    if &frame[0..4] != NDA_MAGIC {
+        return Err("Invalid NDA magic".into());
+    }
+
+    let stored_merkle = &frame[4..36];
+    let payload = &frame[FRAME_HEADER_SIZE..];
+    let mut hasher = Sha256::new();
+    hasher.update(payload);
+    let computed = hasher.finalize();
+    if stored_merkle != computed.as_slice() {
+        return Err("Flat response Merkle root mismatch".into());
+    }
+
+    if payload.is_empty() { return Err("Flat response payload empty".into()); }
+
+    let status = payload[0];
+    let mut offset = 1;
+
+    if offset + 8 > payload.len() { return Err("Flat: missing response request id".into()); }
+    let request_id = u64::from_le_bytes([payload[offset], payload[offset+1], payload[offset+2], payload[offset+3],
+                                          payload[offset+4], payload[offset+5], payload[offset+6], payload[offset+7]]);
+    offset += 8;
+
+    let mut fields = Vec::new();
+    while offset < payload.len() {
+        fields.push(decode_flat_value(payload, &mut offset)?);
+    }
+
+    Ok(FlatResponse { status, request_id, fields })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,5 +643,68 @@ mod tests {
         assert_eq!(parsed.method, METHOD_PING);
         assert_eq!(parsed.request_id, json!(1));
         assert!(parsed.data.is_null());
+    }
+
+    #[test]
+    fn test_flat_request_round_trip() {
+        let args = json!(["/test.txt", 42, true]);
+        let frame = build_flat_request(METHOD_TOOLS_CALL, &json!(1), "read_file", &args);
+        assert!(is_nda_frame(&frame));
+
+        let parsed = parse_flat_request(&frame).unwrap();
+        assert_eq!(parsed.method, METHOD_TOOLS_CALL);
+        assert_eq!(parsed.request_id, 1);
+        assert_eq!(parsed.tool_name, "read_file");
+        assert_eq!(parsed.fields.len(), 3);
+        assert_eq!(parsed.fields[0], "/test.txt");
+        assert_eq!(parsed.fields[1], 42);
+        assert_eq!(parsed.fields[2], true);
+    }
+
+    #[test]
+    fn test_flat_response_round_trip() {
+        let result = json!(["hello world", 99]);
+        let frame = build_flat_response(STATUS_OK, 42, &result);
+        assert!(is_nda_frame(&frame));
+
+        let parsed = parse_flat_response(&frame).unwrap();
+        assert_eq!(parsed.status, STATUS_OK);
+        assert_eq!(parsed.request_id, 42);
+        assert_eq!(parsed.fields.len(), 2);
+        assert_eq!(parsed.fields[0], "hello world");
+        assert_eq!(parsed.fields[1], 99);
+    }
+
+    #[test]
+    fn test_flat_null_and_bool() {
+        let args = json!([null, true, false]);
+        let frame = build_flat_request(METHOD_TOOLS_CALL, &json!(5), "test", &args);
+        let parsed = parse_flat_request(&frame).unwrap();
+        assert_eq!(parsed.fields[0], Value::Null);
+        assert_eq!(parsed.fields[1], true);
+        assert_eq!(parsed.fields[2], false);
+    }
+
+    #[test]
+    fn test_flat_args_smaller_than_tlv_args() {
+        let args = json!(["/test.txt", 42]);
+        let mut tlv_buf = Vec::new();
+        encode_json_value(&args, &mut tlv_buf);
+
+        let mut flat_buf = Vec::new();
+        encode_flat_value(&args, &mut flat_buf);
+
+        assert!(flat_buf.len() < tlv_buf.len(),
+            "Flat args ({} bytes) should be smaller than TLV args ({} bytes)",
+            flat_buf.len(), tlv_buf.len());
+    }
+
+    #[test]
+    fn test_flat_merkle_integrity() {
+        let frame = build_flat_request(METHOD_PING, &json!(1), "", &Value::Null);
+        let mut tampered = frame.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0xFF;
+        assert!(parse_flat_request(&tampered).is_err());
     }
 }
