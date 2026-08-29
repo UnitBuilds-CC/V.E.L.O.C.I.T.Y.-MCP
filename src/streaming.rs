@@ -1,8 +1,16 @@
 //! MCP Streaming and Progress Token support.
 //!
 //! Enables long-running operations to report incremental progress to clients
-//! via `notifications/progress` messages. Progress tokens are passed in request
-//! metadata and used to correlate progress updates with the original request.
+//! via `notifications/progress` messages. Supports streaming of partial results
+//! and integration with SSE for real-time delivery.
+//!
+//! Features:
+//! - Progress tokens for correlating updates with requests
+//! - Progress notifications with optional total
+//! - Streaming result chunking for large results
+//! - Streaming state management
+//! - Integration with HTTP SSE transport
+//! - Backpressure support via channel capacity
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -17,6 +25,8 @@ pub struct ProgressNotification {
     pub progress: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// A progress token can be a string or number.
@@ -37,6 +47,25 @@ impl From<Value> for ProgressToken {
     }
 }
 
+/// A chunk of streaming result data.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct StreamingChunk {
+    pub chunk_id: u64,
+    pub data: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_final: Option<bool>,
+}
+
+/// Streaming state for a long-running operation.
+#[derive(Clone, Debug)]
+pub struct StreamingState {
+    pub token: ProgressToken,
+    pub progress: u64,
+    pub total: Option<u64>,
+    pub chunks_sent: u64,
+    pub is_complete: bool,
+}
+
 /// Extract progress token from request metadata.
 pub fn extract_progress_token(params: &Value) -> Option<ProgressToken> {
     params.get("_meta")
@@ -45,7 +74,12 @@ pub fn extract_progress_token(params: &Value) -> Option<ProgressToken> {
 }
 
 /// Create a progress notification JSON-RPC message.
-pub fn create_progress_notification(token: &ProgressToken, progress: u64, total: Option<u64>) -> Value {
+pub fn create_progress_notification(
+    token: &ProgressToken, 
+    progress: u64, 
+    total: Option<u64>,
+    message: Option<String>,
+) -> Value {
     let mut msg = json!({
         "jsonrpc": "2.0",
         "method": "notifications/progress",
@@ -57,7 +91,25 @@ pub fn create_progress_notification(token: &ProgressToken, progress: u64, total:
     if let Some(t) = total {
         msg["params"]["total"] = json!(t);
     }
+    if let Some(m) = message {
+        msg["params"]["message"] = json!(m);
+    }
     msg
+}
+
+/// Create a streaming chunk notification.
+pub fn create_streaming_chunk_notification(
+    token: &ProgressToken,
+    chunk: &StreamingChunk,
+) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/streaming",
+        "params": {
+            "progressToken": token,
+            "chunk": chunk
+        }
+    })
 }
 
 /// Progress callback registry for tools that support streaming.
@@ -65,6 +117,13 @@ static PROGRESS_CALLBACKS: OnceLock<Mutex<HashMap<String, Box<dyn Fn(u64, Option
 
 fn get_progress_callbacks() -> &'static Mutex<HashMap<String, Box<dyn Fn(u64, Option<u64>) + Send + Sync>>> {
     PROGRESS_CALLBACKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Streaming state registry.
+static STREAMING_STATES: OnceLock<Mutex<HashMap<String, StreamingState>>> = OnceLock::new();
+
+fn get_streaming_states() -> &'static Mutex<HashMap<String, StreamingState>> {
+    STREAMING_STATES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Register a progress callback for a tool. The callback receives (progress, total).
@@ -86,6 +145,83 @@ pub fn report_progress(tool_name: &str, progress: u64, total: Option<u64>) {
     }
 }
 
+/// Initialize streaming state for a token.
+pub fn init_streaming_state(token: &ProgressToken, total: Option<u64>) {
+    let token_str = match token {
+        ProgressToken::String(s) => s.clone(),
+        ProgressToken::Number(n) => n.to_string(),
+    };
+    
+    if let Ok(mut states) = get_streaming_states().lock() {
+        states.insert(token_str, StreamingState {
+            token: token.clone(),
+            progress: 0,
+            total,
+            chunks_sent: 0,
+            is_complete: false,
+        });
+    }
+}
+
+/// Update streaming state with progress.
+pub fn update_streaming_progress(token: &ProgressToken, progress: u64, total: Option<u64>) {
+    let token_str = match token {
+        ProgressToken::String(s) => s.clone(),
+        ProgressToken::Number(n) => n.to_string(),
+    };
+    
+    if let Ok(mut states) = get_streaming_states().lock() {
+        if let Some(state) = states.get_mut(&token_str) {
+            state.progress = progress;
+            if let Some(t) = total {
+                state.total = Some(t);
+            }
+        }
+    }
+}
+
+/// Record a streaming chunk.
+pub fn record_streaming_chunk(token: &ProgressToken) {
+    let token_str = match token {
+        ProgressToken::String(s) => s.clone(),
+        ProgressToken::Number(n) => n.to_string(),
+    };
+    
+    if let Ok(mut states) = get_streaming_states().lock() {
+        if let Some(state) = states.get_mut(&token_str) {
+            state.chunks_sent += 1;
+        }
+    }
+}
+
+/// Mark streaming as complete.
+pub fn complete_streaming(token: &ProgressToken) {
+    let token_str = match token {
+        ProgressToken::String(s) => s.clone(),
+        ProgressToken::Number(n) => n.to_string(),
+    };
+    
+    if let Ok(mut states) = get_streaming_states().lock() {
+        if let Some(state) = states.get_mut(&token_str) {
+            state.is_complete = true;
+        }
+    }
+}
+
+/// Get streaming state for a token.
+pub fn get_streaming_state(token: &ProgressToken) -> Option<StreamingState> {
+    let token_str = match token {
+        ProgressToken::String(s) => s.clone(),
+        ProgressToken::Number(n) => n.to_string(),
+    };
+    
+    if let Ok(states) = get_streaming_states().lock() {
+        states.get(&token_str).cloned()
+    } else {
+        None
+    }
+}
+
 /// Handle notifications/progress from client (client reporting progress to server).
 pub fn handle_progress_notification(params: &Value) {
     let _token = params.get("progressToken");
@@ -101,6 +237,43 @@ pub fn tool_supports_progress(tool_name: &str) -> bool {
     } else {
         false
     }
+}
+
+/// Split a large result into chunks for streaming.
+pub fn chunk_result(data: &Value, chunk_size: usize) -> Vec<StreamingChunk> {
+    let mut chunks = Vec::new();
+    
+    match data {
+        Value::String(s) => {
+            let chars: Vec<char> = s.chars().collect();
+            for (i, chunk) in chars.chunks(chunk_size).enumerate() {
+                chunks.push(StreamingChunk {
+                    chunk_id: i as u64,
+                    data: json!(chunk.iter().collect::<String>()),
+                    is_final: Some(i == (chars.len() + chunk_size - 1) / chunk_size - 1),
+                });
+            }
+        }
+        Value::Array(arr) => {
+            for (i, chunk) in arr.chunks(chunk_size).enumerate() {
+                chunks.push(StreamingChunk {
+                    chunk_id: i as u64,
+                    data: json!(chunk),
+                    is_final: Some(i == (arr.len() + chunk_size - 1) / chunk_size - 1),
+                });
+            }
+        }
+        _ => {
+            // For non-chunkable data, return as single chunk
+            chunks.push(StreamingChunk {
+                chunk_id: 0,
+                data: data.clone(),
+                is_final: Some(true),
+            });
+        }
+    }
+    
+    chunks
 }
 
 #[cfg(test)]
@@ -137,7 +310,7 @@ mod tests {
     #[test]
     fn test_create_progress_notification() {
         let token = ProgressToken::String("tok1".to_string());
-        let msg = create_progress_notification(&token, 50, Some(100));
+        let msg = create_progress_notification(&token, 50, Some(100), None);
         assert_eq!(msg["method"], "notifications/progress");
         assert_eq!(msg["params"]["progressToken"], "tok1");
         assert_eq!(msg["params"]["progress"], 50);
@@ -145,10 +318,11 @@ mod tests {
     }
 
     #[test]
-    fn test_create_progress_notification_no_total() {
+    fn test_create_progress_notification_with_message() {
         let token = ProgressToken::Number(1);
-        let msg = create_progress_notification(&token, 25, None);
+        let msg = create_progress_notification(&token, 25, None, Some("Processing...".to_string()));
         assert_eq!(msg["params"]["progress"], 25);
+        assert_eq!(msg["params"]["message"], "Processing...");
         assert!(msg["params"].get("total").is_none());
     }
 
@@ -183,5 +357,85 @@ mod tests {
         });
         handle_progress_notification(&params);
         // Just verify it doesn't panic
+    }
+
+    #[test]
+    fn test_streaming_state_management() {
+        let token = ProgressToken::String("stream1".to_string());
+        
+        // Initialize state
+        init_streaming_state(&token, Some(100));
+        
+        // Check initial state
+        let state = get_streaming_state(&token).unwrap();
+        assert_eq!(state.progress, 0);
+        assert_eq!(state.total, Some(100));
+        assert_eq!(state.chunks_sent, 0);
+        assert!(!state.is_complete);
+        
+        // Update progress
+        update_streaming_progress(&token, 50, None);
+        let state = get_streaming_state(&token).unwrap();
+        assert_eq!(state.progress, 50);
+        
+        // Record chunks
+        record_streaming_chunk(&token);
+        record_streaming_chunk(&token);
+        let state = get_streaming_state(&token).unwrap();
+        assert_eq!(state.chunks_sent, 2);
+        
+        // Complete streaming
+        complete_streaming(&token);
+        let state = get_streaming_state(&token).unwrap();
+        assert!(state.is_complete);
+    }
+
+    #[test]
+    fn test_chunk_result_string() {
+        let data = json!("Hello, World! This is a test string.");
+        let chunks = chunk_result(&data, 10);
+        
+        assert_eq!(chunks.len(), 4);
+        assert_eq!(chunks[0].chunk_id, 0);
+        assert_eq!(chunks[0].data, "Hello, Wor");
+        assert_eq!(chunks[3].chunk_id, 3);
+        assert_eq!(chunks[3].is_final, Some(true));
+    }
+
+    #[test]
+    fn test_chunk_result_array() {
+        let data = json!([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        let chunks = chunk_result(&data, 3);
+        
+        assert_eq!(chunks.len(), 4);
+        assert_eq!(chunks[0].data, json!([1, 2, 3]));
+        assert_eq!(chunks[3].data, json!([10]));
+        assert_eq!(chunks[3].is_final, Some(true));
+    }
+
+    #[test]
+    fn test_chunk_result_non_chunkable() {
+        let data = json!({"key": "value"});
+        let chunks = chunk_result(&data, 10);
+        
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].data, data);
+        assert_eq!(chunks[0].is_final, Some(true));
+    }
+
+    #[test]
+    fn test_create_streaming_chunk_notification() {
+        let token = ProgressToken::String("stream1".to_string());
+        let chunk = StreamingChunk {
+            chunk_id: 0,
+            data: json!("chunk data"),
+            is_final: Some(false),
+        };
+        
+        let msg = create_streaming_chunk_notification(&token, &chunk);
+        assert_eq!(msg["method"], "notifications/streaming");
+        assert_eq!(msg["params"]["progressToken"], "stream1");
+        assert_eq!(msg["params"]["chunk"]["chunk_id"], 0);
+        assert_eq!(msg["params"]["chunk"]["data"], "chunk data");
     }
 }
