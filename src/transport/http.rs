@@ -59,6 +59,81 @@ impl Default for HttpSecurityConfig {
     }
 }
 
+/// HTTP server metrics for monitoring.
+#[derive(Debug, Default)]
+pub struct HttpMetrics {
+    /// Total number of requests received
+    pub total_requests: AtomicU64,
+    /// Total number of successful requests (2xx)
+    pub successful_requests: AtomicU64,
+    /// Total number of failed requests (4xx, 5xx)
+    pub failed_requests: AtomicU64,
+    /// Total number of authentication failures
+    pub auth_failures: AtomicU64,
+    /// Total number of rate limit hits
+    pub rate_limit_hits: AtomicU64,
+    /// Total request processing time in microseconds
+    pub total_latency_us: AtomicU64,
+    /// Number of active SSE connections
+    pub active_sse_connections: AtomicU64,
+}
+
+impl HttpMetrics {
+    /// Record a request completion.
+    pub fn record_request(&self, latency_us: u64, success: bool) {
+        self.total_requests.fetch_add(1, Ordering::Relaxed);
+        self.total_latency_us.fetch_add(latency_us, Ordering::Relaxed);
+        if success {
+            self.successful_requests.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.failed_requests.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Record an authentication failure.
+    pub fn record_auth_failure(&self) {
+        self.auth_failures.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a rate limit hit.
+    pub fn record_rate_limit_hit(&self) {
+        self.rate_limit_hits.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record SSE connection start.
+    pub fn record_sse_connect(&self) {
+        self.active_sse_connections.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record SSE connection end.
+    pub fn record_sse_disconnect(&self) {
+        self.active_sse_connections.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    /// Get average latency in microseconds.
+    pub fn average_latency_us(&self) -> f64 {
+        let total = self.total_requests.load(Ordering::Relaxed);
+        if total == 0 {
+            0.0
+        } else {
+            self.total_latency_us.load(Ordering::Relaxed) as f64 / total as f64
+        }
+    }
+
+    /// Get metrics as JSON.
+    pub fn to_json(&self) -> Value {
+        json!({
+            "total_requests": self.total_requests.load(Ordering::Relaxed),
+            "successful_requests": self.successful_requests.load(Ordering::Relaxed),
+            "failed_requests": self.failed_requests.load(Ordering::Relaxed),
+            "auth_failures": self.auth_failures.load(Ordering::Relaxed),
+            "rate_limit_hits": self.rate_limit_hits.load(Ordering::Relaxed),
+            "average_latency_us": self.average_latency_us(),
+            "active_sse_connections": self.active_sse_connections.load(Ordering::Relaxed),
+        })
+    }
+}
+
 /// Session state for HTTP clients.
 #[derive(Debug)]
 struct Session {
@@ -76,6 +151,8 @@ struct ServerState {
     event_broadcast: Arc<RwLock<Vec<mpsc::Sender<String>>>>,
     /// Security configuration
     security: HttpSecurityConfig,
+    /// Server metrics
+    metrics: Arc<HttpMetrics>,
 }
 
 /// Query parameters for SSE endpoint.
@@ -101,20 +178,26 @@ async fn handle_json_rpc(
     headers: HeaderMap,
     Json(request): Json<Value>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let start_time = std::time::Instant::now();
+    
     // Check authentication if API key is configured
     if let Some(expected_key) = &state.security.api_key {
         let auth_header = headers.get("Authorization")
             .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({
-                    "jsonrpc": "2.0",
-                    "error": { "code": -32000, "message": "Missing API key" },
-                    "id": request.get("id").cloned().unwrap_or(Value::Null)
-                }))
-            ))?;
+            .ok_or_else(|| {
+                state.metrics.record_auth_failure();
+                (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({
+                        "jsonrpc": "2.0",
+                        "error": { "code": -32000, "message": "Missing API key" },
+                        "id": request.get("id").cloned().unwrap_or(Value::Null)
+                    }))
+                )
+            })?;
         
         if !auth_header.starts_with("Bearer ") || &auth_header[7..] != expected_key {
+            state.metrics.record_auth_failure();
             return Err((
                 StatusCode::UNAUTHORIZED,
                 Json(json!({
@@ -128,6 +211,7 @@ async fn handle_json_rpc(
     
     // Check rate limit if enabled
     if state.security.enable_rate_limit && !rate_limit::check_rate_limit() {
+        state.metrics.record_rate_limit_hit();
         return Err((
             StatusCode::TOO_MANY_REQUESTS,
             Json(json!({
@@ -139,6 +223,8 @@ async fn handle_json_rpc(
     }
     
     if state.shutdown.load(Ordering::Relaxed) {
+        let latency_us = start_time.elapsed().as_micros() as u64;
+        state.metrics.record_request(latency_us, false);
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({
@@ -150,12 +236,20 @@ async fn handle_json_rpc(
     }
 
     let response = json_rpc::handle_request(&request);
+    let latency_us = start_time.elapsed().as_micros() as u64;
+    
     match response {
-        Some(res) => Ok(Json(res)),
-        None => Err((
-            StatusCode::NO_CONTENT,
-            Json(json!({"message": "Notification processed"})),
-        )),
+        Some(res) => {
+            state.metrics.record_request(latency_us, true);
+            Ok(Json(res))
+        },
+        None => {
+            state.metrics.record_request(latency_us, true);
+            Err((
+                StatusCode::NO_CONTENT,
+                Json(json!({"message": "Notification processed"})),
+            ))
+        },
     }
 }
 
@@ -324,6 +418,11 @@ async fn health_check(State(state): State<Arc<ServerState>>) -> Json<Value> {
     }))
 }
 
+/// Metrics endpoint for monitoring.
+async fn metrics(State(state): State<Arc<ServerState>>) -> Json<Value> {
+    Json(state.metrics.to_json())
+}
+
 /// Session management endpoints.
 async fn list_sessions(State(state): State<Arc<ServerState>>) -> Json<Value> {
     let sessions = state.sessions.read().await;
@@ -380,6 +479,7 @@ fn build_router(state: Arc<ServerState>) -> Router {
         .route("/mcp/stream", post(handle_streamable))
         .route("/sse", get(sse_handler))
         .route("/health", get(health_check))
+        .route("/metrics", get(metrics))
         .route("/sessions", get(list_sessions))
         .route("/sessions/:id", get(delete_session))
         .layer(cors)
@@ -399,6 +499,7 @@ pub async fn run_http_server(
         sessions: Arc::new(RwLock::new(HashMap::new())),
         event_broadcast: Arc::new(RwLock::new(Vec::new())),
         security: security_config.unwrap_or_default(),
+        metrics: Arc::new(HttpMetrics::default()),
     });
 
     let app = build_router(state);
@@ -435,6 +536,8 @@ mod tests {
             shutdown,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             event_broadcast: Arc::new(RwLock::new(Vec::new())),
+            security: HttpSecurityConfig::default(),
+            metrics: Arc::new(HttpMetrics::default()),
         });
         let app = build_router(state);
 
@@ -458,6 +561,8 @@ mod tests {
             shutdown,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             event_broadcast: Arc::new(RwLock::new(Vec::new())),
+            security: HttpSecurityConfig::default(),
+            metrics: Arc::new(HttpMetrics::default()),
         });
         let app = build_router(state);
 
@@ -494,6 +599,8 @@ mod tests {
             shutdown,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             event_broadcast: Arc::new(RwLock::new(Vec::new())),
+            security: HttpSecurityConfig::default(),
+            metrics: Arc::new(HttpMetrics::default()),
         });
         let app = build_router(state);
 
@@ -516,5 +623,73 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn test_metrics_endpoint() {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let state = Arc::new(ServerState {
+            shutdown,
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+            event_broadcast: Arc::new(RwLock::new(Vec::new())),
+            security: HttpSecurityConfig::default(),
+            metrics: Arc::new(HttpMetrics::default()),
+        });
+        
+        // Record some metrics
+        state.metrics.record_request(100, true);
+        state.metrics.record_request(200, true);
+        state.metrics.record_request(50, false);
+        state.metrics.record_auth_failure();
+        state.metrics.record_rate_limit_hit();
+        
+        let app = build_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let metrics: Value = serde_json::from_slice(&body).unwrap();
+        
+        assert_eq!(metrics["total_requests"], 3);
+        assert_eq!(metrics["successful_requests"], 2);
+        assert_eq!(metrics["failed_requests"], 1);
+        assert_eq!(metrics["auth_failures"], 1);
+        assert_eq!(metrics["rate_limit_hits"], 1);
+        assert!(metrics["average_latency_us"].as_f64().unwrap() > 0.0);
+    }
+
+    #[test]
+    fn test_http_metrics_calculation() {
+        let metrics = HttpMetrics::default();
+        
+        // Test initial state
+        assert_eq!(metrics.total_requests.load(Ordering::Relaxed), 0);
+        assert_eq!(metrics.average_latency_us(), 0.0);
+        
+        // Record some requests
+        metrics.record_request(100, true);
+        metrics.record_request(200, true);
+        metrics.record_request(300, false);
+        
+        assert_eq!(metrics.total_requests.load(Ordering::Relaxed), 3);
+        assert_eq!(metrics.successful_requests.load(Ordering::Relaxed), 2);
+        assert_eq!(metrics.failed_requests.load(Ordering::Relaxed), 1);
+        assert_eq!(metrics.average_latency_us(), 200.0); // (100+200+300)/3
+        
+        // Test JSON serialization
+        let json = metrics.to_json();
+        assert_eq!(json["total_requests"], 3);
+        assert_eq!(json["successful_requests"], 2);
+        assert_eq!(json["failed_requests"], 1);
     }
 }
