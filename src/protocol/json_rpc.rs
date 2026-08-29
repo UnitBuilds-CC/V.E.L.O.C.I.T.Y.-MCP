@@ -9,6 +9,7 @@ use tracing::{info, warn, debug, error};
 use crate::registry;
 use crate::audit::{self, AuditOutcome};
 use crate::rate_limit;
+use crate::resources;
 
 const MAX_REQUEST_SIZE: usize = 1_048_576;
 const DEFAULT_PAGE_SIZE: usize = 100;
@@ -224,6 +225,61 @@ pub fn handle_request(request: &Value) -> Option<Value> {
                     "version": crate::VERSION
                 }
             }))
+        }
+        "resources/list" => {
+            let cursor = request["params"]["cursor"].as_str();
+            Some(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": resources::handle_resources_list(cursor)
+            }))
+        }
+        "resources/read" => {
+            let uri = request["params"]["uri"].as_str().unwrap_or("");
+            match resources::handle_resources_read(uri) {
+                Ok(result) => Some(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": result
+                })),
+                Err(e) => Some(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "content": [{"type": "text", "text": e}], "isError": true }
+                }))
+            }
+        }
+        "resources/templates/list" => {
+            let cursor = request["params"]["cursor"].as_str();
+            Some(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": resources::handle_resource_templates_list(cursor)
+            }))
+        }
+        "prompts/list" => {
+            let cursor = request["params"]["cursor"].as_str();
+            Some(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": resources::handle_prompts_list(cursor)
+            }))
+        }
+        "prompts/get" => {
+            let name = request["params"]["name"].as_str().unwrap_or("");
+            let arguments = &request["params"]["arguments"];
+            match resources::handle_prompts_get(name, arguments) {
+                Ok(result) => Some(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": result
+                })),
+                Err(e) => Some(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "content": [{"type": "text", "text": e}], "isError": true }
+                }))
+            }
         }
         _ => {
             if !id.is_null() {

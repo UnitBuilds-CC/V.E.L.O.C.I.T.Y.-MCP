@@ -22,6 +22,8 @@ pub mod sandbox;
 pub mod audit;
 /// Token bucket rate limiter for MCP tool calls.
 pub mod rate_limit;
+/// MCP Resources and Prompts support.
+pub mod resources;
 /// Transport layer (stdio, shmem, HTTP/SSE).
 #[cfg(feature = "http")]
 pub mod transport;
