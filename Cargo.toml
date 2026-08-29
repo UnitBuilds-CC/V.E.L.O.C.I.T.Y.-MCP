@@ -47,6 +47,9 @@ rusqlite = { version = "0.31", features = ["bundled"], optional = true }
 aes-gcm = { version = "0.10", optional = true }
 hmac = { version = "0.12", optional = true }
 
+# Configuration management
+toml = "0.8"
+
 [dev-dependencies]
 proptest = "1"
 

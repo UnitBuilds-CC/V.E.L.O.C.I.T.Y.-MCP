@@ -34,6 +34,8 @@ pub mod oauth2;
 /// Transport layer (stdio, shmem, HTTP/SSE).
 #[cfg(feature = "http")]
 pub mod transport;
+/// Configuration management.
+pub mod config;
 
 /// Server version string.
 pub const VERSION: &str = "3.0.0";
