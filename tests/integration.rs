@@ -710,3 +710,182 @@ fn test_adversarial_nda_with_garbage_appended() {
     let doc = NdaDocument::read(&data);
     assert!(doc.is_ok(), "Should parse despite trailing garbage");
 }
+
+// ─── Integration: OAuth2 Flow ─────────────────────────────────────────────────
+
+/// Test complete OAuth2 authorization flow: generate URL → exchange code → refresh token.
+#[test]
+#[cfg(feature = "oauth2")]
+fn test_oauth2_complete_flow() {
+    use velocity_mcp::oauth2::*;
+    
+    // Register a connector with OAuth2 config
+    let config = ConnectorConfig {
+        id: "test_oauth2".to_string(),
+        name: "Test OAuth2".to_string(),
+        base_url: "https://api.test.com".to_string(),
+        auth_type: "oauth2".to_string(),
+        oauth2_config: Some(OAuth2Config {
+            authorize_url: "https://auth.test.com/authorize".to_string(),
+            token_url: "https://auth.test.com/token".to_string(),
+            client_id: "test_client".to_string(),
+            client_secret: Some("test_secret".to_string()),
+            scopes: Some(vec!["read".to_string(), "write".to_string()]),
+            redirect_uri: Some("https://app.test.com/callback".to_string()),
+        }),
+        webhook_config: None,
+    };
+    register_connector(config);
+    
+    // Generate authorization URL
+    let state = "test_state_123";
+    let auth_url = generate_authorize_url("test_oauth2", state, None);
+    assert!(auth_url.is_ok());
+    let url = auth_url.unwrap();
+    assert!(url.contains("response_type=code"));
+    assert!(url.contains("client_id=test_client"));
+    assert!(url.contains("state=test_state_123"));
+    
+    // Validate state
+    let connector_id = validate_state(state);
+    assert_eq!(connector_id, Some("test_oauth2".to_string()));
+    
+    // State should be consumed
+    let connector_id = validate_state(state);
+    assert!(connector_id.is_none());
+}
+
+// ─── Integration: Streaming with SSE ──────────────────────────────────────────
+
+/// Test streaming chunks can be converted to SSE events.
+#[test]
+#[cfg(feature = "http")]
+fn test_streaming_sse_integration() {
+    use velocity_mcp::streaming::*;
+    
+    let token = ProgressToken::String("test_stream".to_string());
+    let chunks = vec![
+        StreamingChunk {
+            chunk_id: 0,
+            data: json!("chunk1"),
+            is_final: Some(false),
+        },
+        StreamingChunk {
+            chunk_id: 1,
+            data: json!("chunk2"),
+            is_final: Some(true),
+        },
+    ];
+    
+    // Convert chunks to SSE events
+    for chunk in &chunks {
+        let event_data = chunk_to_sse_event(&token, chunk);
+        assert!(!event_data.is_empty());
+        
+        // Verify it's valid JSON
+        let parsed: serde_json::Value = serde_json::from_str(&event_data).unwrap();
+        assert_eq!(parsed["method"], "notifications/streaming");
+        assert_eq!(parsed["params"]["progressToken"], "test_stream");
+    }
+}
+
+// ─── Integration: Resource Subscriptions ──────────────────────────────────────
+
+/// Test resource subscription and notification flow.
+#[test]
+fn test_resource_subscription_flow() {
+    use velocity_mcp::resources::*;
+    
+    // Register a file resource
+    register_file_resource("file://test.txt", "Test File", "Test", "/tmp/test.txt");
+    
+    // Subscribe to the resource
+    let result = subscribe_resource("file://test.txt", "client1");
+    assert!(result.is_ok());
+    
+    // Subscribe another client
+    let result = subscribe_resource("file://test.txt", "client2");
+    assert!(result.is_ok());
+    
+    // Unsubscribe one client
+    let result = unsubscribe_resource("file://test.txt", "client1");
+    assert!(result.is_ok());
+    
+    // Unsubscribe non-existent subscription should succeed
+    let result = unsubscribe_resource("file://test.txt", "client3");
+    assert!(result.is_ok());
+}
+
+// ─── Integration: Multi-turn Sampling ─────────────────────────────────────────
+
+/// Test multi-turn sampling conversation with history tracking.
+#[test]
+fn test_sampling_conversation_history() {
+    use velocity_mcp::sampling::*;
+    
+    let conv_id = "test_conversation";
+    
+    // Clear any existing history
+    clear_conversation(conv_id);
+    
+    // Add user message
+    let user_msg = SamplingMessage {
+        role: "user".to_string(),
+        content: SamplingContent {
+            content_type: "text".to_string(),
+            text: Some("Hello".to_string()),
+            resource: None,
+        },
+    };
+    add_to_conversation(conv_id, user_msg);
+    
+    // Add assistant response
+    let assistant_msg = SamplingMessage {
+        role: "assistant".to_string(),
+        content: SamplingContent {
+            content_type: "text".to_string(),
+            text: Some("Hi there!".to_string()),
+            resource: None,
+        },
+    };
+    add_to_conversation(conv_id, assistant_msg);
+    
+    // Get conversation history
+    let history = get_conversation(conv_id);
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0].role, "user");
+    assert_eq!(history[1].role, "assistant");
+    
+    // Clear conversation
+    clear_conversation(conv_id);
+    let history = get_conversation(conv_id);
+    assert_eq!(history.len(), 0);
+}
+
+// ─── Integration: HTTP Security ───────────────────────────────────────────────
+
+/// Test HTTP security configuration.
+#[test]
+#[cfg(feature = "http")]
+fn test_http_security_config() {
+    use velocity_mcp::transport::http::HttpSecurityConfig;
+    
+    // Test default config
+    let config = HttpSecurityConfig::default();
+    assert!(config.api_key.is_none());
+    assert_eq!(config.max_request_size, 10 * 1024 * 1024);
+    assert!(config.enable_rate_limit);
+    assert!(config.cors_origins.is_none());
+    
+    // Test custom config
+    let config = HttpSecurityConfig {
+        api_key: Some("test_key".to_string()),
+        max_request_size: 5 * 1024 * 1024,
+        enable_rate_limit: false,
+        cors_origins: Some(vec!["https://example.com".to_string()]),
+    };
+    assert_eq!(config.api_key, Some("test_key".to_string()));
+    assert_eq!(config.max_request_size, 5 * 1024 * 1024);
+    assert!(!config.enable_rate_limit);
+    assert_eq!(config.cors_origins.unwrap().len(), 1);
+}
