@@ -28,6 +28,9 @@ pub mod resources;
 pub mod sampling;
 /// MCP Streaming and Progress Token support.
 pub mod streaming;
+/// OAuth2 Connector Framework.
+#[cfg(feature = "oauth2")]
+pub mod oauth2;
 /// Transport layer (stdio, shmem, HTTP/SSE).
 #[cfg(feature = "http")]
 pub mod transport;

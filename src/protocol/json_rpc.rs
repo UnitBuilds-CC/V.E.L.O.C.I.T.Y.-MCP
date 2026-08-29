@@ -12,6 +12,8 @@ use crate::rate_limit;
 use crate::resources;
 use crate::sampling;
 use crate::streaming;
+#[cfg(feature = "oauth2")]
+use crate::oauth2;
 
 const MAX_REQUEST_SIZE: usize = 1_048_576;
 const DEFAULT_PAGE_SIZE: usize = 100;
@@ -290,6 +292,22 @@ pub fn handle_request(request: &Value) -> Option<Value> {
         "sampling/createMessage" => {
             let params = &request["params"];
             match sampling::handle_sampling_create_message(params) {
+                Ok(result) => Some(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": result
+                })),
+                Err(e) => Some(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": -32603, "message": e }
+                }))
+            }
+        }
+        #[cfg(feature = "oauth2")]
+        "connector/call" => {
+            let params = &request["params"];
+            match oauth2::handle_connector_call(params) {
                 Ok(result) => Some(json!({
                     "jsonrpc": "2.0",
                     "id": id,
