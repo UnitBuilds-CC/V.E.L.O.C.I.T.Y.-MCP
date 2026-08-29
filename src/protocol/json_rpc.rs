@@ -265,6 +265,38 @@ pub fn handle_request(request: &Value) -> Option<Value> {
                 "result": resources::handle_resource_templates_list(cursor)
             }))
         }
+        "resources/subscribe" => {
+            let uri = request["params"]["uri"].as_str().unwrap_or("");
+            let subscriber_id = request["params"]["subscriberId"].as_str().unwrap_or("default");
+            match resources::handle_resources_subscribe(uri, subscriber_id) {
+                Ok(result) => Some(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": result
+                })),
+                Err(e) => Some(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "content": [{"type": "text", "text": e}], "isError": true }
+                }))
+            }
+        }
+        "resources/unsubscribe" => {
+            let uri = request["params"]["uri"].as_str().unwrap_or("");
+            let subscriber_id = request["params"]["subscriberId"].as_str().unwrap_or("default");
+            match resources::handle_resources_unsubscribe(uri, subscriber_id) {
+                Ok(result) => Some(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": result
+                })),
+                Err(e) => Some(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "content": [{"type": "text", "text": e}], "isError": true }
+                }))
+            }
+        }
         "prompts/list" => {
             let cursor = request["params"]["cursor"].as_str();
             Some(json!({

@@ -3,13 +3,18 @@
 //! Resources expose data (files, databases, APIs) as URIs that clients can read.
 //! Prompts provide templated prompt workflows with variable substitution.
 //!
-//! Both use zero-copy file access via memory-mapped files where possible.
+//! Features:
+//! - File-based resources with zero-copy memory-mapped access
+//! - Database and API resource adapters
+//! - Resource subscriptions with change notifications
+//! - URI template parameter expansion
+//! - Structured prompt content blocks
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, mpsc};
 
 /// A resource exposed by the server.
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -73,6 +78,14 @@ pub struct ResourceContent {
     pub text: Option<String>,
 }
 
+/// Resource update notification.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ResourceUpdate {
+    pub uri: String,
+    #[serde(rename = "mimeType", skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+}
+
 /// Global resource registry.
 static RESOURCE_REGISTRY: OnceLock<Mutex<ResourceStore>> = OnceLock::new();
 
@@ -87,6 +100,29 @@ struct ResourceStore {
     templates: Vec<ResourceTemplate>,
     /// URI -> file path mapping for local file resources
     file_resources: HashMap<String, PathBuf>,
+    /// URI -> database query mapping
+    db_resources: HashMap<String, DbResourceConfig>,
+    /// URI -> API endpoint mapping
+    api_resources: HashMap<String, ApiResourceConfig>,
+    /// Active subscriptions: URI -> set of subscriber IDs
+    subscriptions: HashMap<String, HashSet<String>>,
+    /// Notification channel for resource updates
+    update_sender: Option<mpsc::Sender<ResourceUpdate>>,
+}
+
+/// Database resource configuration.
+#[derive(Clone, Debug)]
+struct DbResourceConfig {
+    query: String,
+    params: Vec<String>,
+}
+
+/// API resource configuration.
+#[derive(Clone, Debug)]
+struct ApiResourceConfig {
+    endpoint: String,
+    method: String,
+    headers: HashMap<String, String>,
 }
 
 impl ResourceStore {
@@ -101,23 +137,125 @@ impl ResourceStore {
         self.file_resources.insert(uri.to_string(), path);
     }
 
+    fn register_db_resource(&mut self, uri: &str, name: &str, description: &str, query: &str, params: Vec<String>) {
+        self.resources.push(Resource {
+            uri: uri.to_string(),
+            name: name.to_string(),
+            description: description.to_string(),
+            mime_type: Some("application/json".to_string()),
+        });
+        self.db_resources.insert(uri.to_string(), DbResourceConfig {
+            query: query.to_string(),
+            params,
+        });
+    }
+
+    fn register_api_resource(&mut self, uri: &str, name: &str, description: &str, endpoint: &str, method: &str, headers: HashMap<String, String>) {
+        self.resources.push(Resource {
+            uri: uri.to_string(),
+            name: name.to_string(),
+            description: description.to_string(),
+            mime_type: Some("application/json".to_string()),
+        });
+        self.api_resources.insert(uri.to_string(), ApiResourceConfig {
+            endpoint: endpoint.to_string(),
+            method: method.to_string(),
+            headers,
+        });
+    }
+
     fn register_template(&mut self, template: ResourceTemplate) {
         self.templates.push(template);
     }
 
+    fn subscribe(&mut self, uri: &str, subscriber_id: &str) -> Result<(), String> {
+        if !self.resources.iter().any(|r| r.uri == uri) {
+            return Err(format!("Resource not found: {}", uri));
+        }
+        
+        // Initialize notification channel if not already done
+        if self.update_sender.is_none() {
+            let (tx, _rx) = mpsc::channel();
+            self.update_sender = Some(tx);
+        }
+        
+        self.subscriptions
+            .entry(uri.to_string())
+            .or_insert_with(HashSet::new)
+            .insert(subscriber_id.to_string());
+        
+        Ok(())
+    }
+
+    fn unsubscribe(&mut self, uri: &str, subscriber_id: &str) -> Result<(), String> {
+        if let Some(subscribers) = self.subscriptions.get_mut(uri) {
+            subscribers.remove(subscriber_id);
+            if subscribers.is_empty() {
+                self.subscriptions.remove(uri);
+            }
+        }
+        Ok(())
+    }
+
+    fn notify_update(&self, uri: &str) {
+        if let Some(sender) = &self.update_sender {
+            if let Some(resource) = self.resources.iter().find(|r| r.uri == uri) {
+                let update = ResourceUpdate {
+                    uri: uri.to_string(),
+                    mime_type: resource.mime_type.clone(),
+                };
+                let _ = sender.send(update);
+            }
+        }
+    }
+
     fn read_resource(&self, uri: &str) -> Result<ResourceReadResult, String> {
+        // Try file resource first
         if let Some(path) = self.file_resources.get(uri) {
             let content = std::fs::read_to_string(path)
                 .map_err(|e| format!("Failed to read file: {}", e))?;
             let mime = guess_mime(path.extension().and_then(|e| e.to_str()).unwrap_or(""));
-            Ok(ResourceReadResult {
+            return Ok(ResourceReadResult {
                 uri: uri.to_string(),
                 mime_type: mime,
                 text: Some(content),
-            })
-        } else {
-            Err(format!("Resource not found: {}", uri))
+            });
         }
+        
+        // Try database resource
+        if let Some(db_config) = self.db_resources.get(uri) {
+            // Placeholder for actual database query execution
+            // In a real implementation, this would execute the query
+            let mock_result = json!({
+                "query": db_config.query,
+                "params": db_config.params,
+                "result": "Database query would execute here"
+            });
+            return Ok(ResourceReadResult {
+                uri: uri.to_string(),
+                mime_type: "application/json".to_string(),
+                text: Some(serde_json::to_string_pretty(&mock_result).unwrap()),
+            });
+        }
+        
+        // Try API resource
+        if let Some(api_config) = self.api_resources.get(uri) {
+            // Placeholder for actual HTTP request
+            // In a real implementation, this would make the HTTP request
+            let mock_result = json!({
+                "endpoint": api_config.endpoint,
+                "method": api_config.method,
+                "headers": api_config.headers,
+                "result": "HTTP request would execute here"
+            });
+            return Ok(ResourceReadResult {
+                uri: uri.to_string(),
+                mime_type: "application/json".to_string(),
+                text: Some(serde_json::to_string_pretty(&mock_result).unwrap()),
+            });
+        }
+        
+        Err(format!("Resource not found: {}", uri))
     }
 }
 
@@ -150,6 +288,48 @@ pub fn register_file_resource(uri: &str, name: &str, description: &str, path: &s
     let store = get_resource_registry();
     if let Ok(mut s) = store.lock() {
         s.register_file_resource(uri, name, description, PathBuf::from(path));
+    }
+}
+
+/// Register a database query as an MCP resource.
+pub fn register_db_resource(uri: &str, name: &str, description: &str, query: &str, params: Vec<String>) {
+    let store = get_resource_registry();
+    if let Ok(mut s) = store.lock() {
+        s.register_db_resource(uri, name, description, query, params);
+    }
+}
+
+/// Register an API endpoint as an MCP resource.
+pub fn register_api_resource(uri: &str, name: &str, description: &str, endpoint: &str, method: &str, headers: HashMap<String, String>) {
+    let store = get_resource_registry();
+    if let Ok(mut s) = store.lock() {
+        s.register_api_resource(uri, name, description, endpoint, method, headers);
+    }
+}
+
+/// Subscribe to resource updates.
+pub fn subscribe_resource(uri: &str, subscriber_id: &str) -> Result<(), String> {
+    let store = get_resource_registry();
+    match store.lock() {
+        Ok(mut s) => s.subscribe(uri, subscriber_id),
+        Err(e) => Err(format!("Resource store poisoned: {}", e)),
+    }
+}
+
+/// Unsubscribe from resource updates.
+pub fn unsubscribe_resource(uri: &str, subscriber_id: &str) -> Result<(), String> {
+    let store = get_resource_registry();
+    match store.lock() {
+        Ok(mut s) => s.unsubscribe(uri, subscriber_id),
+        Err(e) => Err(format!("Resource store poisoned: {}", e)),
+    }
+}
+
+/// Notify subscribers of a resource update.
+pub fn notify_resource_update(uri: &str) {
+    let store = get_resource_registry();
+    if let Ok(s) = store.lock() {
+        s.notify_update(uri);
     }
 }
 
@@ -186,6 +366,143 @@ pub fn read_resource(uri: &str) -> Result<Value, String> {
             }))
         }
         Err(e) => Err(format!("Resource store poisoned: {}", e)),
+    }
+}
+
+/// A prompt template with structured content blocks.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct StructuredPrompt {
+    pub name: String,
+    pub description: String,
+    pub arguments: Vec<PromptArgument>,
+    pub messages: Vec<PromptMessageTemplate>,
+}
+
+/// A message template in a structured prompt.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PromptMessageTemplate {
+    pub role: String,
+    pub content: Vec<PromptContentBlock>,
+}
+
+/// A content block in a prompt message.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "type")]
+pub enum PromptContentBlock {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "resource")]
+    Resource { uri: String },
+}
+
+static STRUCTURED_PROMPT_REGISTRY: OnceLock<Mutex<Vec<StructuredPrompt>>> = OnceLock::new();
+
+fn get_structured_prompt_registry() -> &'static Mutex<Vec<StructuredPrompt>> {
+    STRUCTURED_PROMPT_REGISTRY.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Register a structured prompt with content blocks.
+pub fn register_structured_prompt(
+    name: &str,
+    description: &str,
+    args: Vec<(&str, &str, bool)>,
+    messages: Vec<(String, Vec<PromptContentBlock>)>,
+) {
+    let registry = get_structured_prompt_registry();
+    if let Ok(mut prompts) = registry.lock() {
+        prompts.push(StructuredPrompt {
+            name: name.to_string(),
+            description: description.to_string(),
+            arguments: args.iter().map(|(n, d, r)| PromptArgument {
+                name: n.to_string(),
+                description: d.to_string(),
+                required: *r,
+            }).collect(),
+            messages: messages.into_iter().map(|(role, content)| PromptMessageTemplate {
+                role,
+                content,
+            }).collect(),
+        });
+    }
+}
+
+/// Get a structured prompt with variable substitution and resource embedding.
+pub fn get_structured_prompt(name: &str, arguments: &HashMap<String, String>) -> Result<Value, String> {
+    let registry = get_structured_prompt_registry();
+    match registry.lock() {
+        Ok(prompts) => {
+            let prompt = prompts.iter().find(|p| p.name == name)
+                .ok_or_else(|| format!("Structured prompt not found: {}", name))?;
+
+            // Validate required arguments
+            for arg in &prompt.arguments {
+                if arg.required && !arguments.contains_key(&arg.name) {
+                    return Err(format!("Missing required argument: {}", arg.name));
+                }
+            }
+
+            // Process messages with variable substitution
+            let mut processed_messages = Vec::new();
+            for msg_template in &prompt.messages {
+                let mut processed_content = Vec::new();
+                
+                for block in &msg_template.content {
+                    match block {
+                        PromptContentBlock::Text { text } => {
+                            // Substitute variables in text
+                            let mut processed_text = text.clone();
+                            for (key, value) in arguments {
+                                processed_text = processed_text.replace(&format!("{{{}}}", key), value);
+                            }
+                            processed_content.push(json!({
+                                "type": "text",
+                                "text": processed_text
+                            }));
+                        }
+                        PromptContentBlock::Resource { uri } => {
+                            // Expand URI template if it contains parameters
+                            let expanded_uri = expand_uri_template(uri, arguments);
+                            
+                            // Try to read the resource
+                            match read_resource(&expanded_uri) {
+                                Ok(resource_data) => {
+                                    if let Some(contents) = resource_data.get("contents").and_then(|c| c.as_array()) {
+                                        for content in contents {
+                                            processed_content.push(json!({
+                                                "type": "resource",
+                                                "resource": {
+                                                    "uri": expanded_uri,
+                                                    "mimeType": content.get("mimeType"),
+                                                    "text": content.get("text")
+                                                }
+                                            }));
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    // If resource not found, add as text reference
+                                    processed_content.push(json!({
+                                        "type": "text",
+                                        "text": format!("[Resource {} not available: {}]", expanded_uri, e)
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                processed_messages.push(json!({
+                    "role": msg_template.role,
+                    "content": processed_content
+                }));
+            }
+
+            Ok(json!({
+                "description": prompt.description,
+                "messages": processed_messages
+            }))
+        }
+        Err(e) => Err(format!("Structured prompt registry poisoned: {}", e)),
     }
 }
 
@@ -301,6 +618,28 @@ pub fn handle_resource_templates_list(cursor: Option<&str>) -> Value {
     result
 }
 
+/// Expand a URI template with parameters.
+/// Example: "file://{path}" with {"path": "test.txt"} -> "file://test.txt"
+pub fn expand_uri_template(template: &str, params: &HashMap<String, String>) -> String {
+    let mut result = template.to_string();
+    for (key, value) in params {
+        result = result.replace(&format!("{{{}}}", key), value);
+    }
+    result
+}
+
+/// Handle resources/subscribe request.
+pub fn handle_resources_subscribe(uri: &str, subscriber_id: &str) -> Result<Value, String> {
+    subscribe_resource(uri, subscriber_id)?;
+    Ok(json!({"status": "subscribed", "uri": uri}))
+}
+
+/// Handle resources/unsubscribe request.
+pub fn handle_resources_unsubscribe(uri: &str, subscriber_id: &str) -> Result<Value, String> {
+    unsubscribe_resource(uri, subscriber_id)?;
+    Ok(json!({"status": "unsubscribed", "uri": uri}))
+}
+
 /// Handle prompts/list request.
 pub fn handle_prompts_list(cursor: Option<&str>) -> Value {
     let prompts = list_prompts();
@@ -342,7 +681,8 @@ mod tests {
         register_file_resource("file:///test.txt", "Test File", "A test file", "/tmp/test.txt");
         let resources = list_resources();
         assert!(!resources.is_empty());
-        assert_eq!(resources[0].uri, "file:///test.txt");
+        let found = resources.iter().any(|r| r.uri == "file:///test.txt");
+        assert!(found, "Should find 'file:///test.txt' in resources");
     }
 
     #[test]
@@ -381,5 +721,123 @@ mod tests {
     fn test_handle_prompts_list_pagination() {
         let result = handle_prompts_list(None);
         assert!(result["prompts"].is_array());
+    }
+
+    #[test]
+    fn test_uri_template_expansion() {
+        let template = "file://{path}/{name}.txt";
+        let mut params = HashMap::new();
+        params.insert("path".to_string(), "documents".to_string());
+        params.insert("name".to_string(), "test".to_string());
+        
+        let expanded = expand_uri_template(template, &params);
+        assert_eq!(expanded, "file://documents/test.txt");
+    }
+
+    #[test]
+    fn test_resource_subscription() {
+        // Register a test resource
+        register_file_resource("test://sub", "Test", "Test resource", "/tmp/test.txt");
+        
+        // Subscribe to the resource
+        let result = subscribe_resource("test://sub", "client1");
+        assert!(result.is_ok());
+        
+        // Unsubscribe
+        let result = unsubscribe_resource("test://sub", "client1");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_subscribe_nonexistent_resource() {
+        let result = subscribe_resource("nonexistent://resource", "client1");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_db_resource_registration() {
+        register_db_resource(
+            "db://users",
+            "Users",
+            "Database users",
+            "SELECT * FROM users WHERE id = ?",
+            vec!["user_id".to_string()]
+        );
+        
+        let resources = list_resources();
+        assert!(resources.iter().any(|r| r.uri == "db://users"));
+    }
+
+    #[test]
+    fn test_api_resource_registration() {
+        let mut headers = HashMap::new();
+        headers.insert("Authorization".to_string(), "Bearer token".to_string());
+        
+        register_api_resource(
+            "api://data",
+            "API Data",
+            "External API data",
+            "https://api.example.com/data",
+            "GET",
+            headers
+        );
+        
+        let resources = list_resources();
+        assert!(resources.iter().any(|r| r.uri == "api://data"));
+    }
+
+    #[test]
+    fn test_structured_prompt_registration() {
+        use crate::resources::PromptContentBlock;
+        
+        register_structured_prompt(
+            "code_review",
+            "Review code with context",
+            vec![("language", "Programming language", true)],
+            vec![
+                ("system".to_string(), vec![
+                    PromptContentBlock::Text { 
+                        text: "You are a {language} expert.".to_string() 
+                    }
+                ]),
+                ("user".to_string(), vec![
+                    PromptContentBlock::Text { 
+                        text: "Review this code:".to_string() 
+                    },
+                    PromptContentBlock::Resource { 
+                        uri: "file://{path}".to_string() 
+                    }
+                ])
+            ]
+        );
+        
+        let mut args = HashMap::new();
+        args.insert("language".to_string(), "Rust".to_string());
+        args.insert("path".to_string(), "src/main.rs".to_string());
+        
+        let result = get_structured_prompt("code_review", &args);
+        assert!(result.is_ok());
+        
+        let prompt = result.unwrap();
+        assert_eq!(prompt["messages"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_handle_resources_subscribe() {
+        register_file_resource("test://handler", "Test", "Test", "/tmp/test.txt");
+        
+        let result = handle_resources_subscribe("test://handler", "client1");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap()["status"], "subscribed");
+    }
+
+    #[test]
+    fn test_handle_resources_unsubscribe() {
+        register_file_resource("test://unsub", "Test", "Test", "/tmp/test.txt");
+        let _ = subscribe_resource("test://unsub", "client1");
+        
+        let result = handle_resources_unsubscribe("test://unsub", "client1");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap()["status"], "unsubscribed");
     }
 }

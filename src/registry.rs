@@ -31,6 +31,26 @@ static CACHED_TOOLS: OnceLock<Vec<Tool>> = OnceLock::new();
 /// Maps tool name → NDA binary data (ready for fast execution).
 static NDA_TOOL_REGISTRY: OnceLock<Mutex<HashMap<String, Vec<u8>>>> = OnceLock::new();
 
+/// Global registry for lazily registered tools from proc macros.
+static MACRO_TOOLS: OnceLock<Mutex<Vec<Tool>>> = OnceLock::new();
+
+/// Get or initialize the macro tool registry.
+fn get_macro_registry() -> &'static Mutex<Vec<Tool>> {
+    MACRO_TOOLS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Register a tool lazily from a proc macro.
+/// This is called by the generated registration function.
+pub fn register_tool_lazy(tool: &Tool) {
+    if let Ok(mut registry) = get_macro_registry().lock() {
+        // Check if tool already exists
+        if !registry.iter().any(|t| t.name == tool.name) {
+            registry.push(tool.clone());
+            info!(tool_name = %tool.name, "Registered tool from proc macro");
+        }
+    }
+}
+
 /// Get or initialize the NDA tool registry.
 fn get_nda_registry() -> &'static Mutex<HashMap<String, Vec<u8>>> {
     NDA_TOOL_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
@@ -93,6 +113,16 @@ pub fn get_tools() -> Vec<Tool> {
                     }),
                 });
                 known_names.push(tool_name.clone());
+            }
+        }
+    }
+    
+    // Add proc macro-registered tools
+    if let Ok(registry) = get_macro_registry().lock() {
+        for tool in registry.iter() {
+            if !known_names.contains(&tool.name) {
+                tools.push(tool.clone());
+                known_names.push(tool.name.clone());
             }
         }
     }

@@ -1,34 +1,70 @@
 //! HTTP/SSE transport for MCP protocol.
 //!
-//! Provides an Axum-based HTTP server that speaks JSON-RPC over HTTP POST
-//! and Server-Sent Events (SSE) for streaming responses.
+//! Provides an Axum-based HTTP server with:
+//! - JSON-RPC over HTTP POST (stateless)
+//! - Streamable HTTP transport (POST with SSE response)
+//! - SSE endpoint for real-time streaming of tool results
+//! - Session management with session IDs
+//! - Request ID correlation
+//! - Connection lifecycle management
 //!
-//! This module is feature-gated behind the `http` feature flag. When not
-//! enabled, no HTTP dependencies are compiled and there is zero overhead.
+//! This module is feature-gated behind the `http` feature flag.
 
 use axum::{
-    extract::State,
-    http::{header, StatusCode},
+    extract::{Query, State},
+    http::StatusCode,
     response::sse::{Event, Sse},
     routing::{get, post},
     Json, Router,
 };
+use serde::Deserialize;
 use serde_json::{json, Value};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tower_http::cors::{Any, CorsLayer};
-use tracing::{error, info};
+use tracing::info;
+use uuid::Uuid;
 
 use crate::protocol::json_rpc;
+
+/// Session state for HTTP clients.
+#[derive(Debug)]
+struct Session {
+    id: String,
+    created_at: std::time::Instant,
+    last_activity: std::time::Instant,
+    request_count: AtomicU64,
+}
 
 /// Shared state for the HTTP server.
 struct ServerState {
     shutdown: Arc<AtomicBool>,
+    sessions: Arc<RwLock<HashMap<String, Session>>>,
+    /// Channel for broadcasting events to SSE clients
+    event_broadcast: Arc<RwLock<Vec<mpsc::Sender<String>>>>,
 }
 
-/// Handle a JSON-RPC request over HTTP POST.
+/// Query parameters for SSE endpoint.
+#[derive(Deserialize)]
+struct SseQuery {
+    session_id: Option<String>,
+}
+
+/// Request body for Streamable HTTP transport.
+#[derive(Deserialize)]
+struct StreamableRequest {
+    jsonrpc: String,
+    method: String,
+    params: Option<Value>,
+    id: Option<Value>,
+    #[serde(rename = "_meta")]
+    meta: Option<Value>,
+}
+
+/// Handle a JSON-RPC request over HTTP POST (stateless).
 async fn handle_json_rpc(
     State(state): State<Arc<ServerState>>,
     Json(request): Json<Value>,
@@ -54,26 +90,68 @@ async fn handle_json_rpc(
     }
 }
 
-/// SSE endpoint for streaming responses.
-/// Clients connect here to receive real-time updates from long-running operations.
-async fn sse_handler(
-    State(_state): State<Arc<ServerState>>,
+/// Handle Streamable HTTP transport (POST with SSE response).
+///
+/// This implements the MCP Streamable HTTP transport where:
+/// - Client sends POST with JSON-RPC request
+/// - Server responds with SSE stream containing the response
+/// - Allows streaming of large results and progress updates
+async fn handle_streamable(
+    State(state): State<Arc<ServerState>>,
+    Query(query): Query<SseQuery>,
+    Json(request): Json<StreamableRequest>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>> {
     let (tx, rx) = mpsc::channel::<String>(100);
 
-    // Spawn a task that sends heartbeat events to keep the connection alive
-    tokio::spawn(async move {
-        use tokio::time::{interval, Duration};
-        let mut interval = interval(Duration::from_secs(15));
-        loop {
-            interval.tick().await;
-            if tx.send(":heartbeat\n".to_string()).await.is_err() {
-                break;
-            }
-        }
+    // Get or create session
+    let session_id = query.session_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+    
+    {
+        let mut sessions = state.sessions.write().await;
+        let session = sessions.entry(session_id.clone()).or_insert_with(|| Session {
+            id: session_id.clone(),
+            created_at: std::time::Instant::now(),
+            last_activity: std::time::Instant::now(),
+            request_count: AtomicU64::new(0),
+        });
+        session.last_activity = std::time::Instant::now();
+        session.request_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    // Process request and stream response
+    let request_json = json!({
+        "jsonrpc": request.jsonrpc,
+        "method": request.method,
+        "params": request.params,
+        "id": request.id
     });
 
-    let stream = tokio_stream::wrappers::ReceiverStream::new(rx).map(|msg| {
+    // Spawn task to process request and stream results
+    let session_id_clone = session_id.clone();
+    tokio::spawn(async move {
+        // Send session ID as first event
+        let _ = tx.send(format!("event: session\ndata: {}\n\n", session_id_clone)).await;
+
+        // Process the request
+        let response = json_rpc::handle_request(&request_json);
+        
+        match response {
+            Some(res) => {
+                // Stream the response
+                let response_str = serde_json::to_string(&res).unwrap_or_default();
+                let _ = tx.send(format!("event: response\ndata: {}\n\n", response_str)).await;
+            }
+            None => {
+                // Notification, no response needed
+                let _ = tx.send("event: notification\ndata: {\"status\": \"processed\"}\n\n".to_string()).await;
+            }
+        }
+
+        // Send completion event
+        let _ = tx.send("event: complete\ndata: {}\n\n".to_string()).await;
+    });
+
+    let stream = ReceiverStream::new(rx).map(|msg| {
         Ok(Event::default().data(msg))
     });
 
@@ -84,13 +162,125 @@ async fn sse_handler(
     )
 }
 
+/// SSE endpoint for real-time streaming.
+///
+/// Clients connect here to receive:
+/// - Tool execution progress updates
+/// - Streaming tool results
+/// - Server-initiated notifications
+/// - Heartbeat keepalives
+async fn sse_handler(
+    State(state): State<Arc<ServerState>>,
+    Query(query): Query<SseQuery>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>> {
+    let (tx, rx) = mpsc::channel::<String>(100);
+
+    // Register this client for event broadcasts
+    {
+        let mut broadcasts = state.event_broadcast.write().await;
+        broadcasts.push(tx.clone());
+    }
+
+    // Get or create session
+    let session_id = query.session_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+    
+    {
+        let mut sessions = state.sessions.write().await;
+        sessions.entry(session_id.clone()).or_insert_with(|| Session {
+            id: session_id.clone(),
+            created_at: std::time::Instant::now(),
+            last_activity: std::time::Instant::now(),
+            request_count: AtomicU64::new(0),
+        });
+    }
+
+    // Send initial connection event
+    let tx_init = tx.clone();
+    let session_id_init = session_id.clone();
+    tokio::spawn(async move {
+        let _ = tx_init.send(format!(
+            "event: connected\ndata: {{\"sessionId\": \"{}\"}}\n\n",
+            session_id_init
+        )).await;
+    });
+
+    // Spawn heartbeat task
+    let tx_heartbeat = tx.clone();
+    tokio::spawn(async move {
+        use tokio::time::{interval, Duration};
+        let mut interval = interval(Duration::from_secs(15));
+        loop {
+            interval.tick().await;
+            if tx_heartbeat.send(":heartbeat\n\n".to_string()).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    let stream = ReceiverStream::new(rx).map(|msg| {
+        Ok(Event::default().data(msg))
+    });
+
+    Sse::new(stream).keep_alive(
+        axum::response::sse::KeepAlive::new()
+            .interval(std::time::Duration::from_secs(15))
+            .text("heartbeat"),
+    )
+}
+
+/// Broadcast an event to all connected SSE clients.
+async fn broadcast_event(state: &ServerState, event_type: &str, data: &Value) {
+    let event_str = format!(
+        "event: {}\ndata: {}\n\n",
+        event_type,
+        serde_json::to_string(data).unwrap_or_default()
+    );
+
+    let broadcasts = state.event_broadcast.read().await;
+    for sender in broadcasts.iter() {
+        let _ = sender.send(event_str.clone()).await;
+    }
+}
+
 /// Health check endpoint.
-async fn health_check() -> Json<Value> {
+async fn health_check(State(state): State<Arc<ServerState>>) -> Json<Value> {
+    let sessions = state.sessions.read().await;
+    let session_count = sessions.len();
+    
     Json(json!({
         "status": "healthy",
         "transport": "http",
-        "version": env!("CARGO_PKG_VERSION")
+        "version": env!("CARGO_PKG_VERSION"),
+        "activeSessions": session_count
     }))
+}
+
+/// Session management endpoints.
+async fn list_sessions(State(state): State<Arc<ServerState>>) -> Json<Value> {
+    let sessions = state.sessions.read().await;
+    let session_list: Vec<Value> = sessions.values().map(|s| {
+        json!({
+            "id": s.id,
+            "createdAt": s.created_at.elapsed().as_secs(),
+            "lastActivity": s.last_activity.elapsed().as_secs(),
+            "requestCount": s.request_count.load(Ordering::Relaxed)
+        })
+    }).collect();
+
+    Json(json!({ "sessions": session_list }))
+}
+
+async fn delete_session(
+    State(state): State<Arc<ServerState>>,
+    session_id: String,
+) -> StatusCode {
+    let mut sessions = state.sessions.write().await;
+    if sessions.remove(&session_id).is_some() {
+        info!(session_id = %session_id, "Session deleted");
+        StatusCode::OK
+    } else {
+        StatusCode::NOT_FOUND
+    }
 }
 
 /// Build the Axum router with all MCP endpoints.
@@ -102,8 +292,11 @@ fn build_router(state: Arc<ServerState>) -> Router {
 
     Router::new()
         .route("/mcp", post(handle_json_rpc))
+        .route("/mcp/stream", post(handle_streamable))
         .route("/sse", get(sse_handler))
         .route("/health", get(health_check))
+        .route("/sessions", get(list_sessions))
+        .route("/sessions/:id", get(delete_session))
         .layer(cors)
         .with_state(state)
 }
@@ -114,6 +307,8 @@ fn build_router(state: Arc<ServerState>) -> Router {
 pub async fn run_http_server(addr: &str, shutdown: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
     let state = Arc::new(ServerState {
         shutdown: shutdown.clone(),
+        sessions: Arc::new(RwLock::new(HashMap::new())),
+        event_broadcast: Arc::new(RwLock::new(Vec::new())),
     });
 
     let app = build_router(state);
@@ -146,7 +341,11 @@ mod tests {
     #[tokio::test]
     async fn test_health_check() {
         let shutdown = Arc::new(AtomicBool::new(false));
-        let state = Arc::new(ServerState { shutdown });
+        let state = Arc::new(ServerState {
+            shutdown,
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+            event_broadcast: Arc::new(RwLock::new(Vec::new())),
+        });
         let app = build_router(state);
 
         let response = app
@@ -165,7 +364,11 @@ mod tests {
     #[tokio::test]
     async fn test_json_rpc_initialize() {
         let shutdown = Arc::new(AtomicBool::new(false));
-        let state = Arc::new(ServerState { shutdown });
+        let state = Arc::new(ServerState {
+            shutdown,
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+            event_broadcast: Arc::new(RwLock::new(Vec::new())),
+        });
         let app = build_router(state);
 
         let request_body = json!({
@@ -197,7 +400,11 @@ mod tests {
     #[tokio::test]
     async fn test_shutdown_rejects_requests() {
         let shutdown = Arc::new(AtomicBool::new(true));
-        let state = Arc::new(ServerState { shutdown });
+        let state = Arc::new(ServerState {
+            shutdown,
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+            event_broadcast: Arc::new(RwLock::new(Vec::new())),
+        });
         let app = build_router(state);
 
         let request_body = json!({
