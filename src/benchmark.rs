@@ -24,6 +24,16 @@ pub fn run_benchmarks() {
     bench_nda_native_shmem();
     bench_concurrent_dispatch();
     bench_e2e_tool_calls();
+    
+    // v3.0 feature benchmarks
+    #[cfg(feature = "oauth2")]
+    bench_oauth2_encryption();
+    
+    #[cfg(feature = "http")]
+    bench_streaming_chunks();
+    
+    #[cfg(feature = "database")]
+    bench_database_queries();
 
     println!("\n================================================================");
     println!("                        All Benchmarks Complete");
@@ -442,4 +452,108 @@ fn bench_e2e_tool_calls() {
 
     let _ = std::fs::remove_file(test_file);
     let _ = std::fs::remove_file(test_nda);
+}
+
+// ─── v3.0 Feature Benchmarks ─────────────────────────────────────────────────
+
+#[cfg(feature = "oauth2")]
+fn bench_oauth2_encryption() {
+    println!("\n─── 10. OAuth2 Token Encryption ─────────────────────────────────");
+    
+    use crate::oauth2::{OAuth2Token, encrypt_token, decrypt_token, set_encryption_key, generate_encryption_key};
+    
+    // Set up encryption key
+    let key = generate_encryption_key();
+    set_encryption_key(key);
+    
+    let token = OAuth2Token {
+        access_token: "test_access_token_12345".to_string(),
+        refresh_token: Some("test_refresh_token_67890".to_string()),
+        expires_in: Some(3600),
+        token_type: Some("Bearer".to_string()),
+        expires_at: None,
+        issued_at: None,
+    };
+    
+    let iterations = 10_000;
+    
+    // Benchmark encryption
+    println!("  Token encryption ({} iterations)...", iterations);
+    let start = Instant::now();
+    let mut encrypted_size = 0;
+    for _ in 0..iterations {
+        let encrypted = encrypt_token(black_box(&token)).unwrap();
+        encrypted_size = encrypted.len();
+        black_box(encrypted);
+    }
+    let encrypt_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
+    println!("  Encrypt:  {:.1} μs  (size: {} bytes)", encrypt_ns / 1000.0, encrypted_size);
+    
+    // Benchmark decryption
+    let encrypted = encrypt_token(&token).unwrap();
+    println!("  Token decryption ({} iterations)...", iterations);
+    let start = Instant::now();
+    for _ in 0..iterations {
+        let decrypted = decrypt_token(black_box(&encrypted)).unwrap();
+        black_box(decrypted);
+    }
+    let decrypt_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
+    println!("  Decrypt:  {:.1} μs", decrypt_ns / 1000.0);
+}
+
+#[cfg(feature = "http")]
+fn bench_streaming_chunks() {
+    println!("\n─── 11. Streaming Chunk Conversion ──────────────────────────────");
+    
+    use crate::streaming::{StreamingChunk, ProgressToken, chunk_to_sse_event};
+    
+    let token = ProgressToken::String("bench_token".to_string());
+    let chunk = StreamingChunk {
+        chunk_id: 0,
+        data: json!({"content": "test data for streaming benchmark", "index": 42}),
+        is_final: Some(false),
+    };
+    
+    let iterations = 50_000;
+    
+    println!("  Chunk to SSE event ({} iterations)...", iterations);
+    let start = Instant::now();
+    let mut event_size = 0;
+    for _ in 0..iterations {
+        let event = chunk_to_sse_event(black_box(&token), black_box(&chunk));
+        event_size = event.len();
+        black_box(event);
+    }
+    let chunk_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
+    println!("  Chunk conversion:  {:.1} ns  (event size: {} bytes)", chunk_ns, event_size);
+}
+
+#[cfg(feature = "database")]
+fn bench_database_queries() {
+    println!("\n─── 12. Database Resource Queries ───────────────────────────────");
+    
+    use crate::resources::{register_db_resource, read_resource};
+    
+    // Register a simple query resource
+    register_db_resource(
+        "db://bench_test",
+        "Benchmark Test",
+        "Benchmark database query",
+        "SELECT 1 as id, 'test' as name, 42 as value",
+        vec![],
+    );
+    
+    let iterations = 100;
+    
+    println!("  Database query execution ({} iterations)...", iterations);
+    let start = Instant::now();
+    let mut successes = 0;
+    for _ in 0..iterations {
+        match read_resource("db://bench_test") {
+            Ok(_) => successes += 1,
+            Err(e) => eprintln!("  Error: {}", e),
+        }
+    }
+    let query_ms = start.elapsed().as_millis() as f64 / iterations as f64;
+    println!("  Mean: {:.2} ms ({}/{})", query_ms, successes, iterations);
 }
