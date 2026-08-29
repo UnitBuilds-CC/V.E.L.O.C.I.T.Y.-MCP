@@ -647,6 +647,63 @@ pub fn github_connector_template(client_id: &str, client_secret: Option<&str>) -
     }
 }
 
+/// Pre-built connector template for GitLab.
+pub fn gitlab_connector_template(client_id: &str, client_secret: Option<&str>) -> ConnectorConfig {
+    ConnectorConfig {
+        id: "gitlab".to_string(),
+        name: "GitLab API".to_string(),
+        base_url: "https://gitlab.com/api/v4".to_string(),
+        auth_type: "oauth2".to_string(),
+        oauth2_config: Some(OAuth2Config {
+            authorize_url: "https://gitlab.com/oauth/authorize".to_string(),
+            token_url: "https://gitlab.com/oauth/token".to_string(),
+            client_id: client_id.to_string(),
+            client_secret: client_secret.map(|s| s.to_string()),
+            scopes: Some(vec!["api".to_string(), "read_user".to_string()]),
+            redirect_uri: None,
+        }),
+        webhook_config: None,
+    }
+}
+
+/// Pre-built connector template for Slack.
+pub fn slack_connector_template(client_id: &str, client_secret: Option<&str>) -> ConnectorConfig {
+    ConnectorConfig {
+        id: "slack".to_string(),
+        name: "Slack API".to_string(),
+        base_url: "https://slack.com/api".to_string(),
+        auth_type: "oauth2".to_string(),
+        oauth2_config: Some(OAuth2Config {
+            authorize_url: "https://slack.com/oauth/v2/authorize".to_string(),
+            token_url: "https://slack.com/api/oauth.v2.access".to_string(),
+            client_id: client_id.to_string(),
+            client_secret: client_secret.map(|s| s.to_string()),
+            scopes: Some(vec!["chat:write".to_string(), "channels:read".to_string()]),
+            redirect_uri: None,
+        }),
+        webhook_config: None,
+    }
+}
+
+/// Pre-built connector template for Discord.
+pub fn discord_connector_template(client_id: &str, client_secret: Option<&str>) -> ConnectorConfig {
+    ConnectorConfig {
+        id: "discord".to_string(),
+        name: "Discord API".to_string(),
+        base_url: "https://discord.com/api".to_string(),
+        auth_type: "oauth2".to_string(),
+        oauth2_config: Some(OAuth2Config {
+            authorize_url: "https://discord.com/api/oauth2/authorize".to_string(),
+            token_url: "https://discord.com/api/oauth2/token".to_string(),
+            client_id: client_id.to_string(),
+            client_secret: client_secret.map(|s| s.to_string()),
+            scopes: Some(vec!["bot".to_string(), "identify".to_string()]),
+            redirect_uri: None,
+        }),
+        webhook_config: None,
+    }
+}
+
 /// Pre-built connector template for Google.
 pub fn google_connector_template(client_id: &str, client_secret: Option<&str>) -> ConnectorConfig {
     ConnectorConfig {
@@ -663,6 +720,25 @@ pub fn google_connector_template(client_id: &str, client_secret: Option<&str>) -
                 "https://www.googleapis.com/auth/userinfo.profile".to_string(),
                 "https://www.googleapis.com/auth/userinfo.email".to_string(),
             ]),
+            redirect_uri: None,
+        }),
+        webhook_config: None,
+    }
+}
+
+/// Pre-built connector template for Microsoft.
+pub fn microsoft_connector_template(client_id: &str, client_secret: Option<&str>) -> ConnectorConfig {
+    ConnectorConfig {
+        id: "microsoft".to_string(),
+        name: "Microsoft Graph API".to_string(),
+        base_url: "https://graph.microsoft.com/v1.0".to_string(),
+        auth_type: "oauth2".to_string(),
+        oauth2_config: Some(OAuth2Config {
+            authorize_url: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize".to_string(),
+            token_url: "https://login.microsoftonline.com/common/oauth2/v2.0/token".to_string(),
+            client_id: client_id.to_string(),
+            client_secret: client_secret.map(|s| s.to_string()),
+            scopes: Some(vec!["User.Read".to_string(), "Mail.Read".to_string()]),
             redirect_uri: None,
         }),
         webhook_config: None,
