@@ -38,6 +38,9 @@ pub mod transport;
 pub mod config;
 /// Comprehensive error handling.
 pub mod error;
+/// Advanced middleware and features.
+#[cfg(feature = "http")]
+pub mod middleware;
 
 /// Server version string.
 pub const VERSION: &str = "3.0.0";
