@@ -26,6 +26,8 @@ fn main() {
     let mut mode = "stdio";
     let mut buffer_path = "nmcp_buffer.bin";
     let mut addr = "0.0.0.0:3000";
+    let mut tls_cert: Option<&str> = None;
+    let mut tls_key: Option<&str> = None;
     let mut benchmark_mode = false;
 
     let mut i = 1;
@@ -55,6 +57,24 @@ fn main() {
                     i += 2;
                 } else {
                     eprintln!("Error: --addr requires an argument");
+                    process::exit(1);
+                }
+            }
+            "--tls-cert" => {
+                if i + 1 < args.len() {
+                    tls_cert = Some(&args[i + 1]);
+                    i += 2;
+                } else {
+                    eprintln!("Error: --tls-cert requires a path argument");
+                    process::exit(1);
+                }
+            }
+            "--tls-key" => {
+                if i + 1 < args.len() {
+                    tls_key = Some(&args[i + 1]);
+                    i += 2;
+                } else {
+                    eprintln!("Error: --tls-key requires a path argument");
                     process::exit(1);
                 }
             }
@@ -127,7 +147,18 @@ fn main() {
                 eprintln!("Warning: Failed to set Ctrl+C handler: {}", e);
             }
             let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-            if let Err(e) = rt.block_on(velocity_mcp::transport::http::run_http_server(addr, shutdown, None)) {
+            let tls_config = match (tls_cert, tls_key) {
+                (Some(cert), Some(key)) => Some(velocity_mcp::transport::http::TlsConfig {
+                    cert_path: cert.to_string(),
+                    key_path: key.to_string(),
+                }),
+                (Some(_), None) | (None, Some(_)) => {
+                    eprintln!("Error: --tls-cert and --tls-key must both be provided");
+                    process::exit(1);
+                }
+                (None, None) => None,
+            };
+            if let Err(e) = rt.block_on(velocity_mcp::transport::http::run_http_server(addr, shutdown, None, tls_config)) {
                 error!(error = %e, "HTTP server encountered error");
                 eprintln!("HTTP server encountered error: {}", e);
                 process::exit(1);
@@ -157,6 +188,8 @@ fn print_help() {
     println!("  --mode <stdio|shmem|http>     Protocol mode. Default: stdio");
     println!("  --buffer-path <path>          Path to mapped buffer file. Only used in shmem mode. Default: nmcp_buffer.bin");
     println!("  --addr <address>              HTTP listen address. Only used in http mode. Default: 0.0.0.0:3000");
+    println!("  --tls-cert <path>             Path to TLS certificate (PEM). Enables HTTPS when paired with --tls-key");
+    println!("  --tls-key <path>              Path to TLS private key (PEM). Enables HTTPS when paired with --tls-cert");
     println!("  --benchmark                   Run the performance benchmark suite");
     println!("  -h, --help                    Print this help screen");
     println!();

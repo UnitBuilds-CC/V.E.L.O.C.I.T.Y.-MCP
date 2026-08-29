@@ -11,6 +11,7 @@
 //! - API key authentication
 //! - Configurable CORS
 //! - Request size limits
+//! - TLS/HTTPS support
 //!
 //! This module is feature-gated behind the `http` feature flag.
 
@@ -46,6 +47,15 @@ pub struct HttpSecurityConfig {
     pub enable_rate_limit: bool,
     /// Allowed CORS origins (None = allow all)
     pub cors_origins: Option<Vec<String>>,
+}
+
+/// TLS configuration for HTTPS support.
+#[derive(Clone, Debug)]
+pub struct TlsConfig {
+    /// Path to TLS certificate file (PEM format)
+    pub cert_path: String,
+    /// Path to TLS private key file (PEM format)
+    pub key_path: String,
 }
 
 impl Default for HttpSecurityConfig {
@@ -489,10 +499,12 @@ fn build_router(state: Arc<ServerState>) -> Router {
 /// Run the HTTP server on the given address.
 ///
 /// This function blocks until the shutdown signal is received.
+/// If tls_config is provided, the server will use HTTPS instead of HTTP.
 pub async fn run_http_server(
     addr: &str, 
     shutdown: Arc<AtomicBool>,
     security_config: Option<HttpSecurityConfig>,
+    tls_config: Option<TlsConfig>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let state = Arc::new(ServerState {
         shutdown: shutdown.clone(),
@@ -504,15 +516,99 @@ pub async fn run_http_server(
 
     let app = build_router(state);
 
-    info!(addr = addr, "Starting HTTP server");
-
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal(shutdown))
-        .await?;
+    if let Some(tls_cfg) = tls_config {
+        info!(addr = addr, "Starting HTTPS server with TLS");
+        
+        // Load TLS certificates
+        let tls_config = load_tls_config(&tls_cfg.cert_path, &tls_cfg.key_path)?;
+        let tls_acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls_config));
+        
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        
+        loop {
+            let (stream, addr) = tokio::select! {
+                result = listener.accept() => {
+                    match result {
+                        Ok(conn) => conn,
+                        Err(e) => {
+                            tracing::error!(error = %e, "Failed to accept connection");
+                            continue;
+                        }
+                    }
+                }
+                _ = shutdown_signal(shutdown.clone()) => {
+                    info!("Shutdown signal received, stopping HTTPS server");
+                    break;
+                }
+            };
+            
+            let tls_acceptor = tls_acceptor.clone();
+            let app = app.clone();
+            
+            tokio::spawn(async move {
+                let tls_stream = match tls_acceptor.accept(stream).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::error!(error = %e, "TLS handshake failed for {}", addr);
+                        return;
+                    }
+                };
+                
+                let io = hyper_util::rt::TokioIo::new(tls_stream);
+                let service = hyper_util::service::TowerToHyperService::new(app);
+                
+                if let Err(e) = hyper_util::server::conn::auto::Builder::new(
+                    hyper_util::rt::TokioExecutor::new(),
+                )
+                .serve_connection(io, service)
+                .await
+                {
+                    tracing::error!(error = %e, "TLS connection error for {}", addr);
+                }
+            });
+        }
+    } else {
+        info!(addr = addr, "Starting HTTP server");
+        
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown_signal(shutdown))
+            .await?;
+    }
 
     info!("HTTP server shut down cleanly");
     Ok(())
+}
+
+/// Load TLS configuration from certificate and key files.
+fn load_tls_config(cert_path: &str, key_path: &str) -> Result<rustls::ServerConfig, Box<dyn std::error::Error>> {
+    use std::fs::File;
+    use std::io::BufReader;
+    use rustls_pemfile::{certs, private_key};
+    
+    // Load certificate chain
+    let cert_file = File::open(cert_path)?;
+    let mut cert_reader = BufReader::new(cert_file);
+    let certs: Vec<_> = certs(&mut cert_reader)
+        .filter_map(|c| c.ok())
+        .collect();
+    
+    if certs.is_empty() {
+        return Err("No certificates found in certificate file".into());
+    }
+    
+    // Load private key
+    let key_file = File::open(key_path)?;
+    let mut key_reader = BufReader::new(key_file);
+    let key = private_key(&mut key_reader)?
+        .ok_or("No private key found in key file")?;
+    
+    // Build server config
+    let config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)?;
+    
+    Ok(config)
 }
 
 /// Wait for the shutdown signal.

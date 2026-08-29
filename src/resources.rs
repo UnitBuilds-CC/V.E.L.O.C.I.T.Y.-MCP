@@ -89,8 +89,17 @@ pub struct ResourceUpdate {
 /// Global resource registry.
 static RESOURCE_REGISTRY: OnceLock<Mutex<ResourceStore>> = OnceLock::new();
 
+/// Configured database path for database resources.
+static DATABASE_PATH: OnceLock<String> = OnceLock::new();
+
 fn get_resource_registry() -> &'static Mutex<ResourceStore> {
     RESOURCE_REGISTRY.get_or_init(|| Mutex::new(ResourceStore::default()))
+}
+
+/// Set the database path for database-backed resources.
+/// Must be called before any database resource is read.
+pub fn set_database_path(path: &str) {
+    let _ = DATABASE_PATH.set(path.to_string());
 }
 
 /// In-memory resource store.
@@ -276,10 +285,12 @@ struct ResourceReadResult {
 fn execute_database_query(uri: &str, config: &DbResourceConfig) -> Result<ResourceReadResult, String> {
     use rusqlite::Connection;
     
-    // For now, use in-memory database. In production, this would be configurable.
-    // TODO: Add database connection configuration and pooling
-    let conn = Connection::open_in_memory()
-        .map_err(|e| format!("Failed to open database: {}", e))?;
+    let conn = match DATABASE_PATH.get() {
+        Some(path) => Connection::open(path)
+            .map_err(|e| format!("Failed to open database at {}: {}", path, e))?,
+        None => Connection::open_in_memory()
+            .map_err(|e| format!("Failed to open in-memory database: {}", e))?,
+    };
     
     // Execute the query with parameters
     let mut stmt = conn.prepare(&config.query)
