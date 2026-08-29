@@ -36,6 +36,8 @@ pub mod oauth2;
 pub mod transport;
 /// Configuration management.
 pub mod config;
+/// Comprehensive error handling.
+pub mod error;
 
 /// Server version string.
 pub const VERSION: &str = "3.0.0";

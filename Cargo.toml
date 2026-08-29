@@ -50,6 +50,9 @@ hmac = { version = "0.12", optional = true }
 # Configuration management
 toml = "0.8"
 
+# Error handling
+thiserror = "2"
+
 [dev-dependencies]
 proptest = "1"
 
