@@ -104,6 +104,7 @@ pub fn mcp_tool(attr: TokenStream, item: TokenStream) -> TokenStream {
     let tool_struct_name = format_ident!("{}", func_name.to_string().to_uppercase());
     let original_func_name = format_ident!("__{}_original", func_name);
     let register_fn_name = format_ident!("__register_{}", func_name);
+    let auto_register_fn_name = format_ident!("__auto_register_{}", func_name);
     
     let expanded = quote! {
         // Original function with renamed identifier
@@ -130,6 +131,12 @@ pub fn mcp_tool(attr: TokenStream, item: TokenStream) -> TokenStream {
         
         // Auto-registration function
         pub fn #register_fn_name() {
+            ::velocity_mcp::registry::register_tool_lazy(&#tool_struct_name);
+        }
+        
+        // Auto-registration constructor - runs at program startup
+        #[::ctor::ctor]
+        fn #auto_register_fn_name() {
             ::velocity_mcp::registry::register_tool_lazy(&#tool_struct_name);
         }
         

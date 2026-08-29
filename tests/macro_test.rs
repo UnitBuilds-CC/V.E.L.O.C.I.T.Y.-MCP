@@ -108,4 +108,13 @@ mod tests {
         // optional should not be in required
         assert!(!required.iter().any(|v| v.as_str() == Some("optional")));
     }
+
+    #[test]
+    fn test_auto_registration() {
+        // Tools should be automatically registered at program startup via ctor
+        // Check that the tool is in the registry
+        let tools = velocity_mcp::registry::get_tools();
+        let found = tools.iter().any(|t| t.name == "test_tool");
+        assert!(found, "Tool should be auto-registered at startup");
+    }
 }
