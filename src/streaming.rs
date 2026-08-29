@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
+#[cfg(feature = "http")]
+use tokio::sync::mpsc;
 
 /// Progress notification sent from server to client.
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -276,6 +278,63 @@ pub fn chunk_result(data: &Value, chunk_size: usize) -> Vec<StreamingChunk> {
     chunks
 }
 
+/// Convert a streaming chunk to an SSE event data string.
+#[cfg(feature = "http")]
+pub fn chunk_to_sse_event(token: &ProgressToken, chunk: &StreamingChunk) -> String {
+    let event = create_streaming_chunk_notification(token, chunk);
+    serde_json::to_string(&event).unwrap_or_default()
+}
+
+/// Stream chunks via a channel for SSE delivery.
+/// Returns a receiver that yields SSE-formatted chunk notifications.
+#[cfg(feature = "http")]
+pub fn stream_chunks_to_sse(
+    token: ProgressToken,
+    chunks: Vec<StreamingChunk>,
+) -> mpsc::Receiver<String> {
+    let (tx, rx) = mpsc::channel(chunks.len().max(1));
+    
+    tokio::spawn(async move {
+        for chunk in chunks {
+            let event_data = chunk_to_sse_event(&token, &chunk);
+            if tx.send(event_data).await.is_err() {
+                break; // Client disconnected
+            }
+            record_streaming_chunk(&token);
+        }
+    });
+    
+    rx
+}
+
+/// Stream chunks with backpressure support.
+/// Yields chunks at a controlled rate to avoid overwhelming the client.
+#[cfg(feature = "http")]
+pub fn stream_chunks_with_backpressure(
+    token: ProgressToken,
+    chunks: Vec<StreamingChunk>,
+    delay_ms: u64,
+) -> mpsc::Receiver<String> {
+    let (tx, rx) = mpsc::channel(chunks.len().max(1));
+    
+    tokio::spawn(async move {
+        for chunk in chunks {
+            let event_data = chunk_to_sse_event(&token, &chunk);
+            if tx.send(event_data).await.is_err() {
+                break; // Client disconnected (backpressure)
+            }
+            record_streaming_chunk(&token);
+            
+            // Add delay between chunks for backpressure
+            if delay_ms > 0 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+            }
+        }
+    });
+    
+    rx
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,5 +496,54 @@ mod tests {
         assert_eq!(msg["params"]["progressToken"], "stream1");
         assert_eq!(msg["params"]["chunk"]["chunk_id"], 0);
         assert_eq!(msg["params"]["chunk"]["data"], "chunk data");
+    }
+
+    #[test]
+    #[cfg(feature = "http")]
+    fn test_chunk_to_sse_event() {
+        let token = ProgressToken::String("sse_test".to_string());
+        let chunk = StreamingChunk {
+            chunk_id: 0,
+            data: json!("test data"),
+            is_final: Some(false),
+        };
+        
+        let event_data = chunk_to_sse_event(&token, &chunk);
+        assert!(!event_data.is_empty());
+        
+        // Verify it's valid JSON
+        let parsed: Value = serde_json::from_str(&event_data).unwrap();
+        assert_eq!(parsed["method"], "notifications/streaming");
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "http")]
+    async fn test_stream_chunks_to_sse() {
+        let token = ProgressToken::String("stream_sse".to_string());
+        let chunks = vec![
+            StreamingChunk {
+                chunk_id: 0,
+                data: json!("chunk1"),
+                is_final: Some(false),
+            },
+            StreamingChunk {
+                chunk_id: 1,
+                data: json!("chunk2"),
+                is_final: Some(true),
+            },
+        ];
+        
+        let mut rx = stream_chunks_to_sse(token, chunks);
+        
+        // Receive first chunk
+        let event1 = rx.recv().await.unwrap();
+        assert!(!event1.is_empty());
+        
+        // Receive second chunk
+        let event2 = rx.recv().await.unwrap();
+        assert!(!event2.is_empty());
+        
+        // Channel should be closed
+        assert!(rx.recv().await.is_none());
     }
 }
