@@ -22,6 +22,9 @@ pub mod sandbox;
 pub mod audit;
 /// Token bucket rate limiter for MCP tool calls.
 pub mod rate_limit;
+/// Transport layer (stdio, shmem, HTTP/SSE).
+#[cfg(feature = "http")]
+pub mod transport;
 
 /// Server version string.
 pub const VERSION: &str = "3.0.0";

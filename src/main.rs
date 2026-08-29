@@ -1,6 +1,7 @@
 use std::env;
 use std::process;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tracing::{info, error};
 
 use velocity_mcp::{protocol, registry, benchmark};
@@ -24,6 +25,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let mut mode = "stdio";
     let mut buffer_path = "nmcp_buffer.bin";
+    let mut addr = "0.0.0.0:3000";
     let mut benchmark_mode = false;
 
     let mut i = 1;
@@ -34,7 +36,7 @@ fn main() {
                     mode = &args[i + 1];
                     i += 2;
                 } else {
-                    eprintln!("Error: --mode requires an argument (stdio|shmem)");
+                    eprintln!("Error: --mode requires an argument (stdio|shmem|http)");
                     process::exit(1);
                 }
             }
@@ -44,6 +46,15 @@ fn main() {
                     i += 2;
                 } else {
                     eprintln!("Error: --buffer-path requires an argument");
+                    process::exit(1);
+                }
+            }
+            "--addr" => {
+                if i + 1 < args.len() {
+                    addr = &args[i + 1];
+                    i += 2;
+                } else {
+                    eprintln!("Error: --addr requires an argument");
                     process::exit(1);
                 }
             }
@@ -99,9 +110,37 @@ fn main() {
                 process::exit(1);
             }
         }
+        #[cfg(feature = "http")]
+        "http" => {
+            info!(addr = addr, "HTTP server address");
+            let shutdown = Arc::new(AtomicBool::new(false));
+            // Copy the current SHUTDOWN state
+            if SHUTDOWN.load(Ordering::Relaxed) {
+                shutdown.store(true, Ordering::SeqCst);
+            }
+            // Set up Ctrl+C to also set our local shutdown
+            let shutdown_clone = Arc::clone(&shutdown);
+            if let Err(e) = ctrlc::set_handler(move || {
+                info!("Received shutdown signal, shutting down HTTP server...");
+                shutdown_clone.store(true, Ordering::SeqCst);
+            }) {
+                eprintln!("Warning: Failed to set Ctrl+C handler: {}", e);
+            }
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+            if let Err(e) = rt.block_on(velocity_mcp::transport::http::run_http_server(addr, shutdown)) {
+                error!(error = %e, "HTTP server encountered error");
+                eprintln!("HTTP server encountered error: {}", e);
+                process::exit(1);
+            }
+        }
+        #[cfg(not(feature = "http"))]
+        "http" => {
+            eprintln!("Error: HTTP transport not enabled. Build with --features http");
+            process::exit(1);
+        }
         _ => {
             error!(mode = mode, "Invalid mode");
-            eprintln!("Error: Invalid mode '{}'. Supported modes: stdio, shmem", mode);
+            eprintln!("Error: Invalid mode '{}'. Supported modes: stdio, shmem, http", mode);
             process::exit(1);
         }
     }
@@ -115,12 +154,13 @@ fn print_help() {
     println!("  velocity_mcp [options]");
     println!();
     println!("Options:");
-    println!("  --mode <stdio|shmem>        Protocol mode. stdio (JSON-RPC) or shmem (Shared Memory binary). Default: stdio");
-    println!("  --buffer-path <path>        Path to mapped buffer file. Only used in shmem mode. Default: nmcp_buffer.bin");
-    println!("  --benchmark                 Run the performance benchmark suite");
-    println!("  -h, --help                  Print this help screen");
+    println!("  --mode <stdio|shmem|http>     Protocol mode. Default: stdio");
+    println!("  --buffer-path <path>          Path to mapped buffer file. Only used in shmem mode. Default: nmcp_buffer.bin");
+    println!("  --addr <address>              HTTP listen address. Only used in http mode. Default: 0.0.0.0:3000");
+    println!("  --benchmark                   Run the performance benchmark suite");
+    println!("  -h, --help                    Print this help screen");
     println!();
     println!("Environment Variables:");
-    println!("  VELOCITY_CSHARP_PATH        Override path to C# NdaMcpServer.exe");
-    println!("  RUST_LOG                    Set log level (e.g., info, debug, trace). Default: info");
+    println!("  VELOCITY_CSHARP_PATH          Override path to C# NdaMcpServer.exe");
+    println!("  RUST_LOG                      Set log level (e.g., info, debug, trace). Default: info");
 }
