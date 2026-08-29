@@ -10,6 +10,7 @@ license = "MIT OR Apache-2.0"
 default = []
 http = ["axum", "tokio", "tokio-stream", "tower", "tower-http", "uuid"]
 oauth2 = ["ureq"]
+database = ["rusqlite"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -37,6 +38,9 @@ uuid = { version = "1.0", features = ["v4"], optional = true }
 
 # Optional: OAuth2 connectors
 ureq = { version = "2.9", features = ["json"], optional = true }
+
+# Optional: Database resources
+rusqlite = { version = "0.31", features = ["bundled"], optional = true }
 
 [dev-dependencies]
 proptest = "1"

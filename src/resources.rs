@@ -224,18 +224,23 @@ impl ResourceStore {
         
         // Try database resource
         if let Some(db_config) = self.db_resources.get(uri) {
-            // Placeholder for actual database query execution
-            // In a real implementation, this would execute the query
-            let mock_result = json!({
-                "query": db_config.query,
-                "params": db_config.params,
-                "result": "Database query would execute here"
-            });
-            return Ok(ResourceReadResult {
-                uri: uri.to_string(),
-                mime_type: "application/json".to_string(),
-                text: Some(serde_json::to_string_pretty(&mock_result).unwrap()),
-            });
+            #[cfg(feature = "database")]
+            {
+                return execute_database_query(uri, db_config);
+            }
+            #[cfg(not(feature = "database"))]
+            {
+                let mock_result = json!({
+                    "query": db_config.query,
+                    "params": db_config.params,
+                    "result": "Database feature not enabled. Build with --features database"
+                });
+                return Ok(ResourceReadResult {
+                    uri: uri.to_string(),
+                    mime_type: "application/json".to_string(),
+                    text: Some(serde_json::to_string_pretty(&mock_result).unwrap()),
+                });
+            }
         }
         
         // Try API resource
@@ -264,6 +269,61 @@ struct ResourceReadResult {
     uri: String,
     mime_type: String,
     text: Option<String>,
+}
+
+/// Execute a database query and return results as JSON.
+#[cfg(feature = "database")]
+fn execute_database_query(uri: &str, config: &DbResourceConfig) -> Result<ResourceReadResult, String> {
+    use rusqlite::Connection;
+    
+    // For now, use in-memory database. In production, this would be configurable.
+    // TODO: Add database connection configuration and pooling
+    let conn = Connection::open_in_memory()
+        .map_err(|e| format!("Failed to open database: {}", e))?;
+    
+    // Execute the query with parameters
+    let mut stmt = conn.prepare(&config.query)
+        .map_err(|e| format!("Failed to prepare query: {}", e))?;
+    
+    // Get column names
+    let column_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    
+    // Execute query and collect results
+    let rows_result = stmt.query_map([], |row| {
+        let mut row_data = serde_json::Map::new();
+        for (i, col_name) in column_names.iter().enumerate() {
+            let value: rusqlite::types::Value = row.get(i)?;
+            let json_value = match value {
+                rusqlite::types::Value::Null => Value::Null,
+                rusqlite::types::Value::Integer(i) => json!(i),
+                rusqlite::types::Value::Real(f) => json!(f),
+                rusqlite::types::Value::Text(s) => json!(s),
+                rusqlite::types::Value::Blob(b) => json!(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &b)),
+            };
+            row_data.insert(col_name.clone(), json_value);
+        }
+        Ok(Value::Object(row_data))
+    }).map_err(|e| format!("Failed to execute query: {}", e))?;
+    
+    let mut results = Vec::new();
+    for row in rows_result {
+        let row_value = row.map_err(|e| format!("Failed to read row: {}", e))?;
+        results.push(row_value);
+    }
+    
+    let result_json = json!({
+        "query": config.query,
+        "params": config.params,
+        "columns": column_names,
+        "rows": results,
+        "row_count": results.len()
+    });
+    
+    Ok(ResourceReadResult {
+        uri: uri.to_string(),
+        mime_type: "application/json".to_string(),
+        text: Some(serde_json::to_string_pretty(&result_json).unwrap()),
+    })
 }
 
 fn guess_mime(ext: &str) -> String {
@@ -839,5 +899,63 @@ mod tests {
         let result = handle_resources_unsubscribe("test://unsub", "client1");
         assert!(result.is_ok());
         assert_eq!(result.unwrap()["status"], "unsubscribed");
+    }
+
+    #[test]
+    #[cfg(feature = "database")]
+    fn test_database_resource_query() {
+        // Register a database resource
+        register_db_resource(
+            "db://users",
+            "Users",
+            "User database",
+            "SELECT 1 as id, 'Alice' as name, 30 as age",
+            vec![],
+        );
+        
+        // Read the resource
+        let result = read_resource("db://users");
+        assert!(result.is_ok(), "Database query should succeed: {:?}", result.err());
+        
+        let resource_data = result.unwrap();
+        
+        // The result should have a "contents" array
+        let contents = resource_data["contents"].as_array().unwrap();
+        assert!(!contents.is_empty());
+        
+        let first_content = &contents[0];
+        assert_eq!(first_content["mimeType"], "application/json");
+        
+        // Parse the JSON result
+        let json_str = first_content["text"].as_str().unwrap();
+        let json_data: Value = serde_json::from_str(json_str).unwrap();
+        
+        // Verify the query results
+        assert_eq!(json_data["columns"].as_array().unwrap().len(), 3);
+        assert_eq!(json_data["row_count"].as_u64().unwrap(), 1);
+        assert_eq!(json_data["rows"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_database_resource_without_feature() {
+        // This test runs without the database feature
+        register_db_resource(
+            "db://test",
+            "Test DB",
+            "Test database",
+            "SELECT 1",
+            vec![],
+        );
+        
+        let result = read_resource("db://test");
+        assert!(result.is_ok());
+        
+        // Should return mock data when database feature is not enabled
+        let resource_data = result.unwrap();
+        let contents = resource_data["contents"].as_array().unwrap();
+        assert!(!contents.is_empty());
+        
+        let first_content = &contents[0];
+        assert_eq!(first_content["mimeType"], "application/json");
     }
 }
