@@ -18,7 +18,7 @@ pub struct Tool {
 
 /// Default C# NdaMcpServer path. Can be overridden via VELOCITY_CSHARP_PATH env var
 /// or by passing a custom path to `call_tool_with_csharp_path`.
-const DEFAULT_CSHARP_PATH: &str = r"C:\Users\visse\OneDrive\Documents\Payment and Transaction Flow\Velocity\NdaMcpServer\bin\Debug\net10.0\NdaMcpServer.exe";
+const DEFAULT_CSHARP_PATH: &str = "NdaMcpServer.exe";
 
 /// Timeout for C# process execution (30 seconds).
 /// Note: Currently unused as we read stdout until complete response, then kill the process.
@@ -408,8 +408,12 @@ fn execute_nda_binary_tool(tool_name: &str, arguments: &Value, nda_binary: &[u8]
     let (original_args, _) = decode_json_value(args_data)?;
     
     // Merge: use the call-time arguments if provided, otherwise fall back to original
-    let effective_args = if arguments.is_object() && !arguments.as_object().unwrap().is_empty() {
-        arguments.clone()
+    let effective_args = if let Some(obj) = arguments.as_object() {
+        if !obj.is_empty() {
+            arguments.clone()
+        } else {
+            original_args
+        }
     } else {
         original_args
     };

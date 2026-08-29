@@ -3,7 +3,6 @@
 //! Provides custom error types for each module with detailed error messages,
 //! error codes, and recovery strategies.
 
-use std::fmt;
 use thiserror::Error;
 
 /// Main error type for the VELOCITY-MCP server.

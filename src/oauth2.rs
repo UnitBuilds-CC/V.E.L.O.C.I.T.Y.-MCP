@@ -344,7 +344,7 @@ pub struct WebhookDeliveryResult {
 /// Compute HMAC-SHA256 signature for webhook payload.
 #[cfg(feature = "oauth2")]
 pub fn compute_webhook_signature(payload: &str, secret: &str) -> String {
-    use sha2::{Sha256, Digest};
+    use sha2::Sha256;
     use hmac::{Hmac, Mac};
     
     type HmacSha256 = Hmac<Sha256>;

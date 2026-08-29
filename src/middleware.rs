@@ -56,7 +56,7 @@ impl ResponseCache {
                 .ok()?;
             
             *response.headers_mut() = entry.headers.clone();
-            response.headers_mut().insert("X-Cache", "HIT".parse().unwrap());
+            response.headers_mut().insert("X-Cache", axum::http::HeaderValue::from_static("HIT"));
             
             Some(response)
         } else {
@@ -64,26 +64,26 @@ impl ResponseCache {
         }
     }
     
-    /// Store a response in the cache.
-    pub fn set(&self, key: String, response: Response, ttl: Option<Duration>) {
+    /// Store a response in the cache. Returns the response (cloned body) so the caller can still use it.
+    pub async fn set(&self, key: String, response: Response, ttl: Option<Duration>) -> Response {
         let ttl = ttl.unwrap_or(self.default_ttl);
         let expires_at = Instant::now() + ttl;
         
         let (parts, body) = response.into_parts();
+        let body_bytes = axum::body::to_bytes(body, 10 * 1024 * 1024).await.unwrap_or_default();
         
-        // We can't easily extract the body as bytes, so we'll skip caching for now
-        // In a real implementation, you'd use axum::body::to_bytes or similar
-        // For now, we'll just store the metadata
         let entry = CacheEntry {
-            response: Vec::new(), // Placeholder
+            response: body_bytes.to_vec(),
             status: parts.status,
-            headers: parts.headers,
+            headers: parts.headers.clone(),
             expires_at,
         };
         
         if let Ok(mut entries) = self.entries.write() {
             entries.insert(key, entry);
         }
+        
+        Response::from_parts(parts, Body::from(body_bytes))
     }
     
     /// Clear expired entries from the cache.
@@ -160,12 +160,11 @@ pub async fn handle_batch_request(
     let mut responses = Vec::new();
     
     for request in batch.requests {
-        // In a real implementation, you'd process each request
-        // For now, we'll just return a placeholder response
-        responses.push(serde_json::json!({
-            "status": 200,
-            "body": {"message": "Batch request processed"}
-        }));
+        let result = crate::protocol::json_rpc::handle_request(&request);
+        match result {
+            Some(response) => responses.push(response),
+            None => responses.push(serde_json::json!({"status": "notification processed"})),
+        }
     }
     
     axum::Json(responses).into_response()
@@ -177,29 +176,19 @@ pub fn cache_middleware(cache: ResponseCache) -> impl Fn(Request, Next) -> std::
         let cache = cache.clone();
         
         Box::pin(async move {
-            // Generate cache key from method + URI
             let cache_key = format!("{}:{}", request.method(), request.uri());
             
-            // Try to get cached response
             if let Some(cached_response) = cache.get(&cache_key) {
                 return cached_response;
             }
             
-            // Process request
             let response = next.run(request).await;
             
-            // Cache successful GET responses
             if response.status().is_success() {
-                // Note: In a real implementation, you'd serialize the response body
-                // For now, we'll just cache the status and headers
-                cache.set(cache_key, response, None);
+                cache.set(cache_key, response, None).await
+            } else {
+                response
             }
-            
-            // Return a new response since we can't return the moved one
-            Response::builder()
-                .status(StatusCode::OK)
-                .body(Body::from("Response processed"))
-                .unwrap()
         })
     }
 }

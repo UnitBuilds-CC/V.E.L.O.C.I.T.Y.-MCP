@@ -11,7 +11,6 @@
 //! 3. Default values
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::Path;
 
 /// Main server configuration.
@@ -130,7 +129,7 @@ fn default_buffer_path() -> String {
 }
 
 fn default_csharp_path() -> String {
-    r"C:\Users\visse\OneDrive\Documents\Payment and Transaction Flow\Velocity\NdaMcpServer\bin\Debug\net10.0\NdaMcpServer.exe".to_string()
+    "NdaMcpServer.exe".to_string()
 }
 
 fn default_http_addr() -> String {

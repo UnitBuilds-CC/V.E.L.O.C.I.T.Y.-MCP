@@ -300,7 +300,8 @@ fn execute_database_query(uri: &str, config: &DbResourceConfig) -> Result<Resour
     let column_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
     
     // Execute query and collect results
-    let rows_result = stmt.query_map([], |row| {
+    let params: Vec<&str> = config.params.iter().map(|s| s.as_str()).collect();
+    let rows_result = stmt.query_map(rusqlite::params_from_iter(params), |row| {
         let mut row_data = serde_json::Map::new();
         for (i, col_name) in column_names.iter().enumerate() {
             let value: rusqlite::types::Value = row.get(i)?;
@@ -359,6 +360,19 @@ pub fn register_file_resource(uri: &str, name: &str, description: &str, path: &s
     let store = get_resource_registry();
     if let Ok(mut s) = store.lock() {
         s.register_file_resource(uri, name, description, PathBuf::from(path));
+    }
+}
+
+/// Register a resource template with a URI template pattern.
+pub fn register_resource_template(uri_template: &str, name: &str, description: &str, mime_type: Option<&str>) {
+    let store = get_resource_registry();
+    if let Ok(mut s) = store.lock() {
+        s.register_template(ResourceTemplate {
+            uri_template: uri_template.to_string(),
+            name: name.to_string(),
+            description: description.to_string(),
+            mime_type: mime_type.map(|s| s.to_string()),
+        });
     }
 }
 

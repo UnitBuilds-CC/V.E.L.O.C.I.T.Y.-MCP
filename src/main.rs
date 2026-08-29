@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{info, error};
 
-use velocity_mcp::{protocol, registry, benchmark};
+use velocity_mcp::{protocol, registry, benchmark, config::ServerConfig};
 
 /// Server version string, referenced by all protocol handlers and help text.
 pub const VERSION: &str = velocity_mcp::VERSION;
@@ -23,9 +23,10 @@ fn main() {
         .init();
 
     let args: Vec<String> = env::args().collect();
-    let mut mode = "stdio";
-    let mut buffer_path = "nmcp_buffer.bin";
-    let mut addr = "0.0.0.0:3000";
+    let mut config_path: Option<String> = None;
+    let mut cli_mode: Option<&str> = None;
+    let mut cli_buffer_path: Option<&str> = None;
+    let mut cli_addr: Option<&str> = None;
     let mut tls_cert: Option<&str> = None;
     let mut tls_key: Option<&str> = None;
     let mut benchmark_mode = false;
@@ -33,9 +34,18 @@ fn main() {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
+            "--config" => {
+                if i + 1 < args.len() {
+                    config_path = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    eprintln!("Error: --config requires a path argument");
+                    process::exit(1);
+                }
+            }
             "--mode" => {
                 if i + 1 < args.len() {
-                    mode = &args[i + 1];
+                    cli_mode = Some(&args[i + 1]);
                     i += 2;
                 } else {
                     eprintln!("Error: --mode requires an argument (stdio|shmem|http)");
@@ -44,7 +54,7 @@ fn main() {
             }
             "--buffer-path" => {
                 if i + 1 < args.len() {
-                    buffer_path = &args[i + 1];
+                    cli_buffer_path = Some(&args[i + 1]);
                     i += 2;
                 } else {
                     eprintln!("Error: --buffer-path requires an argument");
@@ -53,7 +63,7 @@ fn main() {
             }
             "--addr" => {
                 if i + 1 < args.len() {
-                    addr = &args[i + 1];
+                    cli_addr = Some(&args[i + 1]);
                     i += 2;
                 } else {
                     eprintln!("Error: --addr requires an argument");
@@ -98,6 +108,20 @@ fn main() {
         benchmark::run_benchmarks();
         return;
     }
+
+    // Load configuration: file -> env vars -> CLI overrides
+    let config = ServerConfig::load_with_env(config_path.as_deref());
+
+    if let Err(errors) = config.validate() {
+        for e in &errors {
+            eprintln!("Config error: {}", e);
+        }
+        process::exit(1);
+    }
+
+    let mode = cli_mode.unwrap_or(&config.mode);
+    let buffer_path = cli_buffer_path.unwrap_or(&config.buffer_path);
+    let addr = cli_addr.unwrap_or(&config.http.addr);
 
     // Install Ctrl+C handler for graceful shutdown
     if let Err(e) = ctrlc::set_handler(move || {
@@ -158,7 +182,13 @@ fn main() {
                 }
                 (None, None) => None,
             };
-            if let Err(e) = rt.block_on(velocity_mcp::transport::http::run_http_server(addr, shutdown, None, tls_config)) {
+            let security_config = velocity_mcp::transport::http::HttpSecurityConfig {
+                api_key: config.http.api_key.clone(),
+                max_request_size: config.http.max_request_size,
+                enable_rate_limit: config.http.enable_rate_limit,
+                cors_origins: config.http.cors_origins.clone(),
+            };
+            if let Err(e) = rt.block_on(velocity_mcp::transport::http::run_http_server(addr, shutdown, Some(security_config), tls_config)) {
                 error!(error = %e, "HTTP server encountered error");
                 eprintln!("HTTP server encountered error: {}", e);
                 process::exit(1);
@@ -185,6 +215,7 @@ fn print_help() {
     println!("  velocity_mcp [options]");
     println!();
     println!("Options:");
+    println!("  --config <path>               Path to TOML configuration file. CLI args override file values");
     println!("  --mode <stdio|shmem|http>     Protocol mode. Default: stdio");
     println!("  --buffer-path <path>          Path to mapped buffer file. Only used in shmem mode. Default: nmcp_buffer.bin");
     println!("  --addr <address>              HTTP listen address. Only used in http mode. Default: 0.0.0.0:3000");

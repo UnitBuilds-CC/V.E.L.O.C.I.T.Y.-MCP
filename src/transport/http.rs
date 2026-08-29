@@ -206,7 +206,7 @@ async fn handle_json_rpc(
                 )
             })?;
         
-        if !auth_header.starts_with("Bearer ") || &auth_header[7..] != expected_key {
+        if !auth_header.starts_with("Bearer ") || !constant_time_eq(&auth_header[7..], expected_key) {
             state.metrics.record_auth_failure();
             return Err((
                 StatusCode::UNAUTHORIZED,
@@ -296,11 +296,13 @@ async fn handle_streamable(
         "jsonrpc": request.jsonrpc,
         "method": request.method,
         "params": request.params,
-        "id": request.id
+        "id": request.id,
+        "_meta": request.meta,
     });
 
     // Spawn task to process request and stream results
     let session_id_clone = session_id.clone();
+    let state_clone = state.clone();
     tokio::spawn(async move {
         // Send session ID as first event
         let _ = tx.send(format!("event: session\ndata: {}\n\n", session_id_clone)).await;
@@ -313,6 +315,12 @@ async fn handle_streamable(
                 // Stream the response
                 let response_str = serde_json::to_string(&res).unwrap_or_default();
                 let _ = tx.send(format!("event: response\ndata: {}\n\n", response_str)).await;
+                
+                // Notify other SSE clients about the completed request
+                broadcast_event(&state_clone, "request_completed", &json!({
+                    "sessionId": session_id_clone,
+                    "method": request_json.get("method").cloned().unwrap_or(Value::Null),
+                })).await;
             }
             None => {
                 // Notification, no response needed
@@ -401,7 +409,10 @@ async fn sse_handler(
     )
 }
 
-/// Broadcast an event to all connected SSE clients.
+/// Maximum session idle time before eviction (30 minutes).
+const SESSION_TTL: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// Broadcast an event to all connected SSE clients, removing dead senders.
 async fn broadcast_event(state: &ServerState, event_type: &str, data: &Value) {
     let event_str = format!(
         "event: {}\ndata: {}\n\n",
@@ -409,10 +420,18 @@ async fn broadcast_event(state: &ServerState, event_type: &str, data: &Value) {
         serde_json::to_string(data).unwrap_or_default()
     );
 
-    let broadcasts = state.event_broadcast.read().await;
+    let mut broadcasts = state.event_broadcast.write().await;
+    broadcasts.retain(|sender| !sender.is_closed());
     for sender in broadcasts.iter() {
         let _ = sender.send(event_str.clone()).await;
     }
+}
+
+/// Evict sessions that have been idle beyond SESSION_TTL.
+async fn cleanup_sessions(state: &ServerState) {
+    let mut sessions = state.sessions.write().await;
+    let now = std::time::Instant::now();
+    sessions.retain(|_, session| now.duration_since(session.last_activity) < SESSION_TTL);
 }
 
 /// Health check endpoint.
@@ -493,6 +512,7 @@ fn build_router(state: Arc<ServerState>) -> Router {
         .route("/sessions", get(list_sessions))
         .route("/sessions/:id", get(delete_session))
         .layer(cors)
+        .layer(axum::extract::DefaultBodyLimit::max(state.security.max_request_size))
         .with_state(state)
 }
 
@@ -512,6 +532,20 @@ pub async fn run_http_server(
         event_broadcast: Arc::new(RwLock::new(Vec::new())),
         security: security_config.unwrap_or_default(),
         metrics: Arc::new(HttpMetrics::default()),
+    });
+
+    // Spawn session cleanup task
+    let cleanup_state = state.clone();
+    let cleanup_shutdown = shutdown.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5 * 60));
+        loop {
+            interval.tick().await;
+            if cleanup_shutdown.load(Ordering::Relaxed) {
+                break;
+            }
+            cleanup_sessions(&cleanup_state).await;
+        }
     });
 
     let app = build_router(state);
@@ -611,10 +645,22 @@ fn load_tls_config(cert_path: &str, key_path: &str) -> Result<rustls::ServerConf
     Ok(config)
 }
 
+/// Constant-time string comparison to prevent timing side-channel attacks.
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut result = 0u8;
+    for (x, y) in a.bytes().zip(b.bytes()) {
+        result |= x ^ y;
+    }
+    result == 0
+}
+
 /// Wait for the shutdown signal.
 async fn shutdown_signal(shutdown: Arc<AtomicBool>) {
     while !shutdown.load(Ordering::Relaxed) {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 }
 
