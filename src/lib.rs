@@ -26,6 +26,8 @@ pub mod rate_limit;
 pub mod resources;
 /// MCP Sampling protocol support.
 pub mod sampling;
+/// MCP Streaming and Progress Token support.
+pub mod streaming;
 /// Transport layer (stdio, shmem, HTTP/SSE).
 #[cfg(feature = "http")]
 pub mod transport;

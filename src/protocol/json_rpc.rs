@@ -11,6 +11,7 @@ use crate::audit::{self, AuditOutcome};
 use crate::rate_limit;
 use crate::resources;
 use crate::sampling;
+use crate::streaming;
 
 const MAX_REQUEST_SIZE: usize = 1_048_576;
 const DEFAULT_PAGE_SIZE: usize = 100;
@@ -75,6 +76,10 @@ pub fn handle_request(request: &Value) -> Option<Value> {
                 let reason = request["params"]["reason"].as_str().unwrap_or("");
                 debug!(request_id = %request_id, reason = reason, "Request cancelled by client");
             }
+            None
+        }
+        "notifications/progress" => {
+            streaming::handle_progress_notification(&request["params"]);
             None
         }
         "ping" => {
