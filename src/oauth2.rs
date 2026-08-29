@@ -5,6 +5,8 @@
 //! - OAuth2 authorization flow (authorize URL generation, code exchange)
 //! - Token refresh logic
 //! - Token expiration tracking
+//! - Encrypted token storage with AES-256-GCM
+//! - Persistent file-based token storage
 //! - Pre-built connectors for common services (GitHub, Google, etc.)
 //! - Webhook support
 //!
@@ -15,6 +17,14 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+#[cfg(feature = "oauth2")]
+use aes_gcm::{
+    aead::{Aead, KeyInit},
+    Aes256Gcm, Nonce,
+};
+#[cfg(feature = "oauth2")]
+use rand::RngCore;
 
 /// OAuth2 token with optional refresh and expiration tracking.
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -192,6 +202,123 @@ pub fn get_token(connector_id: &str) -> Option<OAuth2Token> {
         Ok(store) => store.get(connector_id).cloned(),
         Err(_) => None,
     }
+}
+
+/// Encryption key for token storage (32 bytes for AES-256).
+static ENCRYPTION_KEY: OnceLock<Mutex<Option<[u8; 32]>>> = OnceLock::new();
+
+fn get_encryption_key() -> &'static Mutex<Option<[u8; 32]>> {
+    ENCRYPTION_KEY.get_or_init(|| Mutex::new(None))
+}
+
+/// Set the encryption key for token storage.
+/// Must be called before using encrypted storage functions.
+pub fn set_encryption_key(key: [u8; 32]) {
+    if let Ok(mut key_store) = get_encryption_key().lock() {
+        *key_store = Some(key);
+    }
+}
+
+/// Generate a random encryption key.
+pub fn generate_encryption_key() -> [u8; 32] {
+    use rand::RngCore;
+    let mut key = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut key);
+    key
+}
+
+/// Encrypt a token for secure storage.
+#[cfg(feature = "oauth2")]
+pub fn encrypt_token(token: &OAuth2Token) -> Result<Vec<u8>, String> {
+    let key_store = get_encryption_key().lock()
+        .map_err(|e| format!("Failed to lock encryption key: {}", e))?;
+    
+    let key_bytes = key_store.as_ref()
+        .ok_or("Encryption key not set. Call set_encryption_key() first.")?;
+    
+    let cipher = Aes256Gcm::new_from_slice(key_bytes)
+        .map_err(|e| format!("Failed to create cipher: {}", e))?;
+    
+    // Generate a random nonce (12 bytes for AES-GCM)
+    let mut nonce_bytes = [0u8; 12];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    
+    // Serialize token to JSON
+    let token_json = serde_json::to_string(token)
+        .map_err(|e| format!("Failed to serialize token: {}", e))?;
+    
+    // Encrypt the token
+    let ciphertext = cipher.encrypt(nonce, token_json.as_bytes())
+        .map_err(|e| format!("Failed to encrypt token: {}", e))?;
+    
+    // Prepend nonce to ciphertext
+    let mut result = nonce_bytes.to_vec();
+    result.extend(ciphertext);
+    
+    Ok(result)
+}
+
+/// Decrypt a token from secure storage.
+#[cfg(feature = "oauth2")]
+pub fn decrypt_token(encrypted: &[u8]) -> Result<OAuth2Token, String> {
+    if encrypted.len() < 12 {
+        return Err("Encrypted data too short".to_string());
+    }
+    
+    let key_store = get_encryption_key().lock()
+        .map_err(|e| format!("Failed to lock encryption key: {}", e))?;
+    
+    let key_bytes = key_store.as_ref()
+        .ok_or("Encryption key not set. Call set_encryption_key() first.")?;
+    
+    let cipher = Aes256Gcm::new_from_slice(key_bytes)
+        .map_err(|e| format!("Failed to create cipher: {}", e))?;
+    
+    // Extract nonce and ciphertext
+    let nonce = Nonce::from_slice(&encrypted[..12]);
+    let ciphertext = &encrypted[12..];
+    
+    // Decrypt the token
+    let plaintext = cipher.decrypt(nonce, ciphertext)
+        .map_err(|e| format!("Failed to decrypt token: {}", e))?;
+    
+    // Deserialize token from JSON
+    let token_json = String::from_utf8(plaintext)
+        .map_err(|e| format!("Failed to convert to UTF-8: {}", e))?;
+    
+    let token: OAuth2Token = serde_json::from_str(&token_json)
+        .map_err(|e| format!("Failed to deserialize token: {}", e))?;
+    
+    Ok(token)
+}
+
+/// Store an encrypted token to a file.
+#[cfg(feature = "oauth2")]
+pub fn store_token_encrypted(connector_id: &str, token: &OAuth2Token, path: &str) -> Result<(), String> {
+    let encrypted = encrypt_token(token)?;
+    
+    std::fs::write(path, encrypted)
+        .map_err(|e| format!("Failed to write encrypted token: {}", e))?;
+    
+    // Also store in memory for quick access
+    store_token(connector_id, token.clone());
+    
+    Ok(())
+}
+
+/// Load an encrypted token from a file.
+#[cfg(feature = "oauth2")]
+pub fn load_token_encrypted(connector_id: &str, path: &str) -> Result<OAuth2Token, String> {
+    let encrypted = std::fs::read(path)
+        .map_err(|e| format!("Failed to read encrypted token: {}", e))?;
+    
+    let token = decrypt_token(&encrypted)?;
+    
+    // Store in memory for quick access
+    store_token(connector_id, token.clone());
+    
+    Ok(token)
 }
 
 /// Generate an OAuth2 authorization URL.
@@ -704,5 +831,82 @@ mod tests {
         // Should either succeed with error message or fail gracefully
         // The exact behavior depends on whether oauth2 feature is enabled
         assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    #[cfg(feature = "oauth2")]
+    fn test_encrypted_token_storage() {
+        // Generate and set encryption key
+        let key = generate_encryption_key();
+        set_encryption_key(key);
+        
+        // Create a test token
+        let token = OAuth2Token {
+            access_token: "secret_access_token_123".to_string(),
+            refresh_token: Some("secret_refresh_token_456".to_string()),
+            expires_in: Some(3600),
+            token_type: Some("Bearer".to_string()),
+            expires_at: None,
+            issued_at: None,
+        };
+        
+        // Encrypt the token
+        let encrypted = encrypt_token(&token).unwrap();
+        assert!(!encrypted.is_empty());
+        assert!(encrypted.len() > 12); // At least nonce + some ciphertext
+        
+        // Decrypt the token
+        let decrypted = decrypt_token(&encrypted).unwrap();
+        assert_eq!(decrypted.access_token, token.access_token);
+        assert_eq!(decrypted.refresh_token, token.refresh_token);
+        assert_eq!(decrypted.expires_in, token.expires_in);
+    }
+
+    #[test]
+    #[cfg(feature = "oauth2")]
+    fn test_encrypted_token_file_storage() {
+        use std::fs;
+        
+        // Generate and set encryption key
+        let key = generate_encryption_key();
+        set_encryption_key(key);
+        
+        // Create a test token
+        let token = OAuth2Token {
+            access_token: "file_test_token".to_string(),
+            refresh_token: None,
+            expires_in: Some(7200),
+            token_type: Some("Bearer".to_string()),
+            expires_at: None,
+            issued_at: None,
+        };
+        
+        let temp_path = "test_encrypted_token.bin";
+        
+        // Store encrypted token to file
+        let result = store_token_encrypted("file_test", &token, temp_path);
+        assert!(result.is_ok());
+        
+        // Verify file exists
+        assert!(fs::metadata(temp_path).is_ok());
+        
+        // Load encrypted token from file
+        let loaded = load_token_encrypted("file_test", temp_path).unwrap();
+        assert_eq!(loaded.access_token, token.access_token);
+        assert_eq!(loaded.expires_in, token.expires_in);
+        
+        // Clean up
+        let _ = fs::remove_file(temp_path);
+    }
+
+    #[test]
+    fn test_generate_encryption_key() {
+        let key1 = generate_encryption_key();
+        let key2 = generate_encryption_key();
+        
+        // Keys should be different (random)
+        assert_ne!(key1, key2);
+        assert_eq!(key1.len(), 32);
+        assert_eq!(key2.len(), 32);
     }
 }
