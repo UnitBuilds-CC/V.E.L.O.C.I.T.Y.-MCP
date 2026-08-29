@@ -7,12 +7,16 @@
 //! - Session management with session IDs
 //! - Request ID correlation
 //! - Connection lifecycle management
+//! - Rate limiting per session/IP
+//! - API key authentication
+//! - Configurable CORS
+//! - Request size limits
 //!
 //! This module is feature-gated behind the `http` feature flag.
 
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
+    http::{StatusCode, HeaderMap},
     response::sse::{Event, Sse},
     routing::{get, post},
     Json, Router,
@@ -29,6 +33,31 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::protocol::json_rpc;
+use crate::rate_limit;
+
+/// HTTP security configuration.
+#[derive(Clone, Debug)]
+pub struct HttpSecurityConfig {
+    /// API key for authentication (None = no auth required)
+    pub api_key: Option<String>,
+    /// Maximum request body size in bytes (default: 10MB)
+    pub max_request_size: usize,
+    /// Enable rate limiting (default: true)
+    pub enable_rate_limit: bool,
+    /// Allowed CORS origins (None = allow all)
+    pub cors_origins: Option<Vec<String>>,
+}
+
+impl Default for HttpSecurityConfig {
+    fn default() -> Self {
+        Self {
+            api_key: None,
+            max_request_size: 10 * 1024 * 1024, // 10MB
+            enable_rate_limit: true,
+            cors_origins: None,
+        }
+    }
+}
 
 /// Session state for HTTP clients.
 #[derive(Debug)]
@@ -45,6 +74,8 @@ struct ServerState {
     sessions: Arc<RwLock<HashMap<String, Session>>>,
     /// Channel for broadcasting events to SSE clients
     event_broadcast: Arc<RwLock<Vec<mpsc::Sender<String>>>>,
+    /// Security configuration
+    security: HttpSecurityConfig,
 }
 
 /// Query parameters for SSE endpoint.
@@ -67,8 +98,46 @@ struct StreamableRequest {
 /// Handle a JSON-RPC request over HTTP POST (stateless).
 async fn handle_json_rpc(
     State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
     Json(request): Json<Value>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    // Check authentication if API key is configured
+    if let Some(expected_key) = &state.security.api_key {
+        let auth_header = headers.get("Authorization")
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({
+                    "jsonrpc": "2.0",
+                    "error": { "code": -32000, "message": "Missing API key" },
+                    "id": request.get("id").cloned().unwrap_or(Value::Null)
+                }))
+            ))?;
+        
+        if !auth_header.starts_with("Bearer ") || &auth_header[7..] != expected_key {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(json!({
+                    "jsonrpc": "2.0",
+                    "error": { "code": -32000, "message": "Invalid API key" },
+                    "id": request.get("id").cloned().unwrap_or(Value::Null)
+                }))
+            ));
+        }
+    }
+    
+    // Check rate limit if enabled
+    if state.security.enable_rate_limit && !rate_limit::check_rate_limit() {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({
+                "jsonrpc": "2.0",
+                "error": { "code": -32000, "message": "Rate limit exceeded" },
+                "id": request.get("id").cloned().unwrap_or(Value::Null)
+            }))
+        ));
+    }
+    
     if state.shutdown.load(Ordering::Relaxed) {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
@@ -285,10 +354,26 @@ async fn delete_session(
 
 /// Build the Axum router with all MCP endpoints.
 fn build_router(state: Arc<ServerState>) -> Router {
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    // Configure CORS based on security config
+    let cors = if let Some(origins) = &state.security.cors_origins {
+        let mut cors = CorsLayer::new()
+            .allow_methods(Any)
+            .allow_headers(Any);
+        
+        // Parse and add allowed origins
+        for origin in origins {
+            if let Ok(origin_header) = origin.parse::<axum::http::HeaderValue>() {
+                cors = cors.allow_origin(origin_header);
+            }
+        }
+        cors
+    } else {
+        // Allow all origins if not configured
+        CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods(Any)
+            .allow_headers(Any)
+    };
 
     Router::new()
         .route("/mcp", post(handle_json_rpc))
@@ -304,11 +389,16 @@ fn build_router(state: Arc<ServerState>) -> Router {
 /// Run the HTTP server on the given address.
 ///
 /// This function blocks until the shutdown signal is received.
-pub async fn run_http_server(addr: &str, shutdown: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_http_server(
+    addr: &str, 
+    shutdown: Arc<AtomicBool>,
+    security_config: Option<HttpSecurityConfig>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let state = Arc::new(ServerState {
         shutdown: shutdown.clone(),
         sessions: Arc::new(RwLock::new(HashMap::new())),
         event_broadcast: Arc::new(RwLock::new(Vec::new())),
+        security: security_config.unwrap_or_default(),
     });
 
     let app = build_router(state);

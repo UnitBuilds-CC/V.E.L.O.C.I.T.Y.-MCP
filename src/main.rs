@@ -127,7 +127,7 @@ fn main() {
                 eprintln!("Warning: Failed to set Ctrl+C handler: {}", e);
             }
             let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-            if let Err(e) = rt.block_on(velocity_mcp::transport::http::run_http_server(addr, shutdown)) {
+            if let Err(e) = rt.block_on(velocity_mcp::transport::http::run_http_server(addr, shutdown, None)) {
                 error!(error = %e, "HTTP server encountered error");
                 eprintln!("HTTP server encountered error: {}", e);
                 process::exit(1);
