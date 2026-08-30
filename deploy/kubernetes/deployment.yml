@@ -1,0 +1,168 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: velocity-mcp
+  labels:
+    app: velocity-mcp
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: velocity-mcp
+  template:
+    metadata:
+      labels:
+        app: velocity-mcp
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: velocity-mcp
+        image: velocity-mcp:latest
+        ports:
+        - containerPort: 3000
+          name: http
+        env:
+        - name: RUST_LOG
+          value: "info"
+        - name: VELOCITY_HTTP_ADDR
+          value: "0.0.0.0:3000"
+        - name: VELOCITY_PLUGIN_DIR
+          value: "/app/plugins"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 30
+          timeoutSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+        volumeMounts:
+        - name: plugins
+          mountPath: /app/plugins
+          readOnly: true
+        - name: data
+          mountPath: /app/data
+        - name: marketplace
+          mountPath: /app/marketplace
+      volumes:
+      - name: plugins
+        configMap:
+          name: velocity-plugins
+      - name: data
+        persistentVolumeClaim:
+          claimName: velocity-data
+      - name: marketplace
+        persistentVolumeClaim:
+          claimName: velocity-marketplace
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: velocity-mcp
+  labels:
+    app: velocity-mcp
+spec:
+  type: ClusterIP
+  ports:
+  - port: 3000
+    targetPort: 3000
+    name: http
+  selector:
+    app: velocity-mcp
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: velocity-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: velocity-marketplace
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: velocity-plugins
+data:
+  # Example plugin manifest
+  example.json: |
+    {
+      "name": "example-plugin",
+      "version": "1.0.0",
+      "tools": [
+        {
+          "name": "echo",
+          "description": "Echo back the input message",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "message": {
+                "type": "string",
+                "description": "Message to echo"
+              }
+            },
+            "required": ["message"]
+          },
+          "executor": {
+            "executor_type": "process",
+            "command": "echo",
+            "args": ["{{message}}"],
+            "timeout": 5
+          }
+        }
+      ]
+    }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: velocity-mcp
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: velocity-mcp
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80

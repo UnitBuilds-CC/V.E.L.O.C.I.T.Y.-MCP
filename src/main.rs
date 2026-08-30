@@ -148,6 +148,9 @@ fn main() {
     let csharp_path = registry::resolve_csharp_path();
     info!(csharp_path = %csharp_path, "C# core engine path resolved");
 
+    // Load plugins from plugin directory
+    registry::load_plugins(&config.plugin_dir);
+
     match mode {
         "stdio" => {
             if let Err(e) = protocol::json_rpc::run_stdio_loop(&SHUTDOWN) {

@@ -34,6 +34,29 @@ static NDA_TOOL_REGISTRY: OnceLock<Mutex<HashMap<String, Vec<u8>>>> = OnceLock::
 /// Global registry for lazily registered tools from proc macros.
 static MACRO_TOOLS: OnceLock<Mutex<Vec<Tool>>> = OnceLock::new();
 
+/// Global registry for loaded plugins.
+static PLUGIN_REGISTRY: OnceLock<Mutex<Vec<crate::plugins::LoadedPlugin>>> = OnceLock::new();
+
+/// Get or initialize the plugin registry.
+fn get_plugin_registry() -> &'static Mutex<Vec<crate::plugins::LoadedPlugin>> {
+    PLUGIN_REGISTRY.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Load plugins from a directory.
+///
+/// # Arguments
+///
+/// * `plugin_dir` - Path to the plugin directory
+pub fn load_plugins(plugin_dir: &str) {
+    let path = std::path::Path::new(plugin_dir);
+    let plugins = crate::plugins::load_plugins_from_directory(path);
+    
+    if let Ok(mut registry) = get_plugin_registry().lock() {
+        *registry = plugins;
+        info!(plugin_dir = %plugin_dir, count = registry.len(), "Loaded plugins");
+    }
+}
+
 /// Get or initialize the macro tool registry.
 fn get_macro_registry() -> &'static Mutex<Vec<Tool>> {
     MACRO_TOOLS.get_or_init(|| Mutex::new(Vec::new()))
@@ -120,6 +143,17 @@ pub fn get_tools() -> Vec<Tool> {
     // Add proc macro-registered tools
     if let Ok(registry) = get_macro_registry().lock() {
         for tool in registry.iter() {
+            if !known_names.contains(&tool.name) {
+                tools.push(tool.clone());
+                known_names.push(tool.name.clone());
+            }
+        }
+    }
+    
+    // Add plugin tools
+    if let Ok(registry) = get_plugin_registry().lock() {
+        let plugin_tools = crate::plugins::plugins_to_registry_tools(&registry);
+        for tool in plugin_tools {
             if !known_names.contains(&tool.name) {
                 tools.push(tool.clone());
                 known_names.push(tool.name.clone());
@@ -750,7 +784,7 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
                 Err("HTTP requests require the oauth2 feature to be enabled (ureq dependency)".into())
             }
         }
-        // Dynamic tools: check NDA registry first, then route to C# engine
+        // Dynamic tools: check NDA registry first, then plugin registry, then route to C# engine
         _ => {
             // Check if this is an NDA-converted tool
             if let Ok(registry) = get_nda_registry().lock() {
@@ -759,6 +793,20 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
                     return execute_nda_binary_tool(name, arguments, nda_binary);
                 }
             }
+            
+            // Check if this is a plugin tool
+            if let Ok(registry) = get_plugin_registry().lock() {
+                for plugin in registry.iter() {
+                    for tool in &plugin.manifest.tools {
+                        if tool.name == name {
+                            debug!(tool = name, plugin = %plugin.manifest.name, "Executing plugin tool");
+                            return crate::plugins::execute_plugin_tool(tool, arguments)
+                                .map_err(|e| e.into());
+                        }
+                    }
+                }
+            }
+            
             debug!(tool = name, "Routing to C# engine (dynamic tool)");
             execute_csharp_mcp_tool(name, arguments, csharp_path)
         }

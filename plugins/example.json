@@ -1,0 +1,26 @@
+{
+  "name": "example-plugin",
+  "version": "1.0.0",
+  "tools": [
+    {
+      "name": "echo",
+      "description": "Echo back the input message",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "Message to echo back"
+          }
+        },
+        "required": ["message"]
+      },
+      "executor": {
+        "executor_type": "process",
+        "command": "echo",
+        "args": ["{{message}}"],
+        "timeout": 5
+      }
+    }
+  ]
+}

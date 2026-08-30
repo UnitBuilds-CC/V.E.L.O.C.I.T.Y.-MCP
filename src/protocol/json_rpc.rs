@@ -68,7 +68,9 @@ pub fn handle_request(request: &Value) -> Option<Value> {
                         "resources": { "subscribe": true, "listChanged": true },
                         "prompts": { "listChanged": true },
                         "sampling": {},
-                        "logging": {}
+                        "logging": {},
+                        "elicitation": {},
+                        "roots": { "listChanged": true }
                     },
                     "serverInfo": {
                         "name": "velocity-mcp-rust-server",
@@ -381,6 +383,37 @@ pub fn handle_request(request: &Value) -> Option<Value> {
                     "error": { "code": -32603, "message": e }
                 }))
             }
+        }
+        "elicitation/create" => {
+            // Elicitation allows the server to request user input during tool execution
+            let message = request["params"]["message"].as_str().unwrap_or("");
+            debug!(message = message, "Elicitation request from client");
+            
+            // For now, we just acknowledge the elicitation request
+            // In a full implementation, this would pause execution and wait for user input
+            Some(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "action": "accept",
+                    "message": "Elicitation acknowledged"
+                }
+            }))
+        }
+        "roots/list" => {
+            // Roots define the file system roots that the client has access to
+            // This helps the server understand the file system structure
+            debug!("Client requesting roots list");
+            
+            // Return an empty roots list for now
+            // In a full implementation, this would be configured by the client
+            Some(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "roots": []
+                }
+            }))
         }
         _ => {
             if !id.is_null() {

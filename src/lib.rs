@@ -44,6 +44,8 @@ pub mod middleware;
 /// Observability (OpenTelemetry integration).
 #[cfg(feature = "observability")]
 pub mod observability;
+/// Plugin system for dynamic tool loading.
+pub mod plugins;
 
 /// Server version string.
 pub const VERSION: &str = "3.0.0";

@@ -16,11 +16,11 @@
 //! This module is feature-gated behind the `http` feature flag.
 
 use axum::{
-    extract::{Query, State},
+    extract::{Query, State, WebSocketUpgrade},
     http::{StatusCode, Request},
     middleware::{self, Next},
     response::sse::{Event, Sse},
-    routing::{get, post},
+    routing::{get, post, delete},
     Json, Router,
 };
 use serde::Deserialize;
@@ -148,6 +148,55 @@ impl HttpMetrics {
             "average_latency_us": self.average_latency_us(),
             "active_sse_connections": self.active_sse_connections.load(Ordering::Relaxed),
         })
+    }
+
+    /// Get metrics in Prometheus text exposition format.
+    pub fn to_prometheus(&self) -> String {
+        let mut output = String::new();
+        
+        // Total requests
+        output.push_str("# HELP velocity_mcp_requests_total Total number of requests received\n");
+        output.push_str("# TYPE velocity_mcp_requests_total counter\n");
+        output.push_str(&format!("velocity_mcp_requests_total {}\n", 
+            self.total_requests.load(Ordering::Relaxed)));
+        
+        // Successful requests
+        output.push_str("# HELP velocity_mcp_requests_successful Total number of successful requests\n");
+        output.push_str("# TYPE velocity_mcp_requests_successful counter\n");
+        output.push_str(&format!("velocity_mcp_requests_successful {}\n", 
+            self.successful_requests.load(Ordering::Relaxed)));
+        
+        // Failed requests
+        output.push_str("# HELP velocity_mcp_requests_failed Total number of failed requests\n");
+        output.push_str("# TYPE velocity_mcp_requests_failed counter\n");
+        output.push_str(&format!("velocity_mcp_requests_failed {}\n", 
+            self.failed_requests.load(Ordering::Relaxed)));
+        
+        // Auth failures
+        output.push_str("# HELP velocity_mcp_auth_failures_total Total number of authentication failures\n");
+        output.push_str("# TYPE velocity_mcp_auth_failures_total counter\n");
+        output.push_str(&format!("velocity_mcp_auth_failures_total {}\n", 
+            self.auth_failures.load(Ordering::Relaxed)));
+        
+        // Rate limit hits
+        output.push_str("# HELP velocity_mcp_rate_limit_hits_total Total number of rate limit hits\n");
+        output.push_str("# TYPE velocity_mcp_rate_limit_hits_total counter\n");
+        output.push_str(&format!("velocity_mcp_rate_limit_hits_total {}\n", 
+            self.rate_limit_hits.load(Ordering::Relaxed)));
+        
+        // Average latency
+        output.push_str("# HELP velocity_mcp_latency_microseconds Average request latency in microseconds\n");
+        output.push_str("# TYPE velocity_mcp_latency_microseconds gauge\n");
+        output.push_str(&format!("velocity_mcp_latency_microseconds {}\n", 
+            self.average_latency_us()));
+        
+        // Active SSE connections
+        output.push_str("# HELP velocity_mcp_sse_connections_active Number of active SSE connections\n");
+        output.push_str("# TYPE velocity_mcp_sse_connections_active gauge\n");
+        output.push_str(&format!("velocity_mcp_sse_connections_active {}\n", 
+            self.active_sse_connections.load(Ordering::Relaxed)));
+        
+        output
     }
 }
 
@@ -483,6 +532,15 @@ async fn metrics(State(state): State<Arc<ServerState>>) -> Json<Value> {
     Json(state.metrics.to_json())
 }
 
+/// Prometheus metrics endpoint for monitoring.
+async fn metrics_prometheus(State(state): State<Arc<ServerState>>) -> (StatusCode, [(axum::http::header::HeaderName, &'static str); 1], String) {
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
+        state.metrics.to_prometheus(),
+    )
+}
+
 /// Performance endpoint — comprehensive real-time performance metrics.
 async fn performance(State(state): State<Arc<ServerState>>) -> Json<Value> {
     let uptime_secs = state.start_time.elapsed().as_secs_f64();
@@ -558,6 +616,74 @@ async fn list_sessions(State(state): State<Arc<ServerState>>) -> Json<Value> {
     Json(json!({ "sessions": session_list }))
 }
 
+/// WebSocket handler for bidirectional JSON-RPC communication.
+async fn websocket_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<ServerState>>,
+) -> impl axum::response::IntoResponse {
+    ws.on_upgrade(move |socket| handle_websocket(socket, state))
+}
+
+/// Handle WebSocket connection.
+async fn handle_websocket(mut socket: axum::extract::ws::WebSocket, state: Arc<ServerState>) {
+    use axum::extract::ws::{Message, WebSocket};
+    use futures::{SinkExt, StreamExt};
+    
+    let (mut sender, mut receiver) = socket.split();
+    
+    // Spawn a task to receive messages from the client
+    let state_clone = state.clone();
+    let recv_task = tokio::spawn(async move {
+        while let Some(msg) = StreamExt::next(&mut receiver).await {
+            match msg {
+                Ok(Message::Text(text)) => {
+                    // Parse JSON-RPC request
+                    match serde_json::from_str::<Value>(&text) {
+                        Ok(request) => {
+                            // Process the request
+                            let start_time = std::time::Instant::now();
+                            let response = json_rpc::handle_request(&request);
+                            let latency_us = start_time.elapsed().as_micros() as u64;
+                            
+                            // Record metrics
+                            state_clone.metrics.record_request(latency_us, response.is_some());
+                            
+                            // Send response back
+                            if let Some(resp) = response {
+                                let resp_text = serde_json::to_string(&resp).unwrap_or_default();
+                                if SinkExt::send(&mut sender, Message::Text(resp_text)).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            // Send error response
+                            let error_resp = json!({
+                                "jsonrpc": "2.0",
+                                "error": {
+                                    "code": -32700,
+                                    "message": format!("Parse error: {}", e)
+                                },
+                                "id": null
+                            });
+                            let error_text = serde_json::to_string(&error_resp).unwrap_or_default();
+                            if SinkExt::send(&mut sender, Message::Text(error_text)).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+                Ok(Message::Close(_)) => break,
+                Err(_) => break,
+                _ => {}
+            }
+        }
+    });
+    
+    // Wait for the receive task to complete
+    let _ = recv_task.await;
+}
+
 async fn delete_session(
     State(state): State<Arc<ServerState>>,
     session_id: String,
@@ -568,6 +694,116 @@ async fn delete_session(
         StatusCode::OK
     } else {
         StatusCode::NOT_FOUND
+    }
+}
+
+// Marketplace endpoints
+
+async fn marketplace_list_plugins(
+    Query(query): Query<crate::plugins::marketplace::SearchQuery>,
+) -> Json<crate::plugins::marketplace::SearchResults> {
+    let marketplace_path = std::path::Path::new("marketplace");
+    let marketplace = crate::plugins::marketplace::Marketplace::new(marketplace_path);
+    let results = marketplace.search(&query);
+    Json(results)
+}
+
+async fn marketplace_get_plugin(
+    axum::extract::Path(plugin_id): axum::extract::Path<String>,
+) -> Result<Json<crate::plugins::marketplace::PluginMetadata>, StatusCode> {
+    let marketplace_path = std::path::Path::new("marketplace");
+    let marketplace = crate::plugins::marketplace::Marketplace::new(marketplace_path);
+    
+    match marketplace.get_plugin(&plugin_id) {
+        Some(plugin) => Ok(Json(plugin.clone())),
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+async fn marketplace_install_plugin(
+    axum::extract::Path(plugin_id): axum::extract::Path<String>,
+) -> Result<Json<crate::plugins::marketplace::InstalledPlugin>, (StatusCode, String)> {
+    let marketplace_path = std::path::Path::new("marketplace");
+    let mut marketplace = crate::plugins::marketplace::Marketplace::new(marketplace_path);
+    
+    match marketplace.install(&plugin_id) {
+        Ok(installed) => {
+            // Reload plugins after installation
+            crate::registry::load_plugins("plugins");
+            Ok(Json(installed))
+        }
+        Err(e) => Err((StatusCode::BAD_REQUEST, e)),
+    }
+}
+
+async fn marketplace_uninstall_plugin(
+    axum::extract::Path(plugin_id): axum::extract::Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let marketplace_path = std::path::Path::new("marketplace");
+    let mut marketplace = crate::plugins::marketplace::Marketplace::new(marketplace_path);
+    
+    match marketplace.uninstall(&plugin_id) {
+        Ok(_) => {
+            // Reload plugins after uninstallation
+            crate::registry::load_plugins("plugins");
+            Ok(StatusCode::OK)
+        }
+        Err(e) => Err((StatusCode::BAD_REQUEST, e)),
+    }
+}
+
+async fn marketplace_list_installed() -> Json<Vec<crate::plugins::marketplace::InstalledPlugin>> {
+    let marketplace_path = std::path::Path::new("marketplace");
+    let marketplace = crate::plugins::marketplace::Marketplace::new(marketplace_path);
+    let installed = marketplace.list_installed();
+    Json(installed.into_iter().cloned().collect())
+}
+
+async fn marketplace_stats() -> Json<crate::plugins::marketplace::MarketplaceStats> {
+    let marketplace_path = std::path::Path::new("marketplace");
+    let marketplace = crate::plugins::marketplace::Marketplace::new(marketplace_path);
+    Json(marketplace.stats())
+}
+
+#[derive(Deserialize)]
+struct SubmitReviewRequest {
+    reviewer: String,
+    rating: u8,
+    comment: String,
+}
+
+async fn marketplace_submit_review(
+    axum::extract::Path(plugin_id): axum::extract::Path<String>,
+    Json(request): Json<SubmitReviewRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let marketplace_path = std::path::Path::new("marketplace");
+    let mut marketplace = crate::plugins::marketplace::Marketplace::new(marketplace_path);
+    
+    match marketplace.submit_review(&plugin_id, &request.reviewer, request.rating, request.comment) {
+        Ok(_) => Ok(StatusCode::CREATED),
+        Err(e) => Err((StatusCode::BAD_REQUEST, e)),
+    }
+}
+
+async fn marketplace_check_updates() -> Json<Vec<crate::plugins::marketplace::PluginUpdate>> {
+    let marketplace_path = std::path::Path::new("marketplace");
+    let marketplace = crate::plugins::marketplace::Marketplace::new(marketplace_path);
+    Json(marketplace.check_updates())
+}
+
+async fn marketplace_update_plugin(
+    axum::extract::Path(plugin_id): axum::extract::Path<String>,
+) -> Result<Json<crate::plugins::marketplace::InstalledPlugin>, (StatusCode, String)> {
+    let marketplace_path = std::path::Path::new("marketplace");
+    let mut marketplace = crate::plugins::marketplace::Marketplace::new(marketplace_path);
+    
+    match marketplace.update_plugin(&plugin_id) {
+        Ok(installed) => {
+            // Reload plugins after update
+            crate::registry::load_plugins("plugins");
+            Ok(Json(installed))
+        }
+        Err(e) => Err((StatusCode::BAD_REQUEST, e)),
     }
 }
 
@@ -606,10 +842,21 @@ fn build_router(state: Arc<ServerState>) -> Router {
         .route("/mcp/batch", post(crate::middleware::handle_batch_request))
         .route("/mcp/stream", post(handle_streamable))
         .route("/sse", get(sse_handler))
+        .route("/ws", get(websocket_handler))
         .route("/metrics", get(metrics))
+        .route("/metrics/prometheus", get(metrics_prometheus))
         .route("/performance", get(performance))
         .route("/sessions", get(list_sessions))
         .route("/sessions/:id", get(delete_session))
+        .route("/marketplace/plugins", get(marketplace_list_plugins))
+        .route("/marketplace/plugins/:id", get(marketplace_get_plugin))
+        .route("/marketplace/plugins/:id/review", post(marketplace_submit_review))
+        .route("/marketplace/install/:id", post(marketplace_install_plugin))
+        .route("/marketplace/install/:id", delete(marketplace_uninstall_plugin))
+        .route("/marketplace/installed", get(marketplace_list_installed))
+        .route("/marketplace/updates", get(marketplace_check_updates))
+        .route("/marketplace/update/:id", post(marketplace_update_plugin))
+        .route("/marketplace/stats", get(marketplace_stats))
         .layer(middleware::from_fn(crate::middleware::request_logger_middleware))
         .layer(middleware::from_fn(crate::middleware::request_validator_middleware))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))

@@ -32,6 +32,10 @@ pub struct ServerConfig {
     #[serde(default = "default_csharp_path")]
     pub csharp_path: String,
     
+    /// Plugin directory path
+    #[serde(default = "default_plugin_dir")]
+    pub plugin_dir: String,
+    
     /// Logging configuration
     #[serde(default)]
     pub logging: LoggingConfig,
@@ -106,6 +110,7 @@ impl Default for ServerConfig {
             buffer_path: default_buffer_path(),
             http: HttpConfig::default(),
             csharp_path: default_csharp_path(),
+            plugin_dir: default_plugin_dir(),
             logging: LoggingConfig::default(),
             features: FeaturesConfig::default(),
         }
@@ -130,6 +135,10 @@ fn default_buffer_path() -> String {
 
 fn default_csharp_path() -> String {
     "NdaMcpServer.exe".to_string()
+}
+
+fn default_plugin_dir() -> String {
+    "plugins".to_string()
 }
 
 fn default_http_addr() -> String {
