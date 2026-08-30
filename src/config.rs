@@ -160,48 +160,52 @@ impl ServerConfig {
     
     /// Load configuration with environment variable overrides.
     pub fn load_with_env<P: AsRef<Path>>(path: Option<P>) -> Self {
-        let mut config = if let Some(path) = path {
+        let config = if let Some(path) = path {
             Self::from_file(path).unwrap_or_default()
         } else {
             Self::default()
         };
         
-        // Override with environment variables
+        config.apply_env_overrides()
+    }
+    
+    /// Apply environment variable overrides to an existing config.
+    pub fn apply_env_overrides(mut self) -> Self {
         if let Ok(mode) = std::env::var("VELOCITY_MODE") {
-            config.mode = mode;
+            self.mode = mode;
         }
         
         if let Ok(buffer_path) = std::env::var("VELOCITY_BUFFER_PATH") {
-            config.buffer_path = buffer_path;
+            self.buffer_path = buffer_path;
         }
         
         if let Ok(csharp_path) = std::env::var("VELOCITY_CSHARP_PATH") {
-            config.csharp_path = csharp_path;
+            self.csharp_path = csharp_path;
         }
         
         if let Ok(log_level) = std::env::var("VELOCITY_LOG_LEVEL") {
-            config.logging.level = log_level;
+            self.logging.level = log_level;
         }
         
         if let Ok(addr) = std::env::var("VELOCITY_HTTP_ADDR") {
-            config.http.addr = addr;
+            self.http.addr = addr;
         }
         
         if let Ok(api_key) = std::env::var("VELOCITY_API_KEY") {
-            config.http.api_key = Some(api_key);
+            self.http.api_key = Some(api_key);
         }
         
         if let Ok(max_size) = std::env::var("VELOCITY_MAX_REQUEST_SIZE") {
             if let Ok(size) = max_size.parse() {
-                config.http.max_request_size = size;
+                self.http.max_request_size = size;
             }
         }
         
         if let Ok(enable) = std::env::var("VELOCITY_ENABLE_RATE_LIMIT") {
-            config.http.enable_rate_limit = enable.parse().unwrap_or(true);
+            self.http.enable_rate_limit = enable.parse().unwrap_or(true);
         }
         
-        config
+        self
     }
     
     /// Validate the configuration.

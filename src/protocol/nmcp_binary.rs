@@ -32,9 +32,12 @@ fn handle_nda_native(buffer: &mut SharedMemoryBuffer, raw: &[u8]) -> Result<(), 
         }
         nda_native::METHOD_INITIALIZE => {
             let result = json!({
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": crate::PROTOCOL_VERSION,
                 "capabilities": {
                     "tools": { "listChanged": true },
+                    "resources": { "subscribe": true, "listChanged": true },
+                    "prompts": { "listChanged": true },
+                    "sampling": {},
                     "logging": {}
                 },
                 "serverInfo": {
@@ -94,6 +97,50 @@ fn handle_nda_native(buffer: &mut SharedMemoryBuffer, raw: &[u8]) -> Result<(), 
                 "version": crate::VERSION
             }))
         }
+        nda_native::METHOD_RESOURCES_LIST => {
+            let cursor = req.data.get("cursor").and_then(|c| c.as_str());
+            let result = crate::resources::handle_resources_list(cursor);
+            nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &result)
+        }
+        nda_native::METHOD_RESOURCES_READ => {
+            let uri = req.data["uri"].as_str().unwrap_or("");
+            match crate::resources::handle_resources_read(uri) {
+                Ok(result) => nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &result),
+                Err(e) => nda_native::build_nda_error(&req.request_id, &e),
+            }
+        }
+        nda_native::METHOD_RESOURCE_TEMPLATES_LIST => {
+            let cursor = req.data.get("cursor").and_then(|c| c.as_str());
+            let result = crate::resources::handle_resource_templates_list(cursor);
+            nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &result)
+        }
+        nda_native::METHOD_PROMPTS_LIST => {
+            let cursor = req.data.get("cursor").and_then(|c| c.as_str());
+            let result = crate::resources::handle_prompts_list(cursor);
+            nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &result)
+        }
+        nda_native::METHOD_PROMPTS_GET => {
+            let name = req.data["name"].as_str().unwrap_or("");
+            let arguments = &req.data["arguments"];
+            match crate::resources::handle_prompts_get(name, arguments) {
+                Ok(result) => nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &result),
+                Err(e) => nda_native::build_nda_error(&req.request_id, &e),
+            }
+        }
+        nda_native::METHOD_SAMPLING_CREATE => {
+            match crate::sampling::handle_sampling_create_message(&req.data) {
+                Ok(result) => nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &result),
+                Err(e) => nda_native::build_nda_error(&req.request_id, &e),
+            }
+        }
+        nda_native::NOTIF_CANCELLED => {
+            debug!(request_id = %req.request_id, "Cancellation notification (NDA-native)");
+            nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &json!({}))
+        }
+        nda_native::NOTIF_PROGRESS => {
+            crate::streaming::handle_progress_notification(&req.data);
+            nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &json!({}))
+        }
         _ => {
             warn!(method = req.method, "Unknown NDA method");
             nda_native::build_nda_error(&req.request_id, &format!("Unknown method: 0x{:02x}", req.method))
@@ -139,9 +186,12 @@ fn handle_json_shmem(buffer: &mut SharedMemoryBuffer, input_str: &str) -> Result
                 "jsonrpc": "2.0",
                 "id": id,
                 "result": {
-                    "protocolVersion": "2024-11-05",
+                    "protocolVersion": crate::PROTOCOL_VERSION,
                     "capabilities": {
                         "tools": { "listChanged": true },
+                        "resources": { "subscribe": true, "listChanged": true },
+                        "prompts": { "listChanged": true },
+                        "sampling": {},
                         "logging": {}
                     },
                     "serverInfo": {
@@ -222,6 +272,75 @@ fn handle_json_shmem(buffer: &mut SharedMemoryBuffer, input_str: &str) -> Result
                     "version": crate::VERSION
                 }
             })
+        }
+        "resources/list" => {
+            let cursor = request["params"]["cursor"].as_str();
+            crate::resources::handle_resources_list(cursor)
+        }
+        "resources/read" => {
+            let uri = request["params"]["uri"].as_str().unwrap_or("");
+            match crate::resources::handle_resources_read(uri) {
+                Ok(result) => {
+                    json!({"jsonrpc": "2.0", "id": id, "result": result})
+                }
+                Err(e) => {
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": { "code": -32603, "message": e }
+                    })
+                }
+            }
+        }
+        "resources/templates/list" => {
+            let cursor = request["params"]["cursor"].as_str();
+            crate::resources::handle_resource_templates_list(cursor)
+        }
+        "resources/subscribe" => {
+            let uri = request["params"]["uri"].as_str().unwrap_or("");
+            let sub_id = request["params"]["subscriberId"].as_str().unwrap_or("default");
+            match crate::resources::handle_resources_subscribe(uri, sub_id) {
+                Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
+                Err(e) => json!({"jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": e }}),
+            }
+        }
+        "resources/unsubscribe" => {
+            let uri = request["params"]["uri"].as_str().unwrap_or("");
+            let sub_id = request["params"]["subscriberId"].as_str().unwrap_or("default");
+            match crate::resources::handle_resources_unsubscribe(uri, sub_id) {
+                Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
+                Err(e) => json!({"jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": e }}),
+            }
+        }
+        "prompts/list" => {
+            let cursor = request["params"]["cursor"].as_str();
+            crate::resources::handle_prompts_list(cursor)
+        }
+        "prompts/get" => {
+            let name = request["params"]["name"].as_str().unwrap_or("");
+            let arguments = &request["params"]["arguments"];
+            match crate::resources::handle_prompts_get(name, arguments) {
+                Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
+                Err(e) => json!({"jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": e }}),
+            }
+        }
+        "sampling/createMessage" => {
+            let params = &request["params"];
+            match crate::sampling::handle_sampling_create_message(params) {
+                Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
+                Err(e) => json!({"jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": e }}),
+            }
+        }
+        "notifications/cancelled" => {
+            let request_id = &request["params"]["requestId"];
+            let reason = request["params"]["reason"].as_str().unwrap_or("unknown");
+            debug!(request_id = %request_id, reason = reason, "Cancellation notification received (shmem)");
+            json!({"jsonrpc": "2.0", "id": id, "result": {}})
+        }
+        "notifications/progress" => {
+            let params = &request["params"];
+            crate::streaming::handle_progress_notification(params);
+            json!({"jsonrpc": "2.0", "id": id, "result": {}})
         }
         _ => {
             warn!(method = method, "Method not supported in shmem mode");

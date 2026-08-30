@@ -11,8 +11,11 @@ env:
 
 jobs:
   build-and-test:
-    name: Build & Test
-    runs-on: windows-latest
+    name: Build & Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -25,15 +28,21 @@ jobs:
       - name: Build
         run: cargo build --verbose
 
+      - name: Build with all features
+        run: cargo build --features http,database,oauth2 --verbose
+
       - name: Run all tests
         run: cargo test --verbose
 
+      - name: Run tests with all features
+        run: cargo test --features http,database,oauth2 --verbose
+
       - name: Check for warnings
-        run: cargo build 2>&1 | Select-String -Pattern "warning" -NotMatch
+        run: cargo build --features http,database,oauth2 2>&1 | grep -c "warning:" || echo "0 warnings"
 
   security-audit:
     name: Dependency Audit
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -48,7 +57,7 @@ jobs:
 
   fuzz-tests:
     name: Property-Based Fuzz Tests
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 

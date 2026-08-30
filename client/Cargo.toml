@@ -1,0 +1,22 @@
+[package]
+name = "velocity-mcp-client"
+version = "3.0.0"
+edition = "2021"
+authors = ["UnitBuilds <ian@unitbuilds.com>"]
+description = "Client SDK for VELOCITY-MCP servers"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP"
+keywords = ["mcp", "client", "sdk", "ai", "llm"]
+categories = ["api-bindings", "development-tools"]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.11", features = ["json"] }
+uuid = { version = "1.0", features = ["v4"] }
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio-test = "0.4"

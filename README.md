@@ -3,12 +3,47 @@
 [![CI](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/actions/workflows/ci.yml/badge.svg)](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/actions/workflows/ci.yml)
 [![Version](https://img.shields.io/badge/version-3.0.0-blue.svg)](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/releases)
 [![License](https://img.shields.io/badge/license-MIT%20|%20Apache%202.0-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-233%20passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-274%20passing-brightgreen.svg)]()
 [![Dependencies](https://img.shields.io/badge/dependencies-95%20crates%20|%200%20vulns-brightgreen.svg)]()
 
 A high-performance, production-hardened Model Context Protocol (MCP) server written in Rust. Designed to replace slow, bloated Node.js/Python MCP servers with a highly optimized, self-contained executable.
 
-> **New here?** Read the [User Guide](docs/USER_GUIDE.md) for a complete walkthrough — client configuration, tool usage, shared memory integration, troubleshooting, and FAQ.
+## 🚀 Quick Start
+
+**New to VELOCITY-MCP?** Start here:
+
+- 📖 [Getting Started Guide](GETTING_STARTED.md) - Install and run in 5 minutes
+- 🔄 [Migration Guide](MIGRATION.md) - Moving from Node.js MCP? We've got you covered
+- 🔌 [Client Integration](CLIENT_INTEGRATION.md) - Setup for Claude Desktop, Cursor, Windsurf, and more
+- 💡 [Examples](examples/) - Working code samples for common use cases
+- 📊 [Performance Comparison](COMPARISON.md) - See why we're 3.8x faster
+
+**30-second install:**
+```bash
+# Download and run
+curl -L https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/releases/latest/download/velocity_mcp -o velocity_mcp
+chmod +x velocity_mcp
+./velocity_mcp
+```
+
+That's it! Your MCP server is running. Now configure your client (see [Client Integration](CLIENT_INTEGRATION.md)).
+
+---
+
+## Why VELOCITY-MCP?
+
+| Feature | Node.js MCP | VELOCITY-MCP | You Win |
+|---------|-------------|--------------|---------|
+| **Speed** | Baseline | **3.8x faster** | Lower latency, higher throughput |
+| **Memory** | ~120 MB | **~15 MB** | 8x smaller footprint |
+| **Startup** | ~500ms | **<50ms** | 10x faster startup |
+| **Security** | Basic | **Production-hardened** | Timeouts, rate limits, validation |
+| **Config** | Complex | **Zero-config** | Works out of the box |
+| **Protocol** | JSON only | **JSON + NDA binary** | 90x faster parsing |
+
+---
+
+> **Deep dive?** Read the [User Guide](docs/USER_GUIDE.md) for complete technical documentation — architecture, shared memory integration, protocol details, and troubleshooting.
 
 ---
 

@@ -17,6 +17,7 @@ use crate::oauth2;
 
 const MAX_REQUEST_SIZE: usize = 1_048_576;
 const DEFAULT_PAGE_SIZE: usize = 100;
+const MAX_CANCELLED_IDS: usize = 1024;
 
 static LOG_LEVEL: Mutex<tracing::Level> = Mutex::new(tracing::Level::INFO);
 
@@ -27,6 +28,16 @@ pub fn is_cancelled(id: &Value) -> bool {
         ids.iter().any(|cid| cid == id)
     } else {
         false
+    }
+}
+
+fn add_cancelled(id: Value) {
+    if let Ok(mut ids) = CANCELLED_IDS.lock() {
+        if ids.len() >= MAX_CANCELLED_IDS {
+            let drain_end = ids.len() - MAX_CANCELLED_IDS + 1;
+            ids.drain(..drain_end);
+        }
+        ids.push(id);
     }
 }
 
@@ -51,11 +62,12 @@ pub fn handle_request(request: &Value) -> Option<Value> {
                 "jsonrpc": "2.0",
                 "id": id,
                 "result": {
-                    "protocolVersion": "2024-11-05",
+                    "protocolVersion": crate::PROTOCOL_VERSION,
                     "capabilities": {
-                        "tools": {
-                            "listChanged": true
-                        },
+                        "tools": { "listChanged": true },
+                        "resources": { "subscribe": true, "listChanged": true },
+                        "prompts": { "listChanged": true },
+                        "sampling": {},
                         "logging": {}
                     },
                     "serverInfo": {
@@ -72,9 +84,7 @@ pub fn handle_request(request: &Value) -> Option<Value> {
         "notifications/cancelled" => {
             let request_id = &request["params"]["requestId"];
             if !request_id.is_null() {
-                if let Ok(mut ids) = CANCELLED_IDS.lock() {
-                    ids.push(request_id.clone());
-                }
+                add_cancelled(request_id.clone());
                 let reason = request["params"]["reason"].as_str().unwrap_or("");
                 debug!(request_id = %request_id, reason = reason, "Request cancelled by client");
             }
@@ -191,9 +201,29 @@ pub fn handle_request(request: &Value) -> Option<Value> {
                 }
                 Err(e) => {
                     is_error = true;
-                    error!(tool = name, error = %e, "Tool execution failed");
-                    audit::record_tool_call(name, call_start, AuditOutcome::Error(e.to_string()));
-                    format!("Error running tool '{}': {}", name, e)
+                    let err_msg = e.to_string();
+                    error!(tool = name, error = %err_msg, "Tool execution failed");
+                    audit::record_tool_call(name, call_start, AuditOutcome::Error(err_msg.clone()));
+                    
+                    // Classify error and provide actionable hint for the LLM
+                    let (error_type, hint) = if err_msg.contains("not found") || err_msg.contains("No such file") {
+                        ("NOT_FOUND", "Check that the path or resource exists.")
+                    } else if err_msg.contains("Permission denied") || err_msg.contains("access") {
+                        ("PERMISSION_DENIED", "Check file permissions or run with elevated privileges.")
+                    } else if err_msg.contains("required") || err_msg.contains("missing") {
+                        ("INVALID_ARGUMENTS", "Check that all required parameters are provided with correct types.")
+                    } else if err_msg.contains("timeout") || err_msg.contains("timed out") {
+                        ("TIMEOUT", "The operation took too long. Try again or increase timeout.")
+                    } else if err_msg.contains("connection") || err_msg.contains("network") {
+                        ("NETWORK_ERROR", "A network error occurred. Check connectivity and retry.")
+                    } else {
+                        ("EXECUTION_ERROR", "Review the error message and adjust inputs accordingly.")
+                    };
+                    
+                    format!(
+                        "Error running tool '{}': {}\n\nError type: {}\nHint: {}",
+                        name, err_msg, error_type, hint
+                    )
                 }
             };
 
@@ -464,11 +494,11 @@ mod tests {
 
     #[test]
     fn test_initialize_returns_protocol_info() {
-        let req = json!({"jsonrpc": "2.0", "method": "initialize", "id": 1, "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "test", "version": "0.1"}}});
+        let req = json!({"jsonrpc": "2.0", "method": "initialize", "id": 1, "params": {"protocolVersion": crate::PROTOCOL_VERSION, "capabilities": {}, "clientInfo": {"name": "test", "version": "0.1"}}});
         let res = handle_request(&req).unwrap();
         assert_eq!(res["jsonrpc"], "2.0");
         assert_eq!(res["id"], 1);
-        assert_eq!(res["result"]["protocolVersion"], "2024-11-05");
+        assert_eq!(res["result"]["protocolVersion"], crate::PROTOCOL_VERSION);
         assert_eq!(res["result"]["serverInfo"]["name"], "velocity-mcp-rust-server");
         assert_eq!(res["result"]["serverInfo"]["version"], crate::VERSION);
         assert!(res["result"]["capabilities"]["tools"].is_object());

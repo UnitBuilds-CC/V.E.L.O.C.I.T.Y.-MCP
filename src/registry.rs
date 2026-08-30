@@ -134,54 +134,101 @@ pub fn get_tools() -> Vec<Tool> {
 fn get_builtin_tools() -> Vec<Tool> {
     vec![
         Tool {
-            name: "convert_to_nda_document".to_string(),
-            description: "Convert any file (e.g. C# source code, PDF, CSV, Excel, Image, Zip archive) into a cryptographically signed NDA (.nda) binary document with semantic triples and visual display commands.".to_string(),
+            name: "file_read".to_string(),
+            description: "Read a file's contents as UTF-8 text. Use for inspecting source code, configs, logs, or any text file. Returns the full file content as a string. Fails if the file is binary or does not exist.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "filePath": { "type": "string", "description": "Absolute path to the input file to convert." },
-                    "outputPath": { "type": "string", "description": "Optional absolute path to write the compiled .nda file. Defaults to input path with .nda extension." }
+                    "path": { "type": "string", "description": "Absolute path to the file." }
+                },
+                "required": ["path"]
+            }),
+        },
+        Tool {
+            name: "file_write".to_string(),
+            description: "Write text content to a file. Creates parent directories if needed. Overwrites existing files entirely. Use for generating code, configs, or any text output. Returns bytes written.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Absolute path to the file." },
+                    "content": { "type": "string", "description": "Text content to write." }
+                },
+                "required": ["path", "content"]
+            }),
+        },
+        Tool {
+            name: "shell_exec".to_string(),
+            description: "Execute a shell command with timeout enforcement and security validation. Blocks dangerous patterns (rm -rf /, format, etc). Returns exit code, stdout, and stderr. Use for running builds, tests, git commands, or system utilities. Commands run with the server's permissions.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "command": { "type": "string", "description": "Shell command to execute." },
+                    "workingDir": { "type": "string", "description": "Working directory (absolute path). Optional." },
+                    "timeout": { "type": "integer", "description": "Timeout in seconds (default: 30). Command will be killed if it exceeds this." }
+                },
+                "required": ["command"]
+            }),
+        },
+        Tool {
+            name: "http_request".to_string(),
+            description: "Make an HTTP request with timeout enforcement and SSRF protection. Blocks requests to localhost and private IPs. Supports GET, POST, PUT, DELETE, PATCH, HEAD. Returns status code, status text, and response body. Use for calling APIs, fetching data, or testing endpoints.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string", "description": "Target URL (must be http:// or https://)." },
+                    "method": { "type": "string", "description": "HTTP method. Default: GET." },
+                    "headers": { "type": "object", "description": "Request headers as key-value pairs." },
+                    "body": { "type": "string", "description": "Request body (for POST/PUT/PATCH)." },
+                    "timeout": { "type": "integer", "description": "Timeout in seconds (default: 30)." }
+                },
+                "required": ["url"]
+            }),
+        },
+        Tool {
+            name: "convert_to_nda_document".to_string(),
+            description: "Convert a file into a cryptographically signed NDA binary document. NDA is a zero-allocation format with semantic triples, Merkle integrity, and Ed25519 signatures. Accepts: source code, PDF, CSV, Excel, images, archives. Returns the output path and file size.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "filePath": { "type": "string", "description": "Absolute path to the input file." },
+                    "outputPath": { "type": "string", "description": "Output .nda path. Defaults to input with .nda extension." }
                 },
                 "required": ["filePath"]
             }),
         },
         Tool {
-            name: "convert_to_nda_tool".to_string(),
-            description: "Convert a JSON-RPC tool call into native NDA binary format and register it for immediate execution. The converted tool is added to the tool registry and can be called directly by name. Achieves 90x faster parsing than JSON.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "jsonRequest": { "type": "string", "description": "JSON-RPC tool call request to convert to NDA binary format." },
-                    "outputPath": { "type": "string", "description": "Optional path to write the NDA binary file. The tool is always registered regardless of whether this is set." }
-                },
-                "required": ["jsonRequest"]
-            }),
-        },
-        Tool {
             name: "read_nda".to_string(),
-            description: "Read and parse a compiled .nda binary file to view its semantic triples, visual display commands, and string pool contents.".to_string(),
+            description: "Read and inspect an NDA binary document. Shows semantic triples, visual display commands, string pool contents, Merkle integrity status, and Ed25519 signature verification. Use to examine or debug NDA files.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "ndaPath": { "type": "string", "description": "Absolute path to the .nda file to inspect." }
+                    "ndaPath": { "type": "string", "description": "Absolute path to the .nda file." }
                 },
                 "required": ["ndaPath"]
             }),
         },
         Tool {
             name: "execute_nda".to_string(),
-            description: "Execute a runnable .nda container. If it holds a compiled C# binary, it is run in-memory. If it contains a script (e.g., Python, Node.js, PowerShell, Bash), it executes via the corresponding shell process.".to_string(),
+            description: "Execute a runnable NDA container. Runs compiled binaries in-memory or scripts (Python, Node.js, PowerShell, Bash) via shell. Returns the program's stdout. Use for running sandboxed executables packaged as NDA documents.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "ndaPath": { "type": "string", "description": "Absolute path to the runnable .nda file." },
-                    "arguments": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Optional command-line arguments to pass to the executable or script."
-                    }
+                    "arguments": { "type": "array", "items": { "type": "string" }, "description": "Command-line arguments." }
                 },
                 "required": ["ndaPath"]
+            }),
+        },
+        Tool {
+            name: "convert_to_nda_tool".to_string(),
+            description: "Convert a JSON-RPC tool call to NDA binary format and register it for fast execution. Subsequent calls execute 90x faster than JSON parsing. The converted tool is immediately available by name.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "jsonRequest": { "type": "string", "description": "JSON-RPC tool call to convert." },
+                    "outputPath": { "type": "string", "description": "Optional path to write the NDA binary. Tool is registered regardless." }
+                },
+                "required": ["jsonRequest"]
             }),
         },
     ]
@@ -353,6 +400,356 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
             }
             Ok(crate::nda_executor::execute_nda(&nda_bytes, &exec_args)?)
         }
+        "file_read" => {
+            let path = arguments["path"].as_str().ok_or("path is required")?;
+            validate_file_path(path)?;
+            
+            // Check file size before reading
+            let metadata = std::fs::metadata(path)?;
+            const MAX_FILE_READ_SIZE: usize = 10 * 1024 * 1024; // 10MB
+            if metadata.len() > MAX_FILE_READ_SIZE as u64 {
+                return Err(format!(
+                    "File too large: {} bytes ({:.2} MB)\n\
+                    Maximum allowed size: {} bytes (10 MB)\n\
+                    The file exceeds the maximum size limit for security and performance reasons.\n\
+                    Suggestions:\n\
+                    - Process the file in chunks using shell commands (head, tail, split)\n\
+                    - Use shell_exec with grep/awk to extract specific parts\n\
+                    - Compress the file first and read the compressed version\n\
+                    - Use a streaming approach for large files",
+                    metadata.len(),
+                    metadata.len() as f64 / (1024.0 * 1024.0),
+                    MAX_FILE_READ_SIZE
+                ).into());
+            }
+            
+            let content = std::fs::read_to_string(path)?;
+            Ok(content)
+        }
+        "file_write" => {
+            let path = arguments["path"].as_str().ok_or("path is required")?;
+            let content = arguments["content"].as_str().ok_or("content is required")?;
+            validate_file_path(path)?;
+            std::fs::write(path, content)?;
+            Ok(format!("Successfully wrote {} bytes to {}", content.len(), path))
+        }
+        "shell_exec" => {
+            let command = arguments["command"].as_str().ok_or("command is required")?;
+            let working_dir = arguments["workingDir"].as_str();
+            let timeout_secs = arguments["timeout"].as_u64().unwrap_or(30);
+            
+            // Validate command doesn't contain dangerous patterns
+            let dangerous_patterns = ["rm -rf /", "del /f /s /q", "format ", "mkfs ", "dd if="];
+            for pattern in &dangerous_patterns {
+                if command.to_lowercase().contains(pattern) {
+                    return Err(format!("Command contains dangerous pattern: {}", pattern).into());
+                }
+            }
+            
+            // Execute with timeout
+            let output = if let Some(dir) = working_dir {
+                validate_file_path(dir)?;
+                #[cfg(target_os = "windows")]
+                {
+                    use std::process::Command;
+                    let mut child = Command::new("cmd")
+                        .args(["/C", command])
+                        .current_dir(dir)
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::piped())
+                        .spawn()?;
+                    
+                    // Wait with timeout
+                    let start = std::time::Instant::now();
+                    loop {
+                        match child.try_wait()? {
+                            Some(status) => {
+                                let mut stdout = Vec::new();
+                                let mut stderr = Vec::new();
+                                if let Some(mut out) = child.stdout {
+                                    use std::io::Read;
+                                    out.read_to_end(&mut stdout)?;
+                                }
+                                if let Some(mut err) = child.stderr {
+                                    use std::io::Read;
+                                    err.read_to_end(&mut stderr)?;
+                                }
+                                break Ok::<std::process::Output, Box<dyn Error>>(std::process::Output { status, stdout, stderr });
+                            }
+                            None => {
+                                if start.elapsed().as_secs() > timeout_secs {
+                                    let _ = child.kill();
+                                    return Err(format!(
+                                        "Command timed out after {} seconds\n\
+                                        The command took too long to execute and was terminated.\n\
+                                        Suggestions:\n\
+                                        - Increase the timeout: add \"timeout\": {} to your arguments\n\
+                                        - Break the command into smaller parts\n\
+                                        - Check if the command is waiting for input\n\
+                                        - Use a non-interactive version of the command",
+                                        timeout_secs,
+                                        timeout_secs * 2
+                                    ).into());
+                                }
+                                std::thread::sleep(std::time::Duration::from_millis(100));
+                            }
+                        }
+                    }
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    use std::process::Command;
+                    let mut child = Command::new("sh")
+                        .args(["-c", command])
+                        .current_dir(dir)
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::piped())
+                        .spawn()?;
+                    
+                    let start = std::time::Instant::now();
+                    loop {
+                        match child.try_wait()? {
+                            Some(status) => {
+                                let mut stdout = Vec::new();
+                                let mut stderr = Vec::new();
+                                if let Some(mut out) = child.stdout {
+                                    use std::io::Read;
+                                    out.read_to_end(&mut stdout)?;
+                                }
+                                if let Some(mut err) = child.stderr {
+                                    use std::io::Read;
+                                    err.read_to_end(&mut stderr)?;
+                                }
+                                break Ok::<std::process::Output, Box<dyn Error>>(std::process::Output { status, stdout, stderr });
+                            }
+                            None => {
+                                if start.elapsed().as_secs() > timeout_secs {
+                                    let _ = child.kill();
+                                    return Err(format!(
+                                        "Command timed out after {} seconds\n\
+                                        The command took too long to execute and was terminated.\n\
+                                        Suggestions:\n\
+                                        - Increase the timeout: add \"timeout\": {} to your arguments\n\
+                                        - Break the command into smaller parts\n\
+                                        - Check if the command is waiting for input\n\
+                                        - Use a non-interactive version of the command",
+                                        timeout_secs,
+                                        timeout_secs * 2
+                                    ).into());
+                                }
+                                std::thread::sleep(std::time::Duration::from_millis(100));
+                            }
+                        }
+                    }
+                }
+            } else {
+                #[cfg(target_os = "windows")]
+                {
+                    use std::process::Command;
+                    let mut child = Command::new("cmd")
+                        .args(["/C", command])
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::piped())
+                        .spawn()?;
+                    
+                    let start = std::time::Instant::now();
+                    loop {
+                        match child.try_wait()? {
+                            Some(status) => {
+                                let mut stdout = Vec::new();
+                                let mut stderr = Vec::new();
+                                if let Some(mut out) = child.stdout {
+                                    use std::io::Read;
+                                    out.read_to_end(&mut stdout)?;
+                                }
+                                if let Some(mut err) = child.stderr {
+                                    use std::io::Read;
+                                    err.read_to_end(&mut stderr)?;
+                                }
+                                break Ok::<std::process::Output, Box<dyn Error>>(std::process::Output { status, stdout, stderr });
+                            }
+                            None => {
+                                if start.elapsed().as_secs() > timeout_secs {
+                                    let _ = child.kill();
+                                    return Err(format!(
+                                        "Command timed out after {} seconds\n\
+                                        The command took too long to execute and was terminated.\n\
+                                        Suggestions:\n\
+                                        - Increase the timeout: add \"timeout\": {} to your arguments\n\
+                                        - Break the command into smaller parts\n\
+                                        - Check if the command is waiting for input\n\
+                                        - Use a non-interactive version of the command",
+                                        timeout_secs,
+                                        timeout_secs * 2
+                                    ).into());
+                                }
+                                std::thread::sleep(std::time::Duration::from_millis(100));
+                            }
+                        }
+                    }
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    use std::process::Command;
+                    let mut child = Command::new("sh")
+                        .args(["-c", command])
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::piped())
+                        .spawn()?;
+                    
+                    let start = std::time::Instant::now();
+                    loop {
+                        match child.try_wait()? {
+                            Some(status) => {
+                                let mut stdout = Vec::new();
+                                let mut stderr = Vec::new();
+                                if let Some(mut out) = child.stdout {
+                                    use std::io::Read;
+                                    out.read_to_end(&mut stdout)?;
+                                }
+                                if let Some(mut err) = child.stderr {
+                                    use std::io::Read;
+                                    err.read_to_end(&mut stderr)?;
+                                }
+                                break Ok::<std::process::Output, Box<dyn Error>>(std::process::Output { status, stdout, stderr });
+                            }
+                            None => {
+                                if start.elapsed().as_secs() > timeout_secs {
+                                    let _ = child.kill();
+                                    return Err(format!(
+                                        "Command timed out after {} seconds\n\
+                                        The command took too long to execute and was terminated.\n\
+                                        Suggestions:\n\
+                                        - Increase the timeout: add \"timeout\": {} to your arguments\n\
+                                        - Break the command into smaller parts\n\
+                                        - Check if the command is waiting for input\n\
+                                        - Use a non-interactive version of the command",
+                                        timeout_secs,
+                                        timeout_secs * 2
+                                    ).into());
+                                }
+                                std::thread::sleep(std::time::Duration::from_millis(100));
+                            }
+                        }
+                    }
+                }
+            }?;
+            
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let exit_code = output.status.code().unwrap_or(-1);
+            
+            Ok(format!("Exit code: {}\nStdout:\n{}\nStderr:\n{}", exit_code, stdout, stderr))
+        }
+        "http_request" => {
+            let url = arguments["url"].as_str().ok_or("url is required")?;
+            let method = arguments["method"].as_str().unwrap_or("GET");
+            let body = arguments["body"].as_str();
+            let timeout_secs = arguments["timeout"].as_u64().unwrap_or(30);
+            
+            // Validate URL
+            if !url.starts_with("http://") && !url.starts_with("https://") {
+                return Err(format!(
+                    "Invalid URL scheme: URL must start with http:// or https://\n\
+                    Received: {}\n\
+                    Suggestions:\n\
+                    - Add https:// prefix for secure connections: https://{}\n\
+                    - Add http:// prefix for non-secure connections: http://{}\n\
+                    - Check for typos in the URL",
+                    url, url, url
+                ).into());
+            }
+            
+            // Basic SSRF prevention - block private IPs and localhost
+            let url_lower = url.to_lowercase();
+            let blocked_patterns = ["localhost", "127.0.0.1", "0.0.0.0", "10.", "172.16.", "192.168.", "169.254."];
+            for pattern in &blocked_patterns {
+                if url_lower.contains(pattern) {
+                    return Err(format!(
+                        "Security error: URL contains blocked host pattern '{}'\n\
+                        For security reasons, requests to private networks and localhost are blocked.\n\
+                        This prevents SSRF (Server-Side Request Forgery) attacks.\n\
+                        Suggestions:\n\
+                        - Use a public URL instead\n\
+                        - If you need to access local services, consider using a reverse proxy\n\
+                        - Contact your administrator if you need access to internal services",
+                        pattern
+                    ).into());
+                }
+            }
+            
+            #[cfg(feature = "oauth2")]
+            {
+                use std::io::Read;
+                
+                let max_retries = 3u32;
+                let mut last_error = String::new();
+                
+                for attempt in 0..=max_retries {
+                    let agent = ureq::AgentBuilder::new()
+                        .timeout(std::time::Duration::from_secs(timeout_secs))
+                        .build();
+                    
+                    let mut req = match method.to_uppercase().as_str() {
+                        "GET" => agent.get(url),
+                        "POST" => agent.post(url),
+                        "PUT" => agent.put(url),
+                        "DELETE" => agent.delete(url),
+                        "PATCH" => agent.patch(url),
+                        "HEAD" => agent.head(url),
+                        _ => return Err(format!("Unsupported HTTP method: {}", method).into()),
+                    };
+                    
+                    if let Some(headers) = arguments["headers"].as_object() {
+                        for (key, value) in headers {
+                            if let Some(v) = value.as_str() {
+                                req = req.set(key, v);
+                            }
+                        }
+                    }
+                    
+                    let result = if let Some(body_str) = body {
+                        req.send_string(body_str)
+                    } else {
+                        req.call()
+                    };
+                    
+                    match result {
+                        Ok(response) => {
+                            let status = response.status();
+                            let status_text = response.status_text().to_string();
+                            
+                            // Retry on 5xx server errors (transient)
+                            if status >= 500 && attempt < max_retries {
+                                last_error = format!("HTTP {} {}", status, status_text);
+                                std::thread::sleep(std::time::Duration::from_millis(100 * 2u64.pow(attempt)));
+                                continue;
+                            }
+                            
+                            let mut response_body = String::new();
+                            response.into_reader().read_to_string(&mut response_body)?;
+                            
+                            return Ok(format!("HTTP {} {}\n{}", status, status_text, response_body));
+                        }
+                        Err(ureq::Error::Transport(e)) if attempt < max_retries => {
+                            // Retry on transport errors (connection refused, timeout, DNS)
+                            last_error = format!("Transport error: {}", e);
+                            std::thread::sleep(std::time::Duration::from_millis(100 * 2u64.pow(attempt)));
+                            continue;
+                        }
+                        Err(e) => {
+                            return Err(format!("HTTP request failed: {}", e).into());
+                        }
+                    }
+                }
+                
+                Err(format!("HTTP request failed after {} retries. Last error: {}", max_retries, last_error).into())
+            }
+            #[cfg(not(feature = "oauth2"))]
+            {
+                Err("HTTP requests require the oauth2 feature to be enabled (ureq dependency)".into())
+            }
+        }
         // Dynamic tools: check NDA registry first, then route to C# engine
         _ => {
             // Check if this is an NDA-converted tool
@@ -472,18 +869,29 @@ pub fn resolve_csharp_path() -> String {
 /// Rejects paths that are not absolute, contain traversal sequences, or are empty.
 fn validate_file_path(path: &str) -> Result<(), Box<dyn Error>> {
     if path.is_empty() {
-        return Err("File path cannot be empty".into());
+        return Err("File path cannot be empty. Please provide a valid file path.".into());
     }
 
     // Reject path traversal attempts
     if path.contains("..") {
-        return Err(format!("File path contains traversal sequence '..': {}", path).into());
+        return Err(format!(
+            "Security error: File path contains traversal sequence '..': {}\n\
+            For security reasons, paths with '..' are not allowed.\n\
+            Suggestion: Use an absolute path instead, e.g., /home/user/file.txt or C:\\Users\\user\\file.txt",
+            path
+        ).into());
     }
 
     // On Windows, check for absolute path (drive letter or UNC)
     let p = std::path::Path::new(path);
     if !p.is_absolute() {
-        return Err(format!("File path must be absolute: {}", path).into());
+        return Err(format!(
+            "File path must be absolute: {}\n\
+            Relative paths are not allowed for security reasons.\n\
+            Suggestion: Use the full path, e.g., /home/user/file.txt or C:\\Users\\user\\file.txt\n\
+            You can get the absolute path with: pwd (Linux/macOS) or cd (Windows)",
+            path
+        ).into());
     }
 
     Ok(())
@@ -850,15 +1258,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_get_tools_returns_four_tools() {
+    fn test_get_tools_returns_builtin_tools() {
         let tools = get_tools();
-        // At least the 4 built-in tools should be present
-        assert!(tools.len() >= 4, "Should have at least 4 built-in tools, got {}", tools.len());
+        // At least the 8 built-in tools should be present
+        assert!(tools.len() >= 8, "Should have at least 8 built-in tools, got {}", tools.len());
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"convert_to_nda_document"));
         assert!(names.contains(&"convert_to_nda_tool"));
         assert!(names.contains(&"read_nda"));
         assert!(names.contains(&"execute_nda"));
+        assert!(names.contains(&"file_read"));
+        assert!(names.contains(&"file_write"));
+        assert!(names.contains(&"shell_exec"));
+        assert!(names.contains(&"http_request"));
     }
 
     #[test]
@@ -1066,13 +1478,18 @@ mod tests {
     }
 
     #[test]
-    fn test_get_builtin_tools_returns_four_tools() {
+    fn test_get_builtin_tools_returns_eight_tools() {
         let tools = get_builtin_tools();
-        assert_eq!(tools.len(), 4);
-        assert_eq!(tools[0].name, "convert_to_nda_document");
-        assert_eq!(tools[1].name, "convert_to_nda_tool");
-        assert_eq!(tools[2].name, "read_nda");
-        assert_eq!(tools[3].name, "execute_nda");
+        assert_eq!(tools.len(), 8);
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"file_read"));
+        assert!(names.contains(&"file_write"));
+        assert!(names.contains(&"shell_exec"));
+        assert!(names.contains(&"http_request"));
+        assert!(names.contains(&"convert_to_nda_document"));
+        assert!(names.contains(&"convert_to_nda_tool"));
+        assert!(names.contains(&"read_nda"));
+        assert!(names.contains(&"execute_nda"));
     }
 
     #[test]

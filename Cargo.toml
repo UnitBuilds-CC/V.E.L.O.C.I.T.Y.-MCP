@@ -61,6 +61,15 @@ thiserror = "2"
 
 [dev-dependencies]
 proptest = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "protocol_bench"
+harness = false
+
+[[bench]]
+name = "nda_bench"
+harness = false
 
 [profile.release]
 opt-level = 3

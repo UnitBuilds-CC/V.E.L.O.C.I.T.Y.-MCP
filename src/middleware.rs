@@ -155,7 +155,7 @@ pub struct BatchRequest {
 
 /// Process a batch of requests.
 pub async fn handle_batch_request(
-    batch: BatchRequest,
+    axum::Json(batch): axum::Json<BatchRequest>,
 ) -> Response {
     let mut responses = Vec::new();
     

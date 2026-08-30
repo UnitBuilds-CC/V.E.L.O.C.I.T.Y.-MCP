@@ -10,8 +10,20 @@ permissions:
 
 jobs:
   build-release:
-    name: Build Release Binary
-    runs-on: windows-latest
+    name: Build Release (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact_suffix: win_x64.exe
+            binary_name: velocity_mcp.exe
+          - os: ubuntu-latest
+            artifact_suffix: linux_x64
+            binary_name: velocity_mcp
+          - os: macos-latest
+            artifact_suffix: macos_x64
+            binary_name: velocity_mcp
     steps:
       - uses: actions/checkout@v4
 
@@ -22,28 +34,39 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build release binary
-        run: cargo build --release
+        run: cargo build --release --features http,database,oauth2
 
       - name: Run tests
-        run: cargo test
-
-      - name: Run cargo audit
-        run: |
-          cargo install cargo-audit --locked
-          cargo audit
+        run: cargo test --features http,database,oauth2
 
       - name: Prepare release artifact
-        shell: pwsh
+        shell: bash
         run: |
-          $version = "${{ github.ref_name }}" -replace '^v', ''
-          $artifact = "velocity_mcp_v${version}_win_x64.exe"
-          Copy-Item "target/release/velocity_mcp.exe" -Destination $artifact
-          echo "ARTIFACT_NAME=$artifact" >> $env:GITHUB_ENV
+          version="${GITHUB_REF_NAME#v}"
+          artifact="velocity_mcp_v${version}_${{ matrix.artifact_suffix }}"
+          cp "target/release/${{ matrix.binary_name }}" "$artifact"
+          echo "ARTIFACT_NAME=$artifact" >> "$GITHUB_ENV"
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ env.ARTIFACT_NAME }}
+
+  create-release:
+    name: Create GitHub Release
+    needs: build-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.ARTIFACT_NAME }}
+          files: artifacts/*
           generate_release_notes: true
           draft: false
           prerelease: false

@@ -114,13 +114,11 @@ impl RateLimiter {
     }
 }
 
-/// Get current time in milliseconds (monotonic).
+/// Get current time in milliseconds (monotonic, relative to process start).
 fn current_time_ms() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+    static EPOCH: std::sync::LazyLock<std::time::Instant> =
+        std::sync::LazyLock::new(std::time::Instant::now);
+    EPOCH.elapsed().as_millis() as u64
 }
 
 /// Global rate limiter instance.

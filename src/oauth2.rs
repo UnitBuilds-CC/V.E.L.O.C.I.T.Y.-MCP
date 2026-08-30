@@ -343,25 +343,27 @@ pub struct WebhookDeliveryResult {
 
 /// Compute HMAC-SHA256 signature for webhook payload.
 #[cfg(feature = "oauth2")]
-pub fn compute_webhook_signature(payload: &str, secret: &str) -> String {
+pub fn compute_webhook_signature(payload: &str, secret: &str) -> Result<String, String> {
     use sha2::Sha256;
     use hmac::{Hmac, Mac};
     
     type HmacSha256 = Hmac<Sha256>;
     
     let mut mac = <HmacSha256 as Mac>::new_from_slice(secret.as_bytes())
-        .expect("HMAC can take key of any size");
+        .map_err(|e| format!("Failed to create HMAC: {}", e))?;
     mac.update(payload.as_bytes());
     let result = mac.finalize();
     
-    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, result.into_bytes())
+    Ok(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, result.into_bytes()))
 }
 
 /// Verify webhook signature.
 #[cfg(feature = "oauth2")]
 pub fn verify_webhook_signature(payload: &str, signature: &str, secret: &str) -> bool {
-    let expected = compute_webhook_signature(payload, secret);
-    expected == signature
+    match compute_webhook_signature(payload, secret) {
+        Ok(expected) => expected == signature,
+        Err(_) => false,
+    }
 }
 
 /// Send a webhook event to a configured endpoint.
@@ -393,8 +395,8 @@ pub fn send_webhook(connector_id: &str, event: &WebhookEvent) -> Result<WebhookD
     
     // Compute signature if secret is configured
     let signature = webhook_config.secret.as_ref().map(|secret| {
-        compute_webhook_signature(&payload, secret)
-    });
+        compute_webhook_signature(&payload, secret).ok()
+    }).flatten();
     
     // Send webhook with retry logic
     let max_attempts = 3;
@@ -1058,7 +1060,7 @@ mod tests {
     fn test_encrypted_token_storage() {
         // Generate and set encryption key
         let key = generate_encryption_key();
-        set_encryption_key(key);
+        set_encryption_key(key.clone());
         
         // Create a test token
         let token = OAuth2Token {
@@ -1070,12 +1072,18 @@ mod tests {
             issued_at: None,
         };
         
+        // Ensure key is set before encrypting (protect against parallel test interference)
+        set_encryption_key(key.clone());
+        
         // Encrypt the token
         let encrypted = encrypt_token(&token).unwrap();
         assert!(!encrypted.is_empty());
         assert!(encrypted.len() > 12); // At least nonce + some ciphertext
         
-        // Decrypt the token (key is already set)
+        // Ensure key is set before decrypting (protect against parallel test interference)
+        set_encryption_key(key);
+        
+        // Decrypt the token
         let decrypted = decrypt_token(&encrypted).unwrap();
         assert_eq!(decrypted.access_token, token.access_token);
         assert_eq!(decrypted.refresh_token, token.refresh_token);
@@ -1101,25 +1109,29 @@ mod tests {
             issued_at: None,
         };
         
-        let temp_path = "test_encrypted_token.bin";
+        // Use unique file name to avoid conflicts with parallel tests
+        let temp_path = format!("test_encrypted_token_{}.bin", std::process::id());
+        
+        // Ensure key is set before storing (protect against parallel test interference)
+        set_encryption_key(key.clone());
         
         // Store encrypted token to file
-        let result = store_token_encrypted("file_test", &token, temp_path);
+        let result = store_token_encrypted("file_test", &token, &temp_path);
         assert!(result.is_ok());
         
         // Verify file exists
-        assert!(fs::metadata(temp_path).is_ok());
+        assert!(fs::metadata(&temp_path).is_ok());
         
         // Ensure same key is set for loading (in case other tests changed it)
         set_encryption_key(key);
         
         // Load encrypted token from file
-        let loaded = load_token_encrypted("file_test", temp_path).unwrap();
+        let loaded = load_token_encrypted("file_test", &temp_path).unwrap();
         assert_eq!(loaded.access_token, token.access_token);
         assert_eq!(loaded.expires_in, token.expires_in);
         
         // Clean up
-        let _ = fs::remove_file(temp_path);
+        let _ = fs::remove_file(&temp_path);
     }
 
     #[test]
@@ -1140,7 +1152,7 @@ mod tests {
         let secret = "webhook_secret_key";
         
         // Compute signature
-        let signature = compute_webhook_signature(payload, secret);
+        let signature = compute_webhook_signature(payload, secret).unwrap();
         assert!(!signature.is_empty());
         
         // Verify signature
@@ -1190,7 +1202,7 @@ mod tests {
         register_connector(config);
         
         let payload = r#"{"event_type":"push","timestamp":1234567890,"data":{"ref":"main"}}"#;
-        let signature = compute_webhook_signature(payload, "test_secret");
+        let signature = compute_webhook_signature(payload, "test_secret").unwrap();
         
         // Handle webhook with valid signature
         let result = handle_incoming_webhook("webhook_test", payload, Some(&signature));

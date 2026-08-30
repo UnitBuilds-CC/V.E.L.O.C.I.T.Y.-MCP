@@ -110,7 +110,17 @@ fn main() {
     }
 
     // Load configuration: file -> env vars -> CLI overrides
-    let config = ServerConfig::load_with_env(config_path.as_deref());
+    let config = if let Some(ref path) = config_path {
+        match ServerConfig::from_file(path) {
+            Ok(cfg) => cfg.apply_env_overrides(),
+            Err(e) => {
+                eprintln!("Error loading config file '{}': {}", path, e);
+                process::exit(1);
+            }
+        }
+    } else {
+        ServerConfig::load_with_env(None::<&str>)
+    };
 
     if let Err(errors) = config.validate() {
         for e in &errors {

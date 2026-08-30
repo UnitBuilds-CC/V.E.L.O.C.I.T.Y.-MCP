@@ -44,3 +44,6 @@ pub mod middleware;
 
 /// Server version string.
 pub const VERSION: &str = "3.0.0";
+
+/// MCP protocol version supported by this server.
+pub const PROTOCOL_VERSION: &str = "2024-11-05";

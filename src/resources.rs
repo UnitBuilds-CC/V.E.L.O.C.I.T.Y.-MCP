@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock, mpsc};
+use std::sync::{Mutex, OnceLock};
 
 /// A resource exposed by the server.
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -115,8 +115,8 @@ struct ResourceStore {
     api_resources: HashMap<String, ApiResourceConfig>,
     /// Active subscriptions: URI -> set of subscriber IDs
     subscriptions: HashMap<String, HashSet<String>>,
-    /// Notification channel for resource updates
-    update_sender: Option<mpsc::Sender<ResourceUpdate>>,
+    /// Pending resource update notifications
+    pending_updates: Vec<ResourceUpdate>,
 }
 
 /// Database resource configuration.
@@ -182,12 +182,6 @@ impl ResourceStore {
             return Err(format!("Resource not found: {}", uri));
         }
         
-        // Initialize notification channel if not already done
-        if self.update_sender.is_none() {
-            let (tx, _rx) = mpsc::channel();
-            self.update_sender = Some(tx);
-        }
-        
         self.subscriptions
             .entry(uri.to_string())
             .or_insert_with(HashSet::new)
@@ -206,16 +200,18 @@ impl ResourceStore {
         Ok(())
     }
 
-    fn notify_update(&self, uri: &str) {
-        if let Some(sender) = &self.update_sender {
-            if let Some(resource) = self.resources.iter().find(|r| r.uri == uri) {
-                let update = ResourceUpdate {
-                    uri: uri.to_string(),
-                    mime_type: resource.mime_type.clone(),
-                };
-                let _ = sender.send(update);
-            }
+    fn notify_update(&mut self, uri: &str) {
+        if let Some(resource) = self.resources.iter().find(|r| r.uri == uri) {
+            let update = ResourceUpdate {
+                uri: uri.to_string(),
+                mime_type: resource.mime_type.clone(),
+            };
+            self.pending_updates.push(update);
         }
+    }
+    
+    fn drain_updates(&mut self) -> Vec<ResourceUpdate> {
+        std::mem::take(&mut self.pending_updates)
     }
 
     fn read_resource(&self, uri: &str) -> Result<ResourceReadResult, String> {
@@ -247,7 +243,7 @@ impl ResourceStore {
                 return Ok(ResourceReadResult {
                     uri: uri.to_string(),
                     mime_type: "application/json".to_string(),
-                    text: Some(serde_json::to_string_pretty(&mock_result).unwrap()),
+                    text: Some(serde_json::to_string_pretty(&mock_result).unwrap_or_default()),
                 });
             }
         }
@@ -265,7 +261,7 @@ impl ResourceStore {
             return Ok(ResourceReadResult {
                 uri: uri.to_string(),
                 mime_type: "application/json".to_string(),
-                text: Some(serde_json::to_string_pretty(&mock_result).unwrap()),
+                text: Some(serde_json::to_string_pretty(&mock_result).unwrap_or_default()),
             });
         }
         
@@ -280,17 +276,31 @@ struct ResourceReadResult {
     text: Option<String>,
 }
 
+/// Cached database connection to avoid reopening on every query.
+#[cfg(feature = "database")]
+static CACHED_DB: OnceLock<Mutex<Option<rusqlite::Connection>>> = OnceLock::new();
+
+#[cfg(feature = "database")]
+fn get_db_connection() -> Result<std::sync::MutexGuard<'static, Option<rusqlite::Connection>>, String> {
+    let cache = CACHED_DB.get_or_init(|| Mutex::new(None));
+    let mut guard = cache.lock().map_err(|e| format!("DB cache lock poisoned: {}", e))?;
+    if guard.is_none() {
+        let conn = match DATABASE_PATH.get() {
+            Some(path) => rusqlite::Connection::open(path)
+                .map_err(|e| format!("Failed to open database at {}: {}", path, e))?,
+            None => rusqlite::Connection::open_in_memory()
+                .map_err(|e| format!("Failed to open in-memory database: {}", e))?,
+        };
+        *guard = Some(conn);
+    }
+    Ok(guard)
+}
+
 /// Execute a database query and return results as JSON.
 #[cfg(feature = "database")]
 fn execute_database_query(uri: &str, config: &DbResourceConfig) -> Result<ResourceReadResult, String> {
-    use rusqlite::Connection;
-    
-    let conn = match DATABASE_PATH.get() {
-        Some(path) => Connection::open(path)
-            .map_err(|e| format!("Failed to open database at {}: {}", path, e))?,
-        None => Connection::open_in_memory()
-            .map_err(|e| format!("Failed to open in-memory database: {}", e))?,
-    };
+    let guard = get_db_connection()?;
+    let conn = guard.as_ref().ok_or("Database connection not initialized")?;
     
     // Execute the query with parameters
     let mut stmt = conn.prepare(&config.query)
@@ -334,7 +344,7 @@ fn execute_database_query(uri: &str, config: &DbResourceConfig) -> Result<Resour
     Ok(ResourceReadResult {
         uri: uri.to_string(),
         mime_type: "application/json".to_string(),
-        text: Some(serde_json::to_string_pretty(&result_json).unwrap()),
+        text: Some(serde_json::to_string_pretty(&result_json).unwrap_or_default()),
     })
 }
 
@@ -413,8 +423,17 @@ pub fn unsubscribe_resource(uri: &str, subscriber_id: &str) -> Result<(), String
 /// Notify subscribers of a resource update.
 pub fn notify_resource_update(uri: &str) {
     let store = get_resource_registry();
-    if let Ok(s) = store.lock() {
+    if let Ok(mut s) = store.lock() {
         s.notify_update(uri);
+    }
+}
+
+/// Poll for pending resource update notifications. Drains and returns all pending updates.
+pub fn poll_resource_updates() -> Vec<ResourceUpdate> {
+    let store = get_resource_registry();
+    match store.lock() {
+        Ok(mut s) => s.drain_updates(),
+        Err(_) => vec![],
     }
 }
 

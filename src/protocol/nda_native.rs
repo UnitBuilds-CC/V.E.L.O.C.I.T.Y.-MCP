@@ -43,8 +43,15 @@ pub const METHOD_TOOLS_CALL: u8 = 0x03;
 pub const METHOD_PING: u8 = 0x04;
 pub const METHOD_LOGGING_SET_LEVEL: u8 = 0x05;
 pub const METHOD_HEALTH_CHECK: u8 = 0x06;
+pub const METHOD_RESOURCES_LIST: u8 = 0x07;
+pub const METHOD_RESOURCES_READ: u8 = 0x08;
+pub const METHOD_RESOURCE_TEMPLATES_LIST: u8 = 0x09;
+pub const METHOD_PROMPTS_LIST: u8 = 0x0A;
+pub const METHOD_PROMPTS_GET: u8 = 0x0B;
+pub const METHOD_SAMPLING_CREATE: u8 = 0x0C;
 pub const NOTIF_INITIALIZED: u8 = 0x10;
 pub const NOTIF_CANCELLED: u8 = 0x11;
+pub const NOTIF_PROGRESS: u8 = 0x12;
 
 pub const STATUS_OK: u8 = 0;
 pub const STATUS_ERROR: u8 = 1;

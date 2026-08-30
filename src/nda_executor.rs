@@ -40,7 +40,9 @@ pub fn execute_nda(nda_bytes: &[u8], args: &[String]) -> Result<String, String> 
     let asset_id = asset_id.ok_or_else(|| {
         "NDA file does not contain a runnable payload type (BinaryPayload or SourceCode).".to_string()
     })?;
-    let payload_type = payload_type.unwrap();
+    let payload_type = payload_type.ok_or_else(|| {
+        "NDA file does not contain a runnable payload type (BinaryPayload or SourceCode).".to_string()
+    })?;
 
     // Second pass: extract payload metadata
     let mut filename: Option<String> = None;
