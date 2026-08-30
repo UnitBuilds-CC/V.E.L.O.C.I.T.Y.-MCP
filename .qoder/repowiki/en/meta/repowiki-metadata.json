@@ -1,31 +1,40 @@
 {
   "schema_version": 1,
-  "project": "V.E.L.O.C.I.T.Y. NMCP Server",
+  "project": "V.E.L.O.C.I.T.Y. MCP Server",
   "locale": "en-US",
-  "exported_at": "2026-08-17T20:58:00Z",
+  "exported_at": "2026-08-30T12:00:00Z",
   "workspace": {
     "root": "V.E.L.O.C.I.T.Y.-MCP/",
     "crates": [
       {
         "name": "velocity_mcp",
         "path": "./",
-        "file_count": 7,
-        "role": "High-performance zero-allocation NMCP server with dual-mode protocol (JSON-RPC stdio + shared memory binary)"
+        "file_count": 30,
+        "role": "High-performance production-ready MCP server with 4 transport modes, 8 built-in tools, plugin marketplace, and enterprise-grade security"
+      },
+      {
+        "name": "velocity_mcp_macros",
+        "path": "./macros",
+        "file_count": 1,
+        "role": "Proc-macro crate for compile-time type-safe tool registration via #[mcp_tool]"
       }
     ],
-    "total_source_files": 7,
+    "total_source_files": 30,
     "key_constraints": [
-      "Dual-protocol execution: stdio JSON-RPC v2.0 and shared memory NMCP binary",
-      "Zero-allocation binary frame parsing via raw slice alignment",
-      "Memory-mapped file IPC with atomic state machine ring buffer (64KB total)",
-      "C# NdaMcpServer delegation for tool execution (convert_to_nda, read_nda, execute_nda)",
-      "SHA-256 Merkle signatures on NMCP binary frames (32-byte merkle root)",
-      "Release profile: opt-level 3, LTO, codegen-units 1, panic abort, stripped",
-      "Self-contained single executable — no dynamic dependencies"
+      "Four transport modes: stdio JSON-RPC, HTTP/SSE/WebSocket, WebSocket, shared memory",
+      "NDA binary protocol with auto-detection and Merkle integrity verification",
+      "8 built-in tools all native Rust — no external process required",
+      "Capability-based sandbox with Linux seccomp and Windows Job Objects",
+      "Cross-platform: Windows, Linux, macOS",
+      "284 passing tests (210 unit + 17 fuzz + 43 integration + 8 macro + 6 doc)",
+      "Plugin marketplace with dynamic loading",
+      "Prometheus metrics, Grafana dashboards, OpenTelemetry tracing",
+      "Client SDKs in 4 languages (Rust, Python, TypeScript, Go)",
+      "Release profile: opt-level 3, LTO, codegen-units 1, panic abort, stripped"
     ]
   },
   "content_pages": {
-    "count": 8,
+    "count": 10,
     "categories": [
       "Getting Started",
       "Development Guide",
@@ -44,7 +53,7 @@
       "NMCP Binary Protocol",
       "Shared Memory IPC",
       "JSON-RPC v2.0 Stdio",
-      "NDA Tool Registry",
+      "NDA Tool Registry (Native Operations)",
       "Micro-Benchmark Suite",
       "Proprietary License"
     ]

@@ -1,40 +1,54 @@
-# NDA Tool Registry and CSharp Core Delegation
+# NDA Tool Registry and Native Operations
 
 ## Classification
-- **Category**: Tool Dispatch / External Integration
-- **Files**: src/registry.rs (136 LOC)
-- **Criticality**: High — bridges Rust protocol layer to C# NDA engine
+- **Category**: Tool Dispatch / Native Operations
+- **Files**: src/registry.rs, src/nda_converter.rs, src/nda_document.rs, src/nda_executor.rs
+- **Criticality**: High — core tool dispatch and all NDA operations
 
 ## Summary
 
-The tool registry defines 3 NDA tools (`convert_to_nda`, `read_nda`, `execute_nda`) and delegates their execution to an external C# NdaMcpServer process. The Rust server acts as a high-performance protocol front-end while the C# engine handles the complex NDA format operations.
+The tool registry defines 8 built-in tools, all implemented natively in Rust. No external process delegation is required for core operations. The server can also discover additional tools from plugins and an optional C# backend engine.
 
 ## Registered Tools
 
+### General Tools
+
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `convert_to_nda` | `filePath` (required), `outputPath` (optional) | Convert any file to cryptographically signed .nda |
-| `read_nda` | `ndaPath` (required) | Read/parse .nda binary file |
-| `execute_nda` | `ndaPath` (required), `arguments` (optional) | Execute runnable .nda container |
+| `file_read` | `path` (required), `encoding` (optional) | Read file contents with validation |
+| `file_write` | `path` (required), `content` (required) | Write files with path validation |
+| `shell_exec` | `command` (required), `timeout` (optional) | Execute commands in sandbox |
+| `http_request` | `url` (required), `method`, `headers`, `body`, `timeout` | HTTP client with retry/circuit breaker |
 
-## Delegation Flow
+### NDA Tools
 
-1. Construct JSON-RPC request envelope with `id: 999`
-2. Spawn C# process with piped stdin/stdout
-3. Write request to stdin
-4. Read response from stdout via `wait_with_output()`
-5. Parse JSON-RPC response → extract `result.content[0].text`
-6. Check `result.isError` flag for error propagation
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `convert_to_nda_document` | `filePath` (required), `outputPath` (optional) | Convert any file to signed .nda |
+| `convert_to_nda_tool` | `jsonRequest` (required), `outputPath` (optional) | Convert JSON tool call to NDA binary |
+| `read_nda` | `ndaPath` (required) | Read/parse .nda with Merkle + Ed25519 verification |
+| `execute_nda` | `ndaPath` (required), `arguments` (optional) | Execute .nda in sandbox |
 
-## C# Executable Path
+## Native Execution
 
-```
-C:\Users\visse\OneDrive\Documents\Payment and Transaction Flow\Velocity\NdaMcpServer\bin\Debug\net10.0\NdaMcpServer.exe
-```
+All tools execute natively in Rust:
+- `file_read`/`file_write`: Direct filesystem operations with path validation
+- `shell_exec`: Spawns process in capability-based sandbox with OS-level limits
+- `http_request`: Native HTTP client with retry logic and circuit breaker
+- NDA tools: Native compile/read/execute via `nda_converter`, `nda_document`, `nda_executor`
+
+## Dynamic Tool Hosting
+
+Additional tools can be discovered from:
+1. **Plugins**: Installed via marketplace, loaded dynamically
+2. **C# engine**: Optional external process via `VELOCITY_CSHARP_PATH` env var
+
+On first `tools/list`, the server queries plugins and C# engine, caches results, and merges with built-in tools (deduplicated by name).
 
 ## Critical Constraints
 
-- Path is hardcoded — must be updated for different environments
-- C# process is spawned synchronously per tool call (no pooling)
-- Response JSON structure is assumed: `result.content[0].text`
-- Requires .NET 10.0 runtime on the host
+- All file paths validated at boundary (absolute, no traversal)
+- `shell_exec` and `execute_nda` run in capability-based sandbox
+- 30-second execution timeout with process kill
+- stdout limit: 1 MB, stderr limit: 256 KB
+- Error messages sanitized before returning to clients

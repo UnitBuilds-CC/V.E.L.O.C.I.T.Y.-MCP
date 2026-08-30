@@ -4,12 +4,17 @@
 **Referenced Files in This Document**
 - [src/ipc/shmem.rs](file://src/ipc/shmem.rs)
 - [src/protocol/nmcp_binary.rs](file://src/protocol/nmcp_binary.rs)
+- [src/protocol/nda_native.rs](file://src/protocol/nda_native.rs)
 - [src/benchmark.rs](file://src/benchmark.rs)
 </cite>
 
 ## Overview
 
-The IPC subsystem provides a memory-mapped file buffer for zero-copy inter-process communication between the NMCP server and its host process. Built on the `memmap2` crate, it maps a 64KB file into the address space of both processes, allowing direct read/write access to shared memory without kernel-mediated copies.
+The IPC subsystem provides a memory-mapped file buffer for zero-copy inter-process communication between the MCP server and its host process. Built on the `memmap2` crate, it maps a 64KB file into the address space of both processes, allowing direct read/write access to shared memory without kernel-mediated copies.
+
+In v3.0, the shared memory mode supports **two wire formats** with auto-detection:
+- **NDA-native** (binary): Zero JSON parsing on the hot path
+- **JSON-RPC** (backwards-compatible): Standard JSON-RPC strings
 
 ## Memory Layout
 
@@ -54,68 +59,77 @@ Host                          Server
 ────                          ──────
 Write request to input buffer
 Set input length
-Set state = REQ_READY (1)
-                              Poll: detect state == REQ_READY
+SeqCst fence
+Set state = REQ_READY (1) [Release]
+Signal request event (Windows)
+                              Wait for request event (Windows)
+                              / Poll: detect state == REQ_READY [Acquire]
+                              SeqCst fence
                               Set state = PROCESSING (2)
                               Flush mmap
                               Read input buffer
+                              Auto-detect wire format (NMCP magic vs JSON)
                               Process request
                               Write response to output buffer
                               Set output length
-                              Set state = RES_READY (3)
+                              SeqCst fence
+                              Set state = RES_READY (3) [Release]
                               Flush mmap
+                              Signal response event (Windows)
+Wait for response event
 Read response from output buffer
 Set state = IDLE (0) [implicit on next write]
 ```
 
-## SharedMemoryBuffer API
+## Win32 Event Signaling
 
-### Creation
+On Windows, the server uses `CreateEventW`/`WaitForSingleObject`/`SetEvent` for zero-poll blocking waits. Events are named `Global\VELOCITY_NMCP_REQ_{buffer}` and `Global\VELOCITY_NMCP_RES_{buffer}`. This replaces polling with instant wake-up.
 
-```rust
-let mut buffer = SharedMemoryBuffer::create_or_open("nmcp_buffer.bin")?;
-```
+On other platforms, a 100μs sleep fallback is used.
 
-Opens the file with read+write+create, sets the file length to 64KB, and maps it into memory. If the buffer is freshly created (state == 0 and input_len == 0), it initializes state to `STATE_IDLE`.
+## Synchronization Requirements
 
-### Key Operations
+Cross-process correctness requires proper memory ordering:
 
-| Method | Description |
-|--------|-------------|
-| `get_state()` | Read the state byte |
-| `set_state(u8)` | Write the state byte |
-| `get_input_len()` | Read input buffer length (u32 LE) |
-| `set_input_len(u32)` | Write input buffer length (u32 LE) |
-| `get_output_len()` | Read output buffer length (u32 LE) |
-| `set_output_len(u32)` | Write output buffer length (u32 LE) |
-| `read_input()` | Read input buffer as UTF-8 String |
-| `write_output(&str)` | Write response string to output buffer |
-| `flush()` | Force-sync memory-mapped pages to disk |
+- **State byte**: Atomic load/store with Acquire/Release ordering
+- **Length fields**: `SeqCst` memory fence between reading/writing length fields and checking/setting the state byte
+- **Writer sequence**: Write data → write length → `SeqCst` fence → set state (Release)
+- **Reader sequence**: Read state (Acquire) → `SeqCst` fence → read length → read data
 
-## Safety Considerations
+## Wire Format Auto-Detection
 
-1. **No atomic operations**: The state machine uses plain byte reads/writes, not atomic operations. This is safe because only one process writes the state byte at a time (host writes REQ_READY, server writes PROCESSING/RES_READY). There is no concurrent write contention by protocol design.
+The server detects the wire format by checking the first 4 bytes of the input buffer:
 
-2. **Flush discipline**: `flush()` must be called after writing data and before changing state. This ensures the data is visible to the other process through the file system.
+- **Starts with `NMCP`**: NDA-native binary frame — parsed with zero-copy pointer casts, TLV decoding, and Merkle verification
+- **Anything else**: JSON-RPC string — parsed with serde_json
 
-3. **Buffer overflow protection**: Both `read_input()` and `write_output()` check length bounds before accessing the buffer. Exceeding limits returns an error rather than panicking.
-
-4. **UTF-8 assumption**: `read_input()` converts bytes to UTF-8 via `String::from_utf8()`. If the host writes invalid UTF-8, this will return an error.
+This enables backwards compatibility while allowing hosts to opt into the faster binary protocol.
 
 ## Performance
 
-The shared memory benchmark measures 200,000 iterations of write + read through the memory-mapped buffer:
-- **Mean latency**: ~74 ns per round-trip
-- **Speedup**: 1.52x faster than JSON-RPC parsing alone
-- The benchmark uses `black_box()` to prevent compiler optimization
+| Operation | Mean Latency | Throughput |
+|-----------|:---:|:---:|
+| JSON-in-shmem R/W | 38.8 ns | 25.8M ops/s |
+| NDA-native shmem R/W | 12.6 ns | 79.2M ops/s |
+| **NDA speedup** | | **3.1x faster** |
+
+Concurrency (NDA-native dispatch):
+
+| Threads | Throughput |
+|:-------:|:----------:|
+| 1 | 2.86M req/s |
+| 4 | 7.01M req/s |
+| 8 | 12.7M req/s |
 
 ## Key Design Decisions
 
 1. **File-backed mmap vs anonymous mmap**: File-backed allows persistence across process restarts and provides a named rendezvous point for host-server discovery.
 2. **Fixed layout vs dynamic**: The fixed layout avoids serialization overhead for the header. State and lengths are at known offsets — no need for a header parser.
-3. **Separate input/output regions**: Prevents read-write conflicts. The host writes to input, the server reads from input. The server writes to output, the host reads from output. No overlapping access.
-4. **64KB total size**: Sized for typical MCP payloads. Input region (~4KB) handles tool call requests; output region (~61KB) handles tool responses which can be larger.
+3. **Separate input/output regions**: Prevents read-write conflicts. The host writes to input, the server reads from input. The server writes to output, the host reads from output.
+4. **Dual wire format**: NDA-native for maximum performance, JSON-RPC for backwards compatibility. Auto-detection means hosts can migrate at their own pace.
+5. **Win32 Events on Windows**: Zero-poll blocking waits eliminate CPU waste while maintaining instant wake-up. Cross-platform fallback uses short sleep intervals.
 
 **Section sources**
 - [src/ipc/shmem.rs](file://src/ipc/shmem.rs)
+- [src/protocol/nmcp_binary.rs](file://src/protocol/nmcp_binary.rs)
 - [src/benchmark.rs](file://src/benchmark.rs)

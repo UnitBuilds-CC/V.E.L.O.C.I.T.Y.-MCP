@@ -7,7 +7,7 @@
 
 ## Overview
 
-The `SharedMemoryBuffer` in `src/ipc/shmem.rs` implements a memory-mapped file buffer for IPC between the NMCP server and its host process. It uses the `memmap2` crate to map a 64KB file into the virtual address space, providing direct memory access without kernel-mediated data transfer.
+The `SharedMemoryBuffer` in `src/ipc/shmem.rs` implements a memory-mapped file buffer for IPC between the MCP server and its host process. It uses the `memmap2` crate to map a 64KB file into the virtual address space, providing direct memory access without kernel-mediated data transfer. Cross-platform support works on Windows, Linux, and macOS.
 
 ## Implementation Details
 
@@ -54,6 +54,33 @@ mmap[offset..offset+4].copy_from_slice(&len.to_le_bytes());
 
 This avoids alignment issues that could arise from direct pointer casts on the mmap region.
 
+### Atomic State Management
+
+In v3.0, the state byte uses `AtomicU8` with proper memory ordering:
+
+```rust
+// Writer: Release ordering ensures data is visible before state change
+self.state.store(STATE_RES_READY, Ordering::Release);
+
+// Reader: Acquire ordering ensures state is read before data
+let state = self.state.load(Ordering::Acquire);
+```
+
+Combined with `SeqCst` fences on length fields, this ensures correct cross-process synchronization.
+
+### Win32 Event Integration
+
+On Windows, the buffer creates named events for zero-poll signaling:
+
+```rust
+#[cfg(target_os = "windows")]
+fn create_events(&self) -> (HANDLE, HANDLE) {
+    let req_event = CreateEventW(..., &format!("Global\\VELOCITY_NMCP_REQ_{}", self.buffer_name));
+    let res_event = CreateEventW(..., &format!("Global\\VELOCITY_NMCP_RES_{}", self.buffer_name));
+    (req_event, res_event)
+}
+```
+
 ### Input Reading
 
 ```rust
@@ -67,7 +94,7 @@ pub fn read_input(&self) -> Result<String, Box<dyn Error>> {
 }
 ```
 
-Reads `input_len` bytes from the input region, validates the length, and converts to UTF-8 String. Note: `to_vec()` allocates — this is a necessary copy since the String must outlive the mmap borrow.
+Reads `input_len` bytes from the input region, validates the length, and converts to UTF-8 String.
 
 ### Output Writing
 
@@ -84,8 +111,6 @@ pub fn write_output(&mut self, response: &str) -> Result<(), Box<dyn Error>> {
 }
 ```
 
-Writes the response bytes directly into the output region of the mmap. Length is validated against the available space (~61KB).
-
 ### Flush
 
 ```rust
@@ -95,23 +120,15 @@ pub fn flush(&self) -> Result<(), Box<dyn Error>> {
 }
 ```
 
-Calls `MmapMut::flush()` which invokes `msync()` (or `FlushViewOfFile` on Windows) to sync the memory-mapped pages to the backing file. This is essential for cross-process visibility.
-
-## Dead Code Allowances
-
-Several methods are marked `#[allow(dead_code)]`:
-- `set_input_len()` — Used by the host process, not the server
-- `get_output_len()` — Used by the host process to read response length
-- `NmcpBinaryFrame` — Future binary driver reference implementation
-
-These are part of the shared API surface that the host process uses.
+Calls `MmapMut::flush()` which invokes `msync()` (or `FlushViewOfFile` on Windows) to sync the memory-mapped pages to the backing file.
 
 ## Key Design Decisions
 
 1. **Manual byte serialization**: Length fields are serialized byte-by-byte instead of using `unsafe` pointer casts. This is safer and the performance difference is negligible (4 bytes).
 2. **`MmapMut` not `Mmap`**: The buffer needs both read and write access, so `MmapMut` (mutable mapping) is required.
 3. **File-backed not anonymous**: File-backed mapping provides persistence and a named rendezvous point. Anonymous mappings cannot be shared across process launches.
-4. **`to_vec()` on read**: The input is copied into a `Vec<u8>` before converting to `String`. This is necessary because the `String` must be owned data that outlives the borrow on `self.mmap`.
+4. **Atomic state with Acquire/Release**: Proper memory ordering ensures cross-process correctness without locks.
+5. **Win32 Events on Windows**: Named events provide zero-poll blocking waits, eliminating CPU waste from polling.
 
 **Section sources**
 - [src/ipc/shmem.rs](file://src/ipc/shmem.rs)

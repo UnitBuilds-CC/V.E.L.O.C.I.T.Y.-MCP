@@ -1,41 +1,98 @@
-# NDA Tool Dispatch and C# Delegation
+# NDA Tool Dispatch and Native Operations
 
 <cite>
 **Referenced Files in This Document**
 - [src/registry.rs](file://src/registry.rs)
+- [src/nda_converter.rs](file://src/nda_converter.rs)
+- [src/nda_document.rs](file://src/nda_document.rs)
+- [src/nda_executor.rs](file://src/nda_executor.rs)
+- [src/sandbox.rs](file://src/sandbox.rs)
 </cite>
 
 ## Overview
 
-The tool registry (`src/registry.rs`) defines the MCP tools available on this server and handles their execution. The server currently provides three NDA (Non-Deterministic Automata) tools that are delegated to an external C# NdaMcpServer process for execution.
+The tool registry (`src/registry.rs`) defines the MCP tools available on this server and handles their execution. In v3.0, the server provides **8 built-in tools** — all implemented natively in Rust. No external process delegation is required for core operations.
 
 ## Registered Tools
 
-### `convert_to_nda`
+### General Tools
 
-Converts any file (C# source, PDF, CSV, Excel, Image, Zip) into a cryptographically signed `.nda` binary document.
+#### `file_read`
+Read file contents with path validation and size limits.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | Yes | Absolute path to the file |
+| `encoding` | string | No | Text encoding (default: utf-8) |
+
+#### `file_write`
+Write content to a file with path validation.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | Yes | Absolute path for the output file |
+| `content` | string | Yes | Content to write |
+| `encoding` | string | No | Text encoding (default: utf-8) |
+
+#### `shell_exec`
+Execute shell commands in a sandboxed environment with timeout and output limits.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `command` | string | Yes | Shell command to execute |
+| `timeout` | integer | No | Timeout in seconds (default: 30, max: 30) |
+
+Commands run in a capability-based sandbox with no network access, filesystem isolated to a temp directory, and OS-level memory limits.
+
+#### `http_request`
+Make HTTP requests with automatic retry logic and circuit breaker protection.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `url` | string | Yes | Target URL |
+| `method` | string | No | HTTP method (default: GET) |
+| `headers` | object | No | Request headers |
+| `body` | string | No | Request body |
+| `timeout` | integer | No | Timeout in seconds (default: 30) |
+
+### NDA Tools
+
+#### `convert_to_nda_document`
+Converts any file (C# source, PDF, CSV, Excel, DOCX, Image, Zip) into a cryptographically signed `.nda` binary document with semantic triples and visual display commands.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `filePath` | string | Yes | Absolute path to input file |
 | `outputPath` | string | No | Output path (defaults to input with `.nda` extension) |
 
-### `read_nda`
+Implemented natively in `src/nda_converter.rs`. Supports Ed25519 signing via `compile_signed()`.
 
-Reads and parses a compiled `.nda` binary file to view its semantic triples, visual display commands, and string pool contents.
+#### `convert_to_nda_tool`
+Converts a JSON-RPC tool call into native NDA binary format.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `jsonRequest` | string | Yes | JSON-RPC tool call request to convert |
+| `outputPath` | string | No | Path to write the NDA binary file |
+
+#### `read_nda`
+Reads and parses a compiled `.nda` binary file. Returns semantic triples, visual display commands, string pool contents, Merkle verification status, and Ed25519 signature status.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `ndaPath` | string | Yes | Absolute path to the `.nda` file |
 
-### `execute_nda`
+Implemented natively in `src/nda_document.rs`. Includes `verify_merkle()` and `verify_signature()`.
 
-Executes a runnable `.nda` container. If it holds a compiled C# binary, it runs in-memory. If it contains a script (Python, Node.js, PowerShell, Bash), it executes via the corresponding shell process.
+#### `execute_nda`
+Executes a runnable `.nda` container in a capability-based sandbox.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `ndaPath` | string | Yes | Absolute path to the runnable `.nda` file |
-| `arguments` | string[] | No | Command-line arguments for the executable/script |
+| `arguments` | string[] | No | Command-line arguments |
+
+Implemented natively in `src/nda_executor.rs`. Runs in the sandbox with process isolation.
 
 ## Tool Definition Structure
 
@@ -49,72 +106,79 @@ pub struct Tool {
 }
 ```
 
-The `input_schema` uses standard JSON Schema format with `type`, `properties`, and `required` fields. This is returned to MCP clients via `tools/list`.
+Tools can also be registered via proc macros:
+
+```rust
+#[mcp_tool(
+    name = "my_tool",
+    description = "Does something useful",
+    param_constraints = { "path": { "min_length": 1 } }
+)]
+fn my_tool(path: String) -> Result<String, String> { ... }
+```
 
 ## Execution Flow
 
-### Dispatch
+### Native Dispatch
+
+All 8 built-in tools execute natively in Rust:
 
 ```rust
-pub fn call_tool(name: &str, arguments: &Value) -> Result<String, Box<dyn Error>>
+pub fn call_tool(name: &str, arguments: &Value) -> Result<String, String> {
+    match name {
+        "file_read" => { /* native implementation */ }
+        "file_write" => { /* native implementation */ }
+        "shell_exec" => { /* sandbox + native */ }
+        "http_request" => { /* native with retry/circuit breaker */ }
+        "convert_to_nda_document" => { /* nda_converter */ }
+        "convert_to_nda_tool" => { /* nda_converter */ }
+        "read_nda" => { /* nda_document */ }
+        "execute_nda" => { /* nda_executor + sandbox */ }
+        _ => Err(format!("Unknown tool: {}", name)),
+    }
+}
 ```
 
-The `call_tool` function matches the tool name and delegates to `execute_csharp_mcp_tool()`.
+### Dynamic Tool Hosting
 
-### C# Delegation
+The server can also discover additional tools from plugins or a C# backend engine:
 
-The `execute_csharp_mcp_tool()` function:
+1. On first `tools/list`, query plugins and C# engine (if present)
+2. Cache results for subsequent requests
+3. Merge built-in and discovered tools (deduplicated by name)
 
-1. **Locates the C# executable** at the hardcoded path:
-   ```
-   C:\Users\visse\OneDrive\Documents\Payment and Transaction Flow\Velocity\NdaMcpServer\bin\Debug\net10.0\NdaMcpServer.exe
-   ```
+### Sandbox Enforcement
 
-2. **Constructs a JSON-RPC request** envelope:
-   ```json
-   {
-     "jsonrpc": "2.0",
-     "method": "tools/call",
-     "params": { "name": "<tool_name>", "arguments": <args> },
-     "id": 999
-   }
-   ```
+`shell_exec` and `execute_nda` run through the capability-based sandbox:
 
-3. **Spawns the C# process** with piped stdin/stdout:
-   ```rust
-   Command::new(exe_path)
-       .stdin(Stdio::piped())
-       .stdout(Stdio::piped())
-       .spawn()?
-   ```
-
-4. **Writes the request** to the C# process's stdin
-
-5. **Reads the response** from stdout via `wait_with_output()`
-
-6. **Parses the JSON-RPC response** and extracts the text content:
-   - Checks for `error` field → returns error
-   - Checks `result.isError` → returns error if true
-   - Extracts `result.content[0].text` → returns as success
+- **ProcessCapabilities** defines allowed operations
+- **Violation tracking** records all sandbox violations
+- **OS-level enforcement**: Windows Job Objects (memory caps), Linux seccomp (syscall filtering)
+- **Isolated temp directory** per execution, cleaned up after completion
+- **30-second timeout** with process kill
 
 ## Error Handling
 
 | Error | Cause |
 |-------|-------|
 | "filePath is required" | Missing required parameter |
-| "C# core engine not found" | NdaMcpServer.exe doesn't exist at expected path |
-| "Failed to open stdin" | Process spawn succeeded but stdin pipe failed |
-| "C# process exited with status" | Non-zero exit code from C# process |
-| "Failed to parse tool text output" | C# response doesn't match expected JSON structure |
-| "C# Execution Error: ..." | C# process returned a JSON-RPC error |
+| "File path must be absolute" | Relative path provided |
+| "File path contains traversal sequence" | Path traversal attempt |
+| "Sandbox violation: ..." | Operation not allowed by sandbox |
+| "Execution timed out after 30s" | Tool exceeded timeout |
+| "Output size limit exceeded" | stdout > 1 MB or stderr > 256 KB |
 
 ## Key Design Decisions
 
-1. **C# delegation**: The NDA format operations are complex and already implemented in C#. Rather than reimplementing in Rust, the server delegates to the proven C# engine via a subprocess.
-2. **JSON-RPC over stdin**: The C# process speaks the same JSON-RPC protocol, making the delegation clean and testable.
-3. **Hardcoded path**: The C# executable path is hardcoded for the current development setup. For production, this should be configurable via CLI flag or environment variable.
-4. **Fixed request ID**: The delegation uses `id: 999` since it's an internal implementation detail — the original client request ID is not forwarded.
-5. **Synchronous execution**: `wait_with_output()` blocks until the C# process completes. This is acceptable for tool calls but would need to be async for high-throughput scenarios.
+1. **All native Rust**: Since v3.0, all core tools run natively — no external process delegation required. The C# engine is optional for dynamic tool hosting.
+2. **Sandbox by default**: All execution tools (`shell_exec`, `execute_nda`) run in the capability-based sandbox with OS-level enforcement.
+3. **Retry and circuit breaker**: `http_request` includes automatic retry logic and circuit breaker protection for resilience.
+4. **Path validation at boundary**: All file paths are validated before any tool receives them — empty, relative, and traversal paths are rejected.
+5. **Error sanitization**: Error messages are sanitized before returning to clients (paths stripped, truncated at 500 chars).
 
 **Section sources**
 - [src/registry.rs](file://src/registry.rs)
+- [src/nda_converter.rs](file://src/nda_converter.rs)
+- [src/nda_document.rs](file://src/nda_document.rs)
+- [src/nda_executor.rs](file://src/nda_executor.rs)
+- [src/sandbox.rs](file://src/sandbox.rs)

@@ -1,41 +1,68 @@
-# Knowledge Card Index — V.E.L.O.C.I.T.Y. NMCP Server
+# Knowledge Card Index — V.E.L.O.C.I.T.Y. MCP Server
 schema_version: 1
 locale: en-US
 branch: main
 nodes_managed: true
-exported_at: "2026-08-17T20:58:00Z"
+exported_at: "2026-08-30T12:00:00Z"
 classification_summary:
-    total_files: 7
-    real: 7
+    total_files: 30+
+    real: 30+
     generated: 0
     template: 0
     stub: 0
     critical_modules:
         - module: src/protocol
-          files: 3
-          status: "Dual-protocol handlers (JSON-RPC stdio + NMCP binary shmem)"
+          files: 4
+          status: "Multi-protocol handlers (JSON-RPC stdio + NMCP binary shmem + NDA-native)"
+        - module: src/transport
+          files: 1
+          status: "HTTP/SSE/WebSocket transport via Axum with session management"
         - module: src/ipc
           files: 2
-          status: "Memory-mapped shared memory IPC with atomic state machine"
+          status: "Memory-mapped shared memory IPC with atomic state machine + Win32 events"
         - module: src/registry
           files: 1
-          status: "NDA tool definitions and C# core delegation"
+          status: "8 built-in tools, all native Rust, with plugin/C# dynamic hosting"
+        - module: src/sandbox
+          files: 2
+          status: "Capability sandbox + Linux seccomp-bpf syscall filtering"
+        - module: src/nda_*
+          files: 3
+          status: "Native NDA compile/read/execute operations"
+        - module: src/plugins
+          files: 2
+          status: "Plugin system + marketplace with install/update/review"
+        - module: src/observability
+          files: 1
+          status: "OpenTelemetry distributed tracing and metrics"
         - module: src/benchmark
           files: 1
-          status: "In-memory micro-benchmark suite (JSON vs binary vs shmem)"
+          status: "Built-in micro-benchmarks + Criterion suite"
+        - module: macros
+          files: 1
+          status: "Proc-macro crate for type-safe #[mcp_tool] registration"
 modules:
     "":
-        dir_name: V.E.L.O.C.I.T.Y. NMCP Server Root Crate
-        title: V.E.L.O.C.I.T.Y. NMCP Server Root Crate
+        dir_name: V.E.L.O.C.I.T.Y. MCP Server Root Crate
+        title: V.E.L.O.C.I.T.Y. MCP Server Root Crate
         scope:
             - README.md
             - Cargo.toml
             - LICENSE
             - src/main.rs
+            - src/lib.rs
             - src/registry.rs
             - src/benchmark.rs
+            - src/config.rs
             - src/protocol/
+            - src/transport/
             - src/ipc/
+            - src/sandbox/
+            - src/plugins/
+            - src/observability/
+            - macros/
+            - client/
         source_files:
             - Cargo.toml
             - src/main.rs
+            - src/lib.rs
