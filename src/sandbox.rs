@@ -11,12 +11,30 @@
 //! - **Output size limits**: stdout/stderr capped to prevent OOM.
 //! - **Execution timeout**: Hard deadline with process kill (30s default).
 //! - **Job Object limits** (Windows): Memory cap enforced via Windows Job Objects.
+//! - **Seccomp filters** (Linux): Syscall filtering for additional security.
+//!   The `linux_seccomp` module provides seccomp filter definitions that can be
+//!   applied in child processes for kernel-level syscall restrictions.
 //! - **Audit trail**: Violations and executions logged to the global audit log.
+//!
+//! # Linux Seccomp Integration
+//!
+//! On Linux, the `linux_seccomp` module provides seccomp BPF filters that restrict
+//! the syscalls available to sandboxed processes. To apply these filters:
+//!
+//! 1. Fork the child process
+//! 2. In the child, call `linux_seccomp::apply_seccomp_filters()`
+//! 3. In the child, exec the target program
+//!
+//! The capability-based sandbox provides security on all platforms. Seccomp is an
+//! additional layer for Linux that provides kernel-level enforcement.
 
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
+
+#[cfg(target_os = "linux")]
+mod linux_seccomp;
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
