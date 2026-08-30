@@ -601,6 +601,36 @@ async fn performance(State(state): State<Arc<ServerState>>) -> Json<Value> {
     }))
 }
 
+/// Audit log export endpoint (JSON format).
+async fn audit_export_json() -> Result<
+    (StatusCode, [(axum::http::header::HeaderName, &'static str); 1], String),
+    StatusCode
+> {
+    match crate::audit::global_audit().export_json() {
+        Ok(json) => Ok((
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            json,
+        )),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+/// Audit log export endpoint (CSV format).
+async fn audit_export_csv() -> Result<
+    (StatusCode, [(axum::http::header::HeaderName, &'static str); 1], String),
+    StatusCode
+> {
+    match crate::audit::global_audit().export_csv() {
+        Ok(csv) => Ok((
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "text/csv")],
+            csv,
+        )),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
 /// Session management endpoints.
 async fn list_sessions(State(state): State<Arc<ServerState>>) -> Json<Value> {
     let sessions = state.sessions.read().await;
@@ -846,6 +876,8 @@ fn build_router(state: Arc<ServerState>) -> Router {
         .route("/metrics", get(metrics))
         .route("/metrics/prometheus", get(metrics_prometheus))
         .route("/performance", get(performance))
+        .route("/audit/export/json", get(audit_export_json))
+        .route("/audit/export/csv", get(audit_export_csv))
         .route("/sessions", get(list_sessions))
         .route("/sessions/:id", get(delete_session))
         .route("/marketplace/plugins", get(marketplace_list_plugins))
@@ -864,7 +896,7 @@ fn build_router(state: Arc<ServerState>) -> Router {
 
     Router::new()
         .route("/health", get(health_check))
-        .merge(protected)
+        .nest("/v1", protected)
         .layer(cors)
         .layer(axum::extract::DefaultBodyLimit::max(state.security.max_request_size))
         .with_state(state)
@@ -1082,7 +1114,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/mcp")
+                    .uri("/v1/mcp")
                     .header("Content-Type", "application/json")
                     .body(Body::from(serde_json::to_string(&request_body).unwrap()))
                     .unwrap(),
@@ -1116,7 +1148,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/mcp")
+                    .uri("/v1/mcp")
                     .header("Content-Type", "application/json")
                     .body(Body::from(serde_json::to_string(&request_body).unwrap()))
                     .unwrap(),
@@ -1151,7 +1183,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/metrics")
+                    .uri("/v1/metrics")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1223,7 +1255,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/mcp")
+                    .uri("/v1/mcp")
                     .header("Content-Type", "application/json")
                     .body(Body::from(serde_json::to_string(&request_body).unwrap()))
                     .unwrap(),
@@ -1238,7 +1270,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/mcp")
+                    .uri("/v1/mcp")
                     .header("Content-Type", "application/json")
                     .header("Authorization", "Bearer wrong-key")
                     .body(Body::from(serde_json::to_string(&request_body).unwrap()))
@@ -1254,7 +1286,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/mcp")
+                    .uri("/v1/mcp")
                     .header("Content-Type", "application/json")
                     .header("Authorization", "Bearer test-api-key")
                     .body(Body::from(serde_json::to_string(&request_body).unwrap()))
@@ -1287,7 +1319,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/performance")
+                    .uri("/v1/performance")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1338,7 +1370,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/mcp/batch")
+                    .uri("/v1/mcp/batch")
                     .header("Content-Type", "application/json")
                     .body(Body::from(serde_json::to_string(&batch_request).unwrap()))
                     .unwrap(),

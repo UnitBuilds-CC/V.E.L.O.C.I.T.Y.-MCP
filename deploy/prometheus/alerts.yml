@@ -1,0 +1,140 @@
+groups:
+  - name: velocity_mcp_alerts
+    rules:
+      # High error rate alert (>5% errors over 5 minutes)
+      - alert: HighErrorRate
+        expr: |
+          (
+            sum(rate(velocity_mcp_requests_failed[5m]))
+            /
+            sum(rate(velocity_mcp_requests_total[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value | humanizePercentage }} over the last 5 minutes"
+
+      # Critical error rate alert (>10% errors over 2 minutes)
+      - alert: CriticalErrorRate
+        expr: |
+          (
+            sum(rate(velocity_mcp_requests_failed[2m]))
+            /
+            sum(rate(velocity_mcp_requests_total[2m]))
+          ) > 0.10
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical error rate detected"
+          description: "Error rate is {{ $value | humanizePercentage }} over the last 2 minutes"
+
+      # High latency alert (p95 > 1s over 5 minutes)
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.95, 
+            sum(rate(velocity_mcp_request_duration_seconds_bucket[5m])) by (le)
+          ) > 1.0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High latency detected"
+          description: "95th percentile latency is {{ $value }}s over the last 5 minutes"
+
+      # Low throughput alert (< 1 req/s over 10 minutes)
+      - alert: LowThroughput
+        expr: |
+          sum(rate(velocity_mcp_requests_total[10m])) < 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low throughput detected"
+          description: "Throughput is {{ $value }} req/s over the last 10 minutes"
+
+      # High rate limit hits alert
+      - alert: HighRateLimitHits
+        expr: |
+          sum(rate(velocity_mcp_rate_limit_hits_total[5m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High rate limit hits"
+          description: "Rate limit is being hit {{ $value }} times per second"
+
+      # TLS certificate expiration alert (expires in < 7 days)
+      - alert: TLSCertificateExpiringSoon
+        expr: |
+          (velocity_mcp_tls_cert_expiry_seconds - time()) / 86400 < 7
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "TLS certificate expiring soon"
+          description: "TLS certificate expires in {{ $value }} days"
+
+      # TLS certificate expiration alert (expires in < 1 day)
+      - alert: TLSCertificateExpiringImminently
+        expr: |
+          (velocity_mcp_tls_cert_expiry_seconds - time()) / 86400 < 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "TLS certificate expiring imminently"
+          description: "TLS certificate expires in {{ $value }} days"
+
+      # High memory usage alert (> 80% of limit)
+      - alert: HighMemoryUsage
+        expr: |
+          container_memory_usage_bytes{container="velocity-mcp"}
+          /
+          container_spec_memory_limit_bytes{container="velocity-mcp"}
+          > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage"
+          description: "Memory usage is {{ $value | humanizePercentage }} of limit"
+
+      # High CPU usage alert (> 80% of limit)
+      - alert: HighCPUUsage
+        expr: |
+          rate(container_cpu_usage_seconds_total{container="velocity-mcp"}[5m])
+          /
+          container_spec_cpu_quota{container="velocity-mcp"}
+          * 100000
+          > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage"
+          description: "CPU usage is {{ $value | humanizePercentage }} of limit"
+
+      # Plugin installation failures
+      - alert: PluginInstallationFailures
+        expr: |
+          sum(rate(velocity_mcp_plugin_install_failed_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Plugin installation failures detected"
+          description: "Plugin installations are failing at {{ $value }} per second"
+
+      # Audit log buffer full
+      - alert: AuditLogBufferFull
+        expr: |
+          velocity_mcp_audit_log_entries_total > 9000
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Audit log buffer nearly full"
+          description: "Audit log has {{ $value }} entries (buffer size: 10000)"

@@ -8,7 +8,7 @@ license = "MIT OR Apache-2.0"
 
 [features]
 default = []
-http = ["axum", "tokio", "tokio-stream", "tower", "tower-http", "uuid", "rustls", "rustls-pemfile", "tokio-rustls", "hyper", "hyper-util", "http-body-util", "prometheus", "futures"]
+http = ["axum", "tokio", "tokio-stream", "tower", "tower-http", "uuid", "rustls", "rustls-pemfile", "tokio-rustls", "hyper", "hyper-util", "http-body-util", "prometheus", "futures", "lru"]
 oauth2 = ["ureq", "aes-gcm", "hmac"]
 database = ["rusqlite"]
 observability = ["opentelemetry", "opentelemetry-otlp", "opentelemetry-semantic-conventions", "tracing-opentelemetry"]
@@ -45,6 +45,7 @@ http-body-util = { version = "0.1", optional = true }
 uuid = { version = "1.0", features = ["v4"], optional = true }
 prometheus = { version = "0.13", optional = true }
 futures = { version = "0.3", optional = true }
+lru = { version = "0.12", optional = true }
 
 # Optional: OAuth2 connectors
 ureq = { version = "2.9", features = ["json"], optional = true }

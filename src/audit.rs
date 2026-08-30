@@ -11,7 +11,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 const MAX_AUDIT_ENTRIES: usize = 10_000;
 
 /// Outcome of an audited operation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum AuditOutcome {
     Success,
     Error(String),
@@ -20,7 +20,7 @@ pub enum AuditOutcome {
 }
 
 /// A single audit log entry.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct AuditEntry {
     /// Monotonic sequence number.
     pub sequence: u64,
@@ -124,6 +124,47 @@ impl AuditLog {
             Ok(mut guard) => guard.clear(),
             Err(poisoned) => poisoned.into_inner().clear(),
         }
+    }
+
+    /// Get all entries (for export/streaming).
+    pub fn all(&self) -> Vec<AuditEntry> {
+        match self.entries.lock() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    /// Export audit log to JSON format.
+    pub fn export_json(&self) -> Result<String, String> {
+        let entries = self.all();
+        serde_json::to_string_pretty(&entries)
+            .map_err(|e| format!("Failed to serialize audit log to JSON: {}", e))
+    }
+
+    /// Export audit log to CSV format.
+    pub fn export_csv(&self) -> Result<String, String> {
+        let entries = self.all();
+        let mut csv = String::from("sequence,timestamp_ms,tool_name,duration_ms,outcome\n");
+        
+        for entry in entries {
+            let outcome_str = match &entry.outcome {
+                AuditOutcome::Success => "success".to_string(),
+                AuditOutcome::Error(msg) => format!("error:{}", msg.replace(',', ";")),
+                AuditOutcome::Timeout => "timeout".to_string(),
+                AuditOutcome::Rejected(reason) => format!("rejected:{}", reason.replace(',', ";")),
+            };
+            
+            csv.push_str(&format!(
+                "{},{},{},{},{}\n",
+                entry.sequence,
+                entry.timestamp_ms,
+                entry.tool_name,
+                entry.duration_ms,
+                outcome_str
+            ));
+        }
+        
+        Ok(csv)
     }
 }
 

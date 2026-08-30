@@ -15,7 +15,8 @@ use axum::{
     middleware::Next,
     response::{Response, IntoResponse},
 };
-use std::collections::HashMap;
+use lru::LruCache;
+use std::num::NonZeroUsize;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -28,25 +29,31 @@ struct CacheEntry {
     expires_at: Instant,
 }
 
-/// Response cache with TTL support.
+/// Response cache with TTL support and LRU eviction.
 #[derive(Clone)]
 pub struct ResponseCache {
-    entries: Arc<RwLock<HashMap<String, CacheEntry>>>,
+    entries: Arc<RwLock<LruCache<String, CacheEntry>>>,
     default_ttl: Duration,
 }
 
 impl ResponseCache {
-    /// Create a new response cache with default TTL.
+    /// Create a new response cache with default TTL and max size.
     pub fn new(default_ttl: Duration) -> Self {
+        Self::with_max_size(default_ttl, 10000)
+    }
+    
+    /// Create a new response cache with custom max size.
+    pub fn with_max_size(default_ttl: Duration, max_size: usize) -> Self {
+        let max_size = NonZeroUsize::new(max_size).unwrap_or(NonZeroUsize::new(10000).unwrap());
         Self {
-            entries: Arc::new(RwLock::new(HashMap::new())),
+            entries: Arc::new(RwLock::new(LruCache::new(max_size))),
             default_ttl,
         }
     }
     
     /// Get a cached response by key.
     pub fn get(&self, key: &str) -> Option<Response> {
-        let entries = self.entries.read().ok()?;
+        let mut entries = self.entries.write().ok()?;
         let entry = entries.get(key)?;
         
         if entry.expires_at > Instant::now() {
@@ -60,6 +67,8 @@ impl ResponseCache {
             
             Some(response)
         } else {
+            // Entry expired, remove it
+            entries.pop(key);
             None
         }
     }
@@ -80,7 +89,7 @@ impl ResponseCache {
         };
         
         if let Ok(mut entries) = self.entries.write() {
-            entries.insert(key, entry);
+            entries.put(key, entry);
         }
         
         Response::from_parts(parts, Body::from(body_bytes))
@@ -90,7 +99,15 @@ impl ResponseCache {
     pub fn cleanup(&self) {
         if let Ok(mut entries) = self.entries.write() {
             let now = Instant::now();
-            entries.retain(|_, entry| entry.expires_at > now);
+            let keys_to_remove: Vec<String> = entries
+                .iter()
+                .filter(|(_, entry)| entry.expires_at <= now)
+                .map(|(key, _)| key.clone())
+                .collect();
+            
+            for key in keys_to_remove {
+                entries.pop(&key);
+            }
         }
     }
     
