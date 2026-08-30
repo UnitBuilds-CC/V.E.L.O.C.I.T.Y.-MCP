@@ -41,6 +41,9 @@ pub mod error;
 /// Advanced middleware and features.
 #[cfg(feature = "http")]
 pub mod middleware;
+/// Observability (OpenTelemetry integration).
+#[cfg(feature = "observability")]
+pub mod observability;
 
 /// Server version string.
 pub const VERSION: &str = "3.0.0";

@@ -1057,6 +1057,7 @@ mod tests {
 
     #[test]
     #[cfg(feature = "oauth2")]
+    #[serial_test::serial]
     fn test_encrypted_token_storage() {
         // Generate and set encryption key
         let key = generate_encryption_key();
@@ -1092,6 +1093,7 @@ mod tests {
 
     #[test]
     #[cfg(feature = "oauth2")]
+    #[serial_test::serial]
     fn test_encrypted_token_file_storage() {
         use std::fs;
         

@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "velocity-mcp-client"
+version = "3.0.0"
+authors = [
+    { name = "UnitBuilds", email = "ian@unitbuilds.com" }
+]
+description = "Python client SDK for VELOCITY-MCP servers"
+readme = "README.md"
+license = { text = "MIT OR Apache-2.0" }
+requires-python = ">=3.8"
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "httpx>=0.25.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "mypy>=1.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP"
+Repository = "https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP"
+Documentation = "https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/tree/main/sdk/python"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["velocity_mcp_client*"]

@@ -11,6 +11,7 @@ default = []
 http = ["axum", "tokio", "tokio-stream", "tower", "tower-http", "uuid", "rustls", "rustls-pemfile", "tokio-rustls", "hyper", "hyper-util", "http-body-util"]
 oauth2 = ["ureq", "aes-gcm", "hmac"]
 database = ["rusqlite"]
+observability = ["opentelemetry", "opentelemetry-otlp", "opentelemetry-semantic-conventions", "tracing-opentelemetry"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -53,6 +54,12 @@ rusqlite = { version = "0.31", features = ["bundled"], optional = true }
 aes-gcm = { version = "0.10", optional = true }
 hmac = { version = "0.12", optional = true }
 
+# Optional: Observability (OpenTelemetry)
+opentelemetry = { version = "0.22", optional = true }
+opentelemetry-otlp = { version = "0.15", optional = true }
+opentelemetry-semantic-conventions = { version = "0.14", optional = true }
+tracing-opentelemetry = { version = "0.23", optional = true }
+
 # Configuration management
 toml = "0.8"
 
@@ -62,6 +69,7 @@ thiserror = "2"
 [dev-dependencies]
 proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
+serial_test = "3.0"
 
 [[bench]]
 name = "protocol_bench"

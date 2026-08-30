@@ -636,11 +636,16 @@ pub fn sanitize_error(msg: &str) -> String {
 
     let mut sanitized = truncated;
 
-    let re_windows = regex::Regex::new(r#"[A-Z]:\\[^\s:,;"')\]]+"#).unwrap();
-    sanitized = re_windows.replace_all(&sanitized, "<path>").to_string();
+    // Compile regexes once using LazyLock for efficiency and safety
+    static RE_WINDOWS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"[A-Z]:\\[^\s:,;"')\]]+"#).expect("Windows path regex is valid")
+    });
+    static RE_UNIX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"/(?:home|tmp|var|usr|etc)/[^\s:,;"')\]]+"#).expect("Unix path regex is valid")
+    });
 
-    let re_unix = regex::Regex::new(r#"/(?:home|tmp|var|usr|etc)/[^\s:,;"')\]]+"#).unwrap();
-    sanitized = re_unix.replace_all(&sanitized, "<path>").to_string();
+    sanitized = RE_WINDOWS.replace_all(&sanitized, "<path>").to_string();
+    sanitized = RE_UNIX.replace_all(&sanitized, "<path>").to_string();
 
     sanitized
 }
