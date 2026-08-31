@@ -46,6 +46,17 @@ const TOOLS = [
       },
       required: ['pattern', 'path']
     }
+  },
+  {
+    name: 'bench_echo',
+    description: 'Benchmark tool: returns a text payload of the requested size in bytes',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        size: { type: 'integer', description: 'Response payload size in bytes (default 64)' }
+      },
+      required: []
+    }
   }
 ];
 
@@ -75,7 +86,17 @@ function handleRequest(req) {
     case 'tools/call': {
       const name = params?.name || '';
       const args = params?.arguments || {};
-      // Simulate tool work with a no-op (same as Rust server for built-in tools)
+      if (name === 'bench_echo') {
+        const size = typeof args.size === 'number' ? args.size : 64;
+        const padding = 'x'.repeat(Math.max(0, size));
+        return {
+          jsonrpc: '2.0', id,
+          result: {
+            content: [{ type: 'text', text: padding }],
+            isError: false
+          }
+        };
+      }
       return {
         jsonrpc: '2.0', id,
         result: {
