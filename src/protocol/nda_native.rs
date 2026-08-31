@@ -36,6 +36,7 @@
 use serde_json::{json, Value};
 use sha2::{Sha256, Digest};
 use std::error::Error;
+use std::sync::{Mutex, OnceLock};
 
 pub const METHOD_INITIALIZE: u8 = 0x01;
 pub const METHOD_TOOLS_LIST: u8 = 0x02;
@@ -235,6 +236,178 @@ pub fn parse_nda_request(frame: &[u8]) -> Result<NdaRequest, Box<dyn Error>> {
     Ok(NdaRequest { method, request_id, data })
 }
 
+// ─── Zero-alloc in-place parsing ────────────────────────────────────────────
+//
+// parse_nda_request decodes the whole payload into a serde_json::Value tree
+// (heap allocations on every request). The hot methods (ping, tools/list,
+// tools/call, health) do not need a Value tree: they can work directly on
+// borrowed slices of the frame. These helpers walk the TLV without decoding.
+
+/// Total byte length of one TLV value, walking nested containers without
+/// allocating or building a Value. Mirrors decode_json_value's consumption.
+pub fn skip_tlv_value(bytes: &[u8]) -> Result<usize, Box<dyn Error>> {
+    if bytes.is_empty() {
+        return Err("TLV skip: empty value".into());
+    }
+    match bytes[0] {
+        0x01 => {
+            if bytes.len() < 5 { return Err("TLV skip: truncated string length".into()); }
+            let len = u32::from_be_bytes(bytes[1..5].try_into()?) as usize;
+            if bytes.len() < 5 + len { return Err("TLV skip: truncated string body".into()); }
+            Ok(5 + len)
+        }
+        0x02 | 0x07 => {
+            if bytes.len() < 9 { return Err("TLV skip: truncated number".into()); }
+            Ok(9)
+        }
+        0x03 => {
+            if bytes.len() < 2 { return Err("TLV skip: truncated bool".into()); }
+            Ok(2)
+        }
+        0x04 => Ok(1),
+        0x05 => {
+            if bytes.len() < 5 { return Err("TLV skip: truncated array count".into()); }
+            let count = u32::from_be_bytes(bytes[1..5].try_into()?) as usize;
+            let mut off = 5usize;
+            for _ in 0..count {
+                off += skip_tlv_value(&bytes[off..])?;
+            }
+            Ok(off)
+        }
+        0x06 => {
+            if bytes.len() < 5 { return Err("TLV skip: truncated object count".into()); }
+            let count = u32::from_be_bytes(bytes[1..5].try_into()?) as usize;
+            let mut off = 5usize;
+            for _ in 0..count {
+                if bytes.len() < off + 2 { return Err("TLV skip: truncated key length".into()); }
+                let klen = u16::from_be_bytes(bytes[off..off + 2].try_into()?) as usize;
+                off += 2 + klen;
+                if bytes.len() < off { return Err("TLV skip: truncated key".into()); }
+                off += skip_tlv_value(&bytes[off..])?;
+            }
+            Ok(off)
+        }
+        other => Err(format!("TLV skip: unknown tag 0x{:02x}", other).into()),
+    }
+}
+
+/// Borrowed view of a parsed NDA request — no Value trees, no allocations
+/// beyond the frame hash. `id_tlv` is the request id TLV including its tag
+/// byte, so it can be echoed verbatim into the response.
+pub struct NdaRequestRef<'a> {
+    pub method: u8,
+    pub id_tlv: &'a [u8],
+    pub data: &'a [u8],
+}
+
+/// Zero-alloc counterpart of parse_nda_request. Validates magic + Merkle +
+/// a complete request-id TLV; the data subtree is validated lazily by the
+/// methods that actually consume it.
+pub fn parse_nda_request_inplace(frame: &[u8]) -> Result<NdaRequestRef<'_>, Box<dyn Error>> {
+    if frame.len() < FRAME_HEADER_SIZE {
+        return Err("NDA frame too small for header".into());
+    }
+    if &frame[0..4] != NDA_MAGIC {
+        return Err("Invalid NDA magic".into());
+    }
+
+    let stored_merkle = &frame[4..36];
+    let payload = &frame[FRAME_HEADER_SIZE..];
+
+    let mut hasher = Sha256::new();
+    hasher.update(payload);
+    let computed = hasher.finalize();
+    if stored_merkle != computed.as_slice() {
+        return Err("NDA frame Merkle root mismatch".into());
+    }
+
+    if payload.len() < 2 {
+        return Err("NDA payload too small for method + id".into());
+    }
+
+    let method = payload[0];
+    let id_len = skip_tlv_value(&payload[1..])?;
+
+    Ok(NdaRequestRef {
+        method,
+        id_tlv: &payload[1..1 + id_len],
+        data: &payload[1 + id_len..],
+    })
+}
+
+/// Response builder that takes the request id and result as pre-encoded TLV
+/// slices — no Value round-trip on the hot path.
+pub fn build_nda_response_raw(status: u8, id_tlv: &[u8], result_tlv: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(1 + id_tlv.len() + result_tlv.len());
+    payload.push(status);
+    payload.extend_from_slice(id_tlv);
+    payload.extend_from_slice(result_tlv);
+    build_nda_frame(&payload)
+}
+
+pub fn build_nda_error_raw(id_tlv: &[u8], error_msg: &str) -> Vec<u8> {
+    let mut result = Vec::with_capacity(5 + error_msg.len());
+    result.push(0x01);
+    result.extend_from_slice(&(error_msg.len() as u32).to_be_bytes());
+    result.extend_from_slice(error_msg.as_bytes());
+    build_nda_response_raw(STATUS_ERROR, id_tlv, &result)
+}
+
+/// Walk a tools/call data object (`{"name": ..., "arguments": ...}`) in
+/// place, in any key order, returning borrowed slices for the two fields.
+/// Either field may be absent (None), matching serde_json indexing semantics.
+pub fn extract_tools_call_fields(data: &[u8]) -> Result<(Option<&str>, Option<&[u8]>), Box<dyn Error>> {
+    if data.is_empty() || data[0] != 0x06 {
+        return Ok((None, None));
+    }
+    if data.len() < 5 { return Err("tools/call data: truncated object count".into()); }
+    let count = u32::from_be_bytes(data[1..5].try_into()?) as usize;
+    let mut off = 5usize;
+    let mut name = None;
+    let mut arguments = None;
+    for _ in 0..count {
+        if data.len() < off + 2 { return Err("tools/call data: truncated key length".into()); }
+        let klen = u16::from_be_bytes(data[off..off + 2].try_into()?) as usize;
+        off += 2;
+        if data.len() < off + klen { return Err("tools/call data: truncated key".into()); }
+        let key = &data[off..off + klen];
+        off += klen;
+        let vlen = skip_tlv_value(&data[off..])?;
+        let value = &data[off..off + vlen];
+        off += vlen;
+        match key {
+            b"name" => {
+                if value.len() >= 5 && value[0] == 0x01 {
+                    name = std::str::from_utf8(&value[5..]).ok();
+                }
+            }
+            b"arguments" => arguments = Some(value),
+            _ => {}
+        }
+    }
+    Ok((name, arguments))
+}
+
+/// The TLV encoding of an empty JSON object `{}` — the result for ping,
+/// notifications, and other ack-only methods.
+pub const EMPTY_OBJECT_TLV: &[u8] = &[0x06, 0, 0, 0, 0];
+
+static HEALTH_RESULT_TLV: OnceLock<Vec<u8>> = OnceLock::new();
+
+/// Pre-encoded health/check result (`{"status":"healthy","mode":"shmem-nda",
+/// "version":...}`), built once. VERSION is a compile-time constant.
+pub fn health_result_tlv() -> &'static [u8] {
+    HEALTH_RESULT_TLV.get_or_init(|| {
+        let mut buf = Vec::new();
+        encode_json_value(&json!({
+            "status": "healthy",
+            "mode": "shmem-nda",
+            "version": crate::VERSION
+        }), &mut buf);
+        buf
+    })
+}
+
 pub fn build_nda_frame(payload: &[u8]) -> Vec<u8> {
     let mut hasher = Sha256::new();
     hasher.update(payload);
@@ -257,6 +430,71 @@ pub fn build_nda_response(status: u8, request_id: &Value, result: &Value) -> Vec
 
 pub fn build_nda_error(request_id: &Value, error_msg: &str) -> Vec<u8> {
     build_nda_response(STATUS_ERROR, request_id, &json!(error_msg))
+}
+
+/// Encode a tools/list result (`{"tools": [...]}`) directly from registry
+/// structs, skipping the intermediate serde_json::Value tree. Emits keys in
+/// sorted order (description, inputSchema, name) to match serde_json's
+/// BTreeMap iteration, so output is byte-identical to encode_json_value.
+pub fn encode_tools_list_result(buf: &mut Vec<u8>, tools: &[crate::registry::Tool]) {
+    buf.push(0x06); // outer object
+    buf.extend_from_slice(&1u32.to_be_bytes());
+    buf.extend_from_slice(&5u16.to_be_bytes());
+    buf.extend_from_slice(b"tools");
+    buf.push(0x05); // array
+    buf.extend_from_slice(&(tools.len() as u32).to_be_bytes());
+    for t in tools {
+        buf.push(0x06); // tool object, 3 keys sorted: description, inputSchema, name
+        buf.extend_from_slice(&3u32.to_be_bytes());
+
+        buf.extend_from_slice(&11u16.to_be_bytes());
+        buf.extend_from_slice(b"description");
+        buf.push(0x01);
+        let d = t.description.as_bytes();
+        buf.extend_from_slice(&(d.len() as u32).to_be_bytes());
+        buf.extend_from_slice(d);
+
+        buf.extend_from_slice(&11u16.to_be_bytes());
+        buf.extend_from_slice(b"inputSchema");
+        encode_json_value(&t.input_schema, buf);
+
+        buf.extend_from_slice(&4u16.to_be_bytes());
+        buf.extend_from_slice(b"name");
+        buf.push(0x01);
+        let n = t.name.as_bytes();
+        buf.extend_from_slice(&(n.len() as u32).to_be_bytes());
+        buf.extend_from_slice(n);
+    }
+}
+
+static TOOLS_LIST_CACHE: OnceLock<Mutex<Option<(u64, Vec<u8>)>>> = OnceLock::new();
+
+/// TLV-encoded tools/list result (`{"tools": [...]}`), cached keyed by the
+/// registry generation. The hot path is a lock + generation compare + clone
+/// of ~8KB; re-encoding only happens when the tool set actually changes.
+pub fn encoded_tools_list_result() -> Vec<u8> {
+    let cell = TOOLS_LIST_CACHE.get_or_init(|| Mutex::new(None));
+    let gen = crate::registry::registry_generation();
+    {
+        let cache = cell.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((g, bytes)) = &*cache {
+            if *g == gen {
+                return bytes.clone();
+            }
+        }
+    }
+    let tools = crate::registry::get_tools();
+    let mut bytes = Vec::with_capacity(8 * 1024);
+    encode_tools_list_result(&mut bytes, &tools);
+    // Only store if the generation was stable across the build: otherwise a
+    // concurrent registration would be masked by pre-mutation bytes cached
+    // under the post-mutation generation.
+    let gen_after = crate::registry::registry_generation();
+    if gen_after == gen {
+        let mut cache = cell.lock().unwrap_or_else(|e| e.into_inner());
+        *cache = Some((gen_after, bytes.clone()));
+    }
+    bytes
 }
 
 pub fn method_name(method: u8) -> &'static str {
@@ -714,4 +952,339 @@ mod tests {
         tampered[last] ^= 0xFF;
         assert!(parse_flat_request(&tampered).is_err());
     }
+
+    #[test]
+    #[ignore]
+    fn perf_probe_tools_list() {
+        use std::time::Instant;
+        let iters = 200;
+
+        let tools = crate::registry::get_tools();
+        let tools_json: Vec<Value> = tools.iter().map(|t| {
+            json!({
+                "name": t.name,
+                "description": t.description,
+                "inputSchema": t.input_schema
+            })
+        }).collect();
+        let result = json!({"tools": tools_json});
+
+        let start = Instant::now();
+        let mut payload_len = 0;
+        for _ in 0..iters {
+            let mut payload = Vec::new();
+            payload.push(STATUS_OK);
+            encode_json_value(&json!(1), &mut payload);
+            encode_json_value(&result, &mut payload);
+            payload_len = payload.len();
+        }
+        let encode_us = start.elapsed().as_secs_f64() * 1e6 / iters as f64;
+
+        let buf = vec![0xABu8; payload_len];
+        let start = Instant::now();
+        for _ in 0..iters {
+            let mut h = Sha256::new();
+            h.update(&buf);
+            std::hint::black_box(h.finalize());
+        }
+        let hash_us = start.elapsed().as_secs_f64() * 1e6 / iters as f64;
+
+        let start = Instant::now();
+        for _ in 0..iters {
+            let s = serde_json::to_string(&json!({"jsonrpc":"2.0","id":1,"result": &result}));
+            std::hint::black_box(s);
+        }
+        let serde_us = start.elapsed().as_secs_f64() * 1e6 / iters as f64;
+
+        let start = Instant::now();
+        for _ in 0..iters {
+            let f = build_nda_response(STATUS_OK, &json!(1), &result);
+            std::hint::black_box(f);
+        }
+        let full_us = start.elapsed().as_secs_f64() * 1e6 / iters as f64;
+
+        let start = Instant::now();
+        for _ in 0..iters {
+            let t = crate::registry::get_tools();
+            std::hint::black_box(t);
+        }
+        let get_tools_us = start.elapsed().as_secs_f64() * 1e6 / iters as f64;
+
+        println!("PROBE tools/list ({} tools, payload {} bytes):", tools.len(), payload_len);
+        println!("  get_tools:        {:7.1} us", get_tools_us);
+        println!("  TLV encode:       {:7.1} us", encode_us);
+        println!("  SHA-256 only:     {:7.1} us", hash_us);
+        println!("  serde to_string:  {:7.1} us", serde_us);
+        println!("  full nda resp:    {:7.1} us", full_us);
+    }
+
+    #[test]
+    fn tools_list_direct_encoder_byte_identical() {
+        let tools = crate::registry::get_tools();
+        // Reference: the old json!-based path.
+        let tools_json: Vec<Value> = tools.iter().map(|t| {
+            json!({
+                "name": t.name,
+                "description": t.description,
+                "inputSchema": t.input_schema
+            })
+        }).collect();
+        let result = json!({"tools": tools_json});
+        let mut expected = Vec::new();
+        encode_json_value(&result, &mut expected);
+
+        let mut actual = Vec::new();
+        encode_tools_list_result(&mut actual, &tools);
+        assert_eq!(actual, expected, "direct encoder must be byte-identical to Value path");
+
+        // Round-trip through the decoder as well.
+        let (decoded, consumed) = decode_json_value(&actual).expect("decode direct-encoded tools list");
+        assert_eq!(consumed, actual.len());
+        assert_eq!(decoded, result);
+    }
+
+    /// Cached reads and a direct encoding, all bracketed by an unchanged
+    /// generation; retry if a concurrent test thread registers a tool
+    /// mid-window (other tests mutate the shared registry).
+    fn stable_encoded_triple() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        loop {
+            let g0 = crate::registry::registry_generation();
+            let a = encoded_tools_list_result();
+            let b = encoded_tools_list_result();
+            let tools = crate::registry::get_tools();
+            let mut direct = Vec::new();
+            encode_tools_list_result(&mut direct, &tools);
+            if crate::registry::registry_generation() == g0 {
+                return (a, b, direct);
+            }
+        }
+    }
+
+    #[test]
+    fn tools_list_cache_hit_and_invalidation() {
+        // Repeat calls serve identical cached bytes, matching a direct encoding.
+        let (first, second, expected) = stable_encoded_triple();
+        assert_eq!(first, second);
+        assert_eq!(first, expected);
+
+        // Registering a tool bumps the generation and forces a rebuild.
+        let gen_before = crate::registry::registry_generation();
+        crate::registry::register_tool_lazy(&crate::registry::Tool {
+            name: "__nda_cache_invalidation_probe".to_string(),
+            description: "probe tool for cache invalidation test".to_string(),
+            input_schema: json!({"type": "object", "properties": {}, "required": []}),
+        });
+        assert!(crate::registry::registry_generation() > gen_before);
+        let rebuilt = encoded_tools_list_result();
+        assert_ne!(rebuilt, first);
+        let (decoded, _) = decode_json_value(&rebuilt).expect("decode rebuilt tools list");
+        let names: Vec<&str> = decoded["tools"].as_array().expect("tools array")
+            .iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&"__nda_cache_invalidation_probe"), "cache must rebuild after registration");
+    }
+
+    #[test]
+    fn tools_list_plugin_reload_bumps_generation() {
+        // Reloading plugins replaces the plugin registry, so the generation
+        // must bump even when the directory holds no plugins.
+        let gen_before = crate::registry::registry_generation();
+        crate::registry::load_plugins(std::env::temp_dir().to_str().unwrap());
+        assert!(
+            crate::registry::registry_generation() > gen_before,
+            "load_plugins must bump the registry generation"
+        );
+    }
+
+    #[test]
+    fn tools_list_cache_survives_concurrent_registration() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut handles = Vec::new();
+
+        // Readers: hammer the cached accessor; every result must decode and
+        // always contain the built-in tools (cache must never tear). Each
+        // reader guarantees a minimum number of iterations before honoring
+        // the stop flag, so scheduling order can never zero out `total`.
+        for _ in 0..4 {
+            let stop = Arc::clone(&stop);
+            handles.push(std::thread::spawn(move || {
+                let mut iters = 0usize;
+                loop {
+                    let bytes = encoded_tools_list_result();
+                    let (decoded, consumed) =
+                        decode_json_value(&bytes).expect("cached bytes must decode");
+                    assert_eq!(consumed, bytes.len());
+                    let names: Vec<&str> = decoded["tools"].as_array().expect("tools array")
+                        .iter().map(|t| t["name"].as_str().unwrap()).collect();
+                    assert!(names.contains(&"read_nda"), "built-ins must survive caching");
+                    iters += 1;
+                    if iters >= 200 && stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                }
+                iters
+            }));
+        }
+
+        // Writer: register tools while readers run.
+        for i in 0..8 {
+            crate::registry::register_tool_lazy(&crate::registry::Tool {
+                name: format!("__hammer_probe_{:02}", i),
+                description: format!("concurrency probe {}", i),
+                input_schema: json!({"type": "object", "properties": {}, "required": []}),
+            });
+        }
+        stop.store(true, Ordering::Relaxed);
+
+        let mut total = 0usize;
+        for h in handles {
+            total += h.join().expect("reader thread panicked");
+        }
+        assert!(total > 0, "readers must have run");
+
+        // Final state: cache reflects all registered hammer tools.
+        let final_bytes = encoded_tools_list_result();
+        let (decoded, _) = decode_json_value(&final_bytes).unwrap();
+        let names: Vec<&str> = decoded["tools"].as_array().unwrap()
+            .iter().map(|t| t["name"].as_str().unwrap()).collect();
+        for i in 0..8 {
+            let probe = format!("__hammer_probe_{:02}", i);
+            assert!(names.contains(&probe.as_str()), "missing {} in final cache", probe);
+        }
+    }
+
+    // ─── Zero-alloc in-place parse tests ─────────────────────────────────
+
+    #[test]
+    fn inplace_parse_matches_value_parser() {
+        let cases = [
+            (METHOD_PING, json!(1), Value::Null),
+            (METHOD_TOOLS_LIST, json!(99), Value::Null),
+            (METHOD_TOOLS_CALL, json!("req-7"), json!({"name": "bench_echo", "arguments": {"size": 64}})),
+            (METHOD_HEALTH_CHECK, json!(2), json!({"deep": {"nested": [1, 2, {"k": "v"}]}})),
+        ];
+        for (method, id, data) in &cases {
+            let frame = build_nda_request(*method, id, data);
+            let old = parse_nda_request(&frame).unwrap();
+            let new = parse_nda_request_inplace(&frame).unwrap();
+            assert_eq!(new.method, old.method, "method mismatch");
+            let (new_id, id_consumed) = decode_json_value(new.id_tlv).unwrap();
+            assert_eq!(id_consumed, new.id_tlv.len());
+            assert_eq!(new_id, old.request_id, "request id mismatch");
+            if new.data.is_empty() {
+                assert_eq!(old.data, Value::Null, "empty data must mean Null");
+            } else {
+                let (new_data, data_consumed) = decode_json_value(new.data).unwrap();
+                assert_eq!(data_consumed, new.data.len());
+                assert_eq!(new_data, old.data, "data mismatch");
+            }
+        }
+    }
+
+    #[test]
+    fn inplace_parse_rejects_bad_frames() {
+        let frame = build_nda_request(METHOD_PING, &json!(1), &Value::Null);
+        assert!(parse_nda_request_inplace(&frame[..10]).is_err(), "truncated header");
+        let mut bad_magic = frame.clone();
+        bad_magic[0] = b'X';
+        assert!(parse_nda_request_inplace(&bad_magic).is_err(), "bad magic");
+        let mut tampered = frame.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0xFF;
+        assert!(parse_nda_request_inplace(&tampered).is_err(), "tampered payload");
+        // Payload of just a method byte: no id TLV
+        let no_id = build_nda_frame(&[METHOD_PING]);
+        assert!(parse_nda_request_inplace(&no_id).is_err(), "missing id");
+        // Truncated id TLV: string tag claiming 100 bytes
+        let mut truncated = vec![METHOD_PING, 0x01, 0, 0, 0, 100];
+        let trunc_frame = build_nda_frame(&mut truncated);
+        assert!(parse_nda_request_inplace(&trunc_frame).is_err(), "truncated id TLV");
+    }
+
+    #[test]
+    fn extract_tools_call_fields_any_key_order() {
+        // Hand-built object with name FIRST (serde would sort arguments first,
+        // so this proves the walker matches by key, not position).
+        let mut name_first = vec![0x06]; // object
+        name_first.extend_from_slice(&2u32.to_be_bytes());
+        name_first.extend_from_slice(&4u16.to_be_bytes());
+        name_first.extend_from_slice(b"name");
+        name_first.push(0x01);
+        name_first.extend_from_slice(&8u32.to_be_bytes());
+        name_first.extend_from_slice(b"my_tool_");
+        name_first.extend_from_slice(&9u16.to_be_bytes());
+        name_first.extend_from_slice(b"arguments");
+        name_first.push(0x04); // null
+
+        let (name, args) = extract_tools_call_fields(&name_first).unwrap();
+        assert_eq!(name, Some("my_tool_"));
+        assert_eq!(args, Some(&[0x04u8][..]));
+
+        // Via encode_json_value (sorted keys: arguments before name)
+        let mut sorted = Vec::new();
+        encode_json_value(&json!({"name": "echo", "arguments": {"size": 64}}), &mut sorted);
+        let (name, args) = extract_tools_call_fields(&sorted).unwrap();
+        assert_eq!(name, Some("echo"));
+        let (args_val, consumed) = decode_json_value(args.unwrap()).unwrap();
+        assert_eq!(consumed, args.unwrap().len());
+        assert_eq!(args_val, json!({"size": 64}));
+
+        // Missing fields and non-object data match serde indexing semantics
+        let (name, args) = extract_tools_call_fields(&sorted[..0]).unwrap();
+        assert!(name.is_none() && args.is_none());
+        let mut only_name = vec![0x06];
+        only_name.extend_from_slice(&1u32.to_be_bytes());
+        only_name.extend_from_slice(&4u16.to_be_bytes());
+        only_name.extend_from_slice(b"name");
+        only_name.push(0x01);
+        only_name.extend_from_slice(&1u32.to_be_bytes());
+        only_name.extend_from_slice(b"x");
+        let (name, args) = extract_tools_call_fields(&only_name).unwrap();
+        assert_eq!(name, Some("x"));
+        assert!(args.is_none());
+        let string_data = {
+            let mut b = Vec::new();
+            encode_json_value(&json!("not an object"), &mut b);
+            b
+        };
+        let (name, args) = extract_tools_call_fields(&string_data).unwrap();
+        assert!(name.is_none() && args.is_none());
+    }
+
+    #[test]
+    fn raw_builders_byte_identical_to_value_builders() {
+        let id = json!(12345);
+        let result = json!({"status": "healthy", "mode": "shmem-nda"});
+        let mut id_tlv = Vec::new();
+        encode_json_value(&id, &mut id_tlv);
+        let mut result_tlv = Vec::new();
+        encode_json_value(&result, &mut result_tlv);
+
+        assert_eq!(
+            build_nda_response(STATUS_OK, &id, &result),
+            build_nda_response_raw(STATUS_OK, &id_tlv, &result_tlv)
+        );
+        assert_eq!(
+            build_nda_error(&id, "boom"),
+            build_nda_error_raw(&id_tlv, "boom")
+        );
+    }
+
+    #[test]
+    fn prebuilt_tlvs_decode_correctly() {
+        let (empty, consumed) = decode_json_value(EMPTY_OBJECT_TLV).unwrap();
+        assert_eq!(consumed, EMPTY_OBJECT_TLV.len());
+        assert_eq!(empty, json!({}));
+
+        let health = health_result_tlv();
+        let (val, consumed) = decode_json_value(health).unwrap();
+        assert_eq!(consumed, health.len());
+        assert_eq!(val["status"], "healthy");
+        assert_eq!(val["mode"], "shmem-nda");
+        assert_eq!(val["version"], crate::VERSION);
+        assert_eq!(health_result_tlv(), health, "must be cached, stable bytes");
+    }
+
 }

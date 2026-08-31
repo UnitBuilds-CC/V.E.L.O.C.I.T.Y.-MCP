@@ -9,8 +9,119 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use tracing::{info, warn, error, debug};
 
-fn handle_nda_native(buffer: &mut SharedMemoryBuffer, raw: &[u8]) -> Result<(), Box<dyn Error>> {
-    let req = match nda_native::parse_nda_request(raw) {
+/// Per-phase timing recorder for profiling the shmem loop. Enabled by
+/// setting VELOCITY_PHASE_TIMING=<output-file>. Adds ~0.3us of Instant::now()
+/// overhead per request, so it is off unless the env var is present.
+struct PhaseRecorder {
+    path: String,
+    file: Option<std::fs::File>,
+    window_n: u64,
+    method: u8,
+    wake_read_ns: u64,
+    parse_ns: u64,
+    dispatch_ns: u64,
+    respond_ns: u64,
+}
+
+impl PhaseRecorder {
+    fn enabled() -> Option<PhaseRecorder> {
+        std::env::var("VELOCITY_PHASE_TIMING").ok().map(|path| PhaseRecorder {
+            path,
+            file: None,
+            window_n: 0,
+            method: 0,
+            wake_read_ns: 0,
+            parse_ns: 0,
+            dispatch_ns: 0,
+            respond_ns: 0,
+        })
+    }
+
+    fn record(
+        &mut self,
+        method: u8,
+        t_wake: Instant,
+        t_read: Instant,
+        t_parse: Instant,
+        t_dispatch: Instant,
+        t_respond: Instant,
+    ) {
+        self.wake_read_ns += t_read.duration_since(t_wake).as_nanos() as u64;
+        self.parse_ns += t_parse.duration_since(t_read).as_nanos() as u64;
+        self.dispatch_ns += t_dispatch.duration_since(t_parse).as_nanos() as u64;
+        self.respond_ns += t_respond.duration_since(t_dispatch).as_nanos() as u64;
+        self.method = method;
+        self.window_n += 1;
+        if self.window_n >= 64 {
+            self.flush_window();
+        }
+    }
+
+    fn flush_window(&mut self) {
+        use std::io::Write;
+        if self.window_n == 0 {
+            return;
+        }
+        if self.file.is_none() {
+            self.file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)
+                .ok();
+        }
+        if let Some(f) = self.file.as_mut() {
+            let n = self.window_n as f64;
+            let _ = writeln!(
+                f,
+                "PHASE method=0x{:02x} n={} wake_read={:.1}us parse={:.1}us dispatch={:.1}us respond={:.1}us total={:.1}us",
+                self.method,
+                self.window_n,
+                self.wake_read_ns as f64 / 1000.0 / n,
+                self.parse_ns as f64 / 1000.0 / n,
+                self.dispatch_ns as f64 / 1000.0 / n,
+                self.respond_ns as f64 / 1000.0 / n,
+                (self.wake_read_ns + self.parse_ns + self.dispatch_ns + self.respond_ns) as f64 / 1000.0 / n,
+            );
+            let _ = f.flush();
+        }
+        self.window_n = 0;
+        self.wake_read_ns = 0;
+        self.parse_ns = 0;
+        self.dispatch_ns = 0;
+        self.respond_ns = 0;
+    }
+}
+
+impl Drop for PhaseRecorder {
+    fn drop(&mut self) {
+        self.flush_window();
+    }
+}
+
+/// Decode the request data slice into a Value for cold-path methods.
+/// Empty data means "no params" (Value::Null), matching the old parser.
+fn decode_req_data(data: &[u8]) -> Result<Value, Box<dyn Error>> {
+    if data.is_empty() {
+        return Ok(Value::Null);
+    }
+    let (v, _) = nda_native::decode_json_value(data)?;
+    Ok(v)
+}
+
+fn build_response_value(id_tlv: &[u8], result: &Value) -> Vec<u8> {
+    let mut tlv = Vec::new();
+    nda_native::encode_json_value(result, &mut tlv);
+    nda_native::build_nda_response_raw(nda_native::STATUS_OK, id_tlv, &tlv)
+}
+
+fn handle_nda_native(
+    buffer: &mut SharedMemoryBuffer,
+    raw: &[u8],
+    rec: Option<&mut PhaseRecorder>,
+    t_wake: Option<Instant>,
+    t_read: Option<Instant>,
+) -> Result<(), Box<dyn Error>> {
+    let req = match nda_native::parse_nda_request_inplace(raw) {
         Ok(r) => r,
         Err(e) => {
             warn!(error = %e, "NDA frame parse error");
@@ -18,17 +129,17 @@ fn handle_nda_native(buffer: &mut SharedMemoryBuffer, raw: &[u8]) -> Result<(), 
             buffer.write_output_raw(&err_frame)?;
             SharedMemoryBuffer::sync_fence();
             buffer.set_state(shmem::STATE_ERROR);
-            buffer.flush()?;
             buffer.signal_response();
             return Ok(());
         }
     };
+    let t_parse = rec.is_some().then(Instant::now);
 
     debug!(method = nda_native::method_name(req.method), "NDA-native request");
 
     let response_frame = match req.method {
         nda_native::METHOD_PING => {
-            nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &json!({}))
+            nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, nda_native::EMPTY_OBJECT_TLV)
         }
         nda_native::METHOD_INITIALIZE => {
             let result = json!({
@@ -45,113 +156,160 @@ fn handle_nda_native(buffer: &mut SharedMemoryBuffer, raw: &[u8]) -> Result<(), 
                     "version": crate::VERSION
                 }
             });
-            nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &result)
+            let mut result_tlv = Vec::new();
+            nda_native::encode_json_value(&result, &mut result_tlv);
+            nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, &result_tlv)
         }
         nda_native::NOTIF_INITIALIZED => {
-            nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &json!({}))
+            nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, nda_native::EMPTY_OBJECT_TLV)
         }
         nda_native::METHOD_LOGGING_SET_LEVEL => {
-            let level = req.data.as_str().unwrap_or("info");
+            let level_val = if req.data.is_empty() {
+                Value::Null
+            } else {
+                nda_native::decode_json_value(req.data).map(|(v, _)| v).unwrap_or(Value::Null)
+            };
+            let level = level_val.as_str().unwrap_or("info");
             info!(level = level, "Log level changed (NDA-native)");
-            nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &json!({}))
+            nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, nda_native::EMPTY_OBJECT_TLV)
         }
         nda_native::METHOD_TOOLS_LIST => {
-            let tools = registry::get_tools();
-            let tools_json: Vec<Value> = tools.iter().map(|t| {
-                json!({
-                    "name": t.name,
-                    "description": t.description,
-                    "inputSchema": t.input_schema
-                })
-            }).collect();
-            nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &json!({"tools": tools_json}))
+            // The result TLV is cached keyed by registry generation: the tool
+            // set rarely changes, but each request used to rebuild 16 json!
+            // schemas, retry failing C# discovery, and re-encode ~8KB.
+            let mut payload = Vec::with_capacity(8 * 1024);
+            payload.push(nda_native::STATUS_OK);
+            payload.extend_from_slice(req.id_tlv);
+            payload.extend_from_slice(&nda_native::encoded_tools_list_result());
+            nda_native::build_nda_frame(&payload)
         }
         nda_native::METHOD_TOOLS_CALL => {
-            let name = req.data["name"].as_str().unwrap_or("");
-            let arguments = &req.data["arguments"];
+            let (name_slice, args_slice) = nda_native::extract_tools_call_fields(req.data)
+                .unwrap_or((None, None));
+            let name = name_slice.unwrap_or("");
+            let arguments = match args_slice {
+                Some(bytes) => nda_native::decode_json_value(bytes).map(|(v, _)| v).unwrap_or(Value::Null),
+                None => Value::Null,
+            };
 
             if !rate_limit::check_rate_limit() {
                 warn!(tool = name, "Rate limit exceeded (NDA-native)");
                 audit::record_tool_call(name, Instant::now(), AuditOutcome::Rejected("rate limited".into()));
-                nda_native::build_nda_error(&req.request_id, &format!("Rate limit exceeded for tool '{}'.", name))
+                nda_native::build_nda_error_raw(req.id_tlv, &format!("Rate limit exceeded for tool '{}'.", name))
             } else {
                 let call_start = Instant::now();
-                match registry::call_tool(name, arguments) {
+                match registry::call_tool(name, &arguments) {
                     Ok(res) => {
                         audit::record_tool_call(name, call_start, AuditOutcome::Success);
                         let result_val: Value = serde_json::from_str(&res).unwrap_or_else(|_| json!(res));
-                        nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &result_val)
+                        let mut result_tlv = Vec::new();
+                        nda_native::encode_json_value(&result_val, &mut result_tlv);
+                        nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, &result_tlv)
                     }
                     Err(e) => {
                         error!(tool = name, error = %e, "Tool execution failed (NDA-native)");
                         audit::record_tool_call(name, call_start, AuditOutcome::Error(e.to_string()));
-                        nda_native::build_nda_error(&req.request_id, &format!("Error running tool '{}': {}", name, e))
+                        nda_native::build_nda_error_raw(req.id_tlv, &format!("Error running tool '{}': {}", name, e))
                     }
                 }
             }
         }
         nda_native::METHOD_HEALTH_CHECK => {
-            nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &json!({
-                "status": "healthy",
-                "mode": "shmem-nda",
-                "version": crate::VERSION
-            }))
+            nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, nda_native::health_result_tlv())
         }
         nda_native::METHOD_RESOURCES_LIST => {
-            let cursor = req.data.get("cursor").and_then(|c| c.as_str());
-            let result = crate::resources::handle_resources_list(cursor);
-            nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &result)
+            match decode_req_data(req.data) {
+                Ok(data) => {
+                    let cursor = data.get("cursor").and_then(|c| c.as_str());
+                    let result = crate::resources::handle_resources_list(cursor);
+                    build_response_value(req.id_tlv, &result)
+                }
+                Err(e) => nda_native::build_nda_error_raw(req.id_tlv, &format!("Invalid request data: {}", e)),
+            }
         }
         nda_native::METHOD_RESOURCES_READ => {
-            let uri = req.data["uri"].as_str().unwrap_or("");
-            match crate::resources::handle_resources_read(uri) {
-                Ok(result) => nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &result),
-                Err(e) => nda_native::build_nda_error(&req.request_id, &e),
+            match decode_req_data(req.data) {
+                Ok(data) => {
+                    let uri = data["uri"].as_str().unwrap_or("");
+                    match crate::resources::handle_resources_read(uri) {
+                        Ok(result) => build_response_value(req.id_tlv, &result),
+                        Err(e) => nda_native::build_nda_error_raw(req.id_tlv, &e),
+                    }
+                }
+                Err(e) => nda_native::build_nda_error_raw(req.id_tlv, &format!("Invalid request data: {}", e)),
             }
         }
         nda_native::METHOD_RESOURCE_TEMPLATES_LIST => {
-            let cursor = req.data.get("cursor").and_then(|c| c.as_str());
-            let result = crate::resources::handle_resource_templates_list(cursor);
-            nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &result)
+            match decode_req_data(req.data) {
+                Ok(data) => {
+                    let cursor = data.get("cursor").and_then(|c| c.as_str());
+                    let result = crate::resources::handle_resource_templates_list(cursor);
+                    build_response_value(req.id_tlv, &result)
+                }
+                Err(e) => nda_native::build_nda_error_raw(req.id_tlv, &format!("Invalid request data: {}", e)),
+            }
         }
         nda_native::METHOD_PROMPTS_LIST => {
-            let cursor = req.data.get("cursor").and_then(|c| c.as_str());
-            let result = crate::resources::handle_prompts_list(cursor);
-            nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &result)
+            match decode_req_data(req.data) {
+                Ok(data) => {
+                    let cursor = data.get("cursor").and_then(|c| c.as_str());
+                    let result = crate::resources::handle_prompts_list(cursor);
+                    build_response_value(req.id_tlv, &result)
+                }
+                Err(e) => nda_native::build_nda_error_raw(req.id_tlv, &format!("Invalid request data: {}", e)),
+            }
         }
         nda_native::METHOD_PROMPTS_GET => {
-            let name = req.data["name"].as_str().unwrap_or("");
-            let arguments = &req.data["arguments"];
-            match crate::resources::handle_prompts_get(name, arguments) {
-                Ok(result) => nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &result),
-                Err(e) => nda_native::build_nda_error(&req.request_id, &e),
+            match decode_req_data(req.data) {
+                Ok(data) => {
+                    let name = data["name"].as_str().unwrap_or("");
+                    let arguments = &data["arguments"];
+                    match crate::resources::handle_prompts_get(name, arguments) {
+                        Ok(result) => build_response_value(req.id_tlv, &result),
+                        Err(e) => nda_native::build_nda_error_raw(req.id_tlv, &e),
+                    }
+                }
+                Err(e) => nda_native::build_nda_error_raw(req.id_tlv, &format!("Invalid request data: {}", e)),
             }
         }
         nda_native::METHOD_SAMPLING_CREATE => {
-            match crate::sampling::handle_sampling_create_message(&req.data) {
-                Ok(result) => nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &result),
-                Err(e) => nda_native::build_nda_error(&req.request_id, &e),
+            match decode_req_data(req.data) {
+                Ok(data) => {
+                    match crate::sampling::handle_sampling_create_message(&data) {
+                        Ok(result) => build_response_value(req.id_tlv, &result),
+                        Err(e) => nda_native::build_nda_error_raw(req.id_tlv, &e),
+                    }
+                }
+                Err(e) => nda_native::build_nda_error_raw(req.id_tlv, &format!("Invalid request data: {}", e)),
             }
         }
         nda_native::NOTIF_CANCELLED => {
-            debug!(request_id = %req.request_id, "Cancellation notification (NDA-native)");
-            nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &json!({}))
+            let id_val = nda_native::decode_json_value(req.id_tlv).map(|(v, _)| v).unwrap_or(Value::Null);
+            debug!(request_id = %id_val, "Cancellation notification (NDA-native)");
+            nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, nda_native::EMPTY_OBJECT_TLV)
         }
         nda_native::NOTIF_PROGRESS => {
-            crate::streaming::handle_progress_notification(&req.data);
-            nda_native::build_nda_response(nda_native::STATUS_OK, &req.request_id, &json!({}))
+            if let Ok(data) = decode_req_data(req.data) {
+                crate::streaming::handle_progress_notification(&data);
+            }
+            nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, nda_native::EMPTY_OBJECT_TLV)
         }
         _ => {
             warn!(method = req.method, "Unknown NDA method");
-            nda_native::build_nda_error(&req.request_id, &format!("Unknown method: 0x{:02x}", req.method))
+            nda_native::build_nda_error_raw(req.id_tlv, &format!("Unknown method: 0x{:02x}", req.method))
         }
     };
+    let t_dispatch = rec.is_some().then(Instant::now);
 
     buffer.write_output_raw(&response_frame)?;
     SharedMemoryBuffer::sync_fence();
     buffer.set_state(shmem::STATE_RES_READY);
-    buffer.flush()?;
+    // No flush: the client maps the same section, so the write is already
+    // visible. FlushViewOfFile only forces disk writeback (~30us cost).
     buffer.signal_response();
+    if let (Some(r), Some(tw), Some(tr), Some(tp), Some(td)) = (rec, t_wake, t_read, t_parse, t_dispatch) {
+        r.record(req.method, tw, tr, tp, td, Instant::now());
+    }
     Ok(())
 }
 
@@ -169,7 +327,6 @@ fn handle_json_shmem(buffer: &mut SharedMemoryBuffer, input_str: &str) -> Result
             let _ = buffer.write_output(&res_str);
             SharedMemoryBuffer::sync_fence();
             buffer.set_state(shmem::STATE_ERROR);
-            let _ = buffer.flush();
             buffer.signal_response();
             return Ok(());
         }
@@ -356,15 +513,37 @@ fn handle_json_shmem(buffer: &mut SharedMemoryBuffer, input_str: &str) -> Result
     buffer.write_output(&res_str)?;
     SharedMemoryBuffer::sync_fence();
     buffer.set_state(shmem::STATE_RES_READY);
-    buffer.flush()?;
     buffer.signal_response();
     Ok(())
 }
 
 pub fn run_shmem_loop(buffer_path: &str, shutdown: &AtomicBool) -> Result<(), Box<dyn Error>> {
     info!(path = buffer_path, "Initializing Shared Memory Buffer");
+
+    // Enable high-resolution timer for low-latency event waits on Windows
+    shmem::enable_high_resolution_timer();
+
     let mut buffer = SharedMemoryBuffer::create_or_open(buffer_path)?;
     info!("Shared Memory Server initialized. Waiting for host requests...");
+
+    let result = run_shmem_loop_inner(&mut buffer, shutdown);
+
+    // Restore default timer resolution
+    shmem::disable_high_resolution_timer();
+
+    // Cleanup buffer file
+    drop(buffer);
+    if let Err(e) = std::fs::remove_file(buffer_path) {
+        warn!(path = buffer_path, error = %e, "Failed to remove shared memory buffer file");
+    } else {
+        info!(path = buffer_path, "Shared memory buffer file cleaned up");
+    }
+
+    result
+}
+
+fn run_shmem_loop_inner(buffer: &mut SharedMemoryBuffer, shutdown: &AtomicBool) -> Result<(), Box<dyn Error>> {
+    let mut rec = PhaseRecorder::enabled();
 
     loop {
         if shutdown.load(Ordering::Relaxed) {
@@ -372,12 +551,16 @@ pub fn run_shmem_loop(buffer_path: &str, shutdown: &AtomicBool) -> Result<(), Bo
             break;
         }
 
+        // Auto-reset events consume the signal atomically on a successful
+        // wait — do NOT ResetEvent here: a fast client may have already
+        // fired SetEvent for the next request, and resetting would erase it.
         buffer.wait_for_request();
+        let t_wake = rec.is_some().then(Instant::now);
 
         let state = buffer.get_state();
         if state == shmem::STATE_REQ_READY {
+            // No flush needed: nothing reads PROCESSING; events carry the sync.
             buffer.set_state(shmem::STATE_PROCESSING);
-            buffer.flush()?;
 
             let raw = match buffer.read_input_raw() {
                 Ok(r) => r,
@@ -392,19 +575,18 @@ pub fn run_shmem_loop(buffer_path: &str, shutdown: &AtomicBool) -> Result<(), Bo
                     let _ = buffer.write_output(&res_str);
                     SharedMemoryBuffer::sync_fence();
                     buffer.set_state(shmem::STATE_ERROR);
-                    let _ = buffer.flush();
                     buffer.signal_response();
                     continue;
                 }
             };
+            let t_read = rec.is_some().then(Instant::now);
 
             if nda_native::is_nda_frame(&raw) {
                 debug!("Detected NDA-native frame");
-                if let Err(e) = handle_nda_native(&mut buffer, &raw) {
+                if let Err(e) = handle_nda_native(buffer, &raw, rec.as_mut(), t_wake, t_read) {
                     error!(error = %e, "NDA-native handler error");
                     SharedMemoryBuffer::sync_fence();
                     buffer.set_state(shmem::STATE_ERROR);
-                    let _ = buffer.flush();
                     buffer.signal_response();
                 }
             } else {
@@ -421,27 +603,18 @@ pub fn run_shmem_loop(buffer_path: &str, shutdown: &AtomicBool) -> Result<(), Bo
                         let _ = buffer.write_output(&res_str);
                         SharedMemoryBuffer::sync_fence();
                         buffer.set_state(shmem::STATE_ERROR);
-                        let _ = buffer.flush();
                         buffer.signal_response();
                         continue;
                     }
                 };
-                if let Err(e) = handle_json_shmem(&mut buffer, &input_str) {
+                if let Err(e) = handle_json_shmem(buffer, &input_str) {
                     error!(error = %e, "JSON shmem handler error");
                     SharedMemoryBuffer::sync_fence();
                     buffer.set_state(shmem::STATE_ERROR);
-                    let _ = buffer.flush();
                     buffer.signal_response();
                 }
             }
         }
-    }
-
-    drop(buffer);
-    if let Err(e) = std::fs::remove_file(buffer_path) {
-        warn!(path = buffer_path, error = %e, "Failed to remove shared memory buffer file");
-    } else {
-        info!(path = buffer_path, "Shared memory buffer file cleaned up");
     }
 
     Ok(())

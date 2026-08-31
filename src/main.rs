@@ -151,6 +151,15 @@ fn main() {
     // Load plugins from plugin directory
     registry::load_plugins(&config.plugin_dir);
 
+    // Benchmark hook: inflate the tool registry to measure tools/list
+    // payload scaling (see bench_nda). No-op unless the env var is set.
+    if let Ok(n) = std::env::var("VELOCITY_BENCH_EXTRA_TOOLS") {
+        if let Ok(count) = n.parse::<usize>() {
+            registry::register_benchmark_tools(count);
+            info!(count = count, "Registered synthetic benchmark tools");
+        }
+    }
+
     match mode {
         "stdio" => {
             if let Err(e) = protocol::json_rpc::run_stdio_loop(&SHUTDOWN) {

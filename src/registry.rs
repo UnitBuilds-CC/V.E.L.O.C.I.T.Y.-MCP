@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 use std::error::Error;
 use std::process::Command;
 use std::sync::{OnceLock, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::collections::HashMap;
 use std::time::Duration;
 use tracing::{info, warn, error, debug};
@@ -26,6 +27,21 @@ const _CSHARP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Global cache for dynamically discovered tools from the C# engine.
 static CACHED_TOOLS: OnceLock<Vec<Tool>> = OnceLock::new();
+
+/// Bumped whenever the tool registry contents can change. Protocol handlers
+/// key serialized tools/list caches on this so they rebuild only when the
+/// tool set actually changes.
+static REGISTRY_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Current registry generation. Compare against a cached value to detect
+/// tool registrations since the cache was built.
+pub fn registry_generation() -> u64 {
+    REGISTRY_GENERATION.load(Ordering::Acquire)
+}
+
+fn bump_registry_generation() {
+    REGISTRY_GENERATION.fetch_add(1, Ordering::AcqRel);
+}
 
 /// Global registry for NDA tools converted from JSON tool calls.
 /// Maps tool name → NDA binary data (ready for fast execution).
@@ -53,6 +69,7 @@ pub fn load_plugins(plugin_dir: &str) {
     
     if let Ok(mut registry) = get_plugin_registry().lock() {
         *registry = plugins;
+        bump_registry_generation();
         info!(plugin_dir = %plugin_dir, count = registry.len(), "Loaded plugins");
     }
 }
@@ -62,6 +79,27 @@ fn get_macro_registry() -> &'static Mutex<Vec<Tool>> {
     MACRO_TOOLS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+/// Register `count` synthetic tools to inflate the tools/list payload.
+/// Benchmarking hook only: enabled by the VELOCITY_BENCH_EXTRA_TOOLS env var.
+pub fn register_benchmark_tools(count: usize) {
+    for i in 0..count {
+        register_tool_lazy(&Tool {
+            name: format!("bench_synthetic_tool_{:04}", i),
+            description: format!(
+                "Synthetic benchmark tool #{:04}. Exists only to inflate the tools/list payload for transport scaling measurements.",
+                i
+            ),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "input": { "type": "string", "description": "Arbitrary input value." }
+                },
+                "required": []
+            }),
+        });
+    }
+}
+
 /// Register a tool lazily from a proc macro.
 /// This is called by the generated registration function.
 pub fn register_tool_lazy(tool: &Tool) {
@@ -69,6 +107,7 @@ pub fn register_tool_lazy(tool: &Tool) {
         // Check if tool already exists
         if !registry.iter().any(|t| t.name == tool.name) {
             registry.push(tool.clone());
+            bump_registry_generation();
             info!(tool_name = %tool.name, "Registered tool from proc macro");
         }
     }
@@ -107,7 +146,9 @@ pub fn get_tools() -> Vec<Tool> {
     } else {
         match discover_csharp_tools() {
             Ok(dynamic_tools) => {
-                let _ = CACHED_TOOLS.set(dynamic_tools.clone());
+                if CACHED_TOOLS.set(dynamic_tools.clone()).is_ok() {
+                    bump_registry_generation();
+                }
                 for tool in dynamic_tools {
                     if !known_names.contains(&tool.name) && !deprecated_names.contains(&tool.name.as_str()) {
                         tools.push(tool.clone());
@@ -117,6 +158,9 @@ pub fn get_tools() -> Vec<Tool> {
             }
             Err(e) => {
                 warn!(error = %e, "Failed to discover tools from C# engine, using built-in tools only");
+                // Cache the negative result: retrying discovery (and logging
+                // this warning) on every tools/list call costs ~100us each.
+                let _ = CACHED_TOOLS.set(Vec::new());
             }
         }
     }
@@ -1181,6 +1225,7 @@ fn convert_and_register_nda_tool(json_request: &str, output_path: &str) -> Resul
     // Register the tool in the NDA registry
     if let Ok(mut registry) = get_nda_registry().lock() {
         registry.insert(tool_name.to_string(), binary_data);
+        bump_registry_generation();
         info!(tool = tool_name, "NDA tool registered successfully (immediately callable)");
     }
     
