@@ -31,6 +31,31 @@ extern "system" {
 }
 
 #[cfg(target_os = "windows")]
+#[link(name = "winmm")]
+extern "system" {
+    fn timeBeginPeriod(uPeriod: u32) -> u32;
+    fn timeEndPeriod(uPeriod: u32) -> u32;
+}
+
+/// Improve Windows timer resolution from 15.6ms to 1ms for low-latency event waits.
+#[cfg(target_os = "windows")]
+pub fn enable_high_resolution_timer() {
+    unsafe { timeBeginPeriod(1); }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn enable_high_resolution_timer() {}
+
+/// Restore default Windows timer resolution.
+#[cfg(target_os = "windows")]
+pub fn disable_high_resolution_timer() {
+    unsafe { timeEndPeriod(1); }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn disable_high_resolution_timer() {}
+
+#[cfg(target_os = "windows")]
 const INFINITE: u32 = 0xFFFFFFFF;
 
 #[cfg(target_os = "windows")]
@@ -264,6 +289,12 @@ impl SharedMemoryBuffer {
 
     pub fn flush(&self) -> Result<(), Box<dyn Error>> {
         self.mmap.flush()?;
+        Ok(())
+    }
+
+    /// Async flush - marks pages dirty for cross-process visibility without blocking on disk I/O.
+    pub fn flush_async(&self) -> Result<(), Box<dyn Error>> {
+        self.mmap.flush_async()?;
         Ok(())
     }
 
