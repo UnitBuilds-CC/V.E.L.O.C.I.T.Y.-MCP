@@ -1,0 +1,43 @@
+{
+  "date": "2026-08-31T20:18:45.470985",
+  "sdk_version": "1.29.1",
+  "test_dir": "C:/tmp/benchmark_test",
+  "official": {
+    "name": "Official Filesystem Server (Node.js)",
+    "num_calls": 200,
+    "init_time_ms": 1134.202480316162,
+    "server_info": "name='secure-filesystem-server' title=None version='0.2.0' websiteUrl=None icons=None",
+    "latency": {
+      "mean_ms": 11.582225561141968,
+      "median_ms": 10.864973068237305,
+      "p95_ms": 19.100666046142578,
+      "p99_ms": 32.23538398742676,
+      "min_ms": 4.2438507080078125,
+      "max_ms": 47.8365421295166,
+      "stddev_ms": 4.875009630748713
+    },
+    "throughput_rps": 86.33919230125953,
+    "success_rate": 100.0,
+    "errors": 0,
+    "total_time_s": 2.3164451122283936
+  },
+  "velocity": {
+    "name": "VELOCITY-MCP v3.0.0 (Rust)",
+    "num_calls": 200,
+    "init_time_ms": 57.74879455566406,
+    "server_info": "name='velocity-mcp-rust-server' title=None version='3.0.0' websiteUrl=None icons=None",
+    "latency": {
+      "mean_ms": 1.4507337050004439,
+      "median_ms": 1.4071464538574219,
+      "p95_ms": 2.7313232421875,
+      "p99_ms": 3.5295486450195312,
+      "min_ms": 0.0,
+      "max_ms": 3.5295486450195312,
+      "stddev_ms": 0.7343011674951615
+    },
+    "throughput_rps": 470.3647229937607,
+    "success_rate": 49.5,
+    "errors": 101,
+    "total_time_s": 0.21047496795654297
+  }
+}
