@@ -9,7 +9,7 @@ This guide helps you migrate from the official Node.js MCP server to VELOCITY-MC
 | Performance | Baseline | **3.8x faster** | Lower latency, higher throughput |
 | Memory | ~120 MB | **~15 MB** | 8x smaller footprint |
 | Startup | ~500ms | **<50ms** | 10x faster startup |
-| Binary Protocol | ❌ | ✅ **NDA format** | 90x faster parsing |
+| Binary Protocol | ❌ | ✅ **NDA format** | 2.8x faster parsing (measured) |
 | Memory IPC | ❌ | ✅ **Zero-copy** | Ultra-low latency |
 | Security | Basic | ✅ **Production-hardened** | Timeouts, rate limits, validation |
 | Observability | Basic | ✅ **Built-in metrics** | /health, /performance, /metrics |
@@ -114,7 +114,7 @@ Wrap your Node.js script:
 
 Create a Rust implementation and register it as a built-in tool. See `docs/CUSTOM_TOOLS.md`.
 
-#### Option 3: Use NDA Conversion (90x Faster)
+#### Option 3: Use NDA Conversion (2.8x Faster Parsing, Measured)
 
 Convert your JSON tool calls to NDA binary format:
 
@@ -212,7 +212,7 @@ VELOCITY-MCP is **100% MCP protocol compatible**. All standard MCP methods work:
 | Authentication | ❌ | ✅ | API key + TLS |
 | Timeouts | ❌ | ✅ | All operations |
 | Metrics | ❌ | ✅ | /performance endpoint |
-| Binary Protocol | ❌ | ✅ | NDA format (90x faster) |
+| Binary Protocol | ❌ | ✅ | NDA format (2.8x faster parsing, measured) |
 | Memory IPC | ❌ | ✅ | Zero-copy shmem |
 
 ## Migration Checklist

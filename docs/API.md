@@ -1116,7 +1116,7 @@ Execute an NDA document.
 
 ### convert_to_nda_tool
 
-Convert a JSON tool to NDA format for 90x faster execution.
+Convert a JSON tool to NDA format for 2.8x faster parsing (measured).
 
 **Parameters:**
 - `tool_name` (string, required) - Tool name

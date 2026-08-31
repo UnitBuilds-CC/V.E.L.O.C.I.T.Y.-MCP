@@ -42,7 +42,7 @@ That's it! Your MCP server is running. Now configure your client.
 | **Startup** | ~500ms | **<50ms** | 10x faster startup |
 | **Security** | Basic | **Enterprise-grade** | 15+ security layers |
 | **Config** | Complex | **Zero-config** | Works out of the box |
-| **Protocol** | JSON only | **JSON + NDA binary** | 90x faster parsing |
+| **Protocol** | JSON only | **JSON + NDA binary** | 2.8x faster parsing (measured) |
 | **Testing** | Limited | **284 tests** | Comprehensive coverage |
 | **Monitoring** | None | **Full observability** | Prometheus, Grafana, OpenTelemetry |
 
@@ -52,7 +52,7 @@ That's it! Your MCP server is running. Now configure your client.
 
 ### 🚀 Performance
 - **3.8x faster** than Node.js MCP reference implementation
-- **NDA binary protocol** with 90x faster parsing than JSON
+- **NDA binary protocol**: 2.8x faster parsing than JSON (measured), 1.3–5.6x faster end-to-end round trips depending on method
 - **Zero-copy memory-mapped IPC** for ultra-low latency
 - **Connection pooling** and **LRU caching** for optimal performance
 - **Async runtime** with Tokio for high concurrency
@@ -89,7 +89,7 @@ That's it! Your MCP server is running. Now configure your client.
 - **HTTP/SSE** - Full HTTP transport with session management
 - **WebSocket** - Bidirectional real-time communication
 - **Shared Memory** - Zero-copy IPC for ultra-low latency
-- **NDA Binary** - 90x faster than JSON parsing
+- **NDA Binary** - 2.8x faster parsing than JSON (measured)
 
 ### 📦 Production Ready
 - **284 passing tests** (210 unit + 17 fuzz + 43 integration + 8 macro + 6 enhanced)
@@ -132,7 +132,7 @@ That's it! Your MCP server is running. Now configure your client.
 
 ### NDA Binary Protocol
 
-The NDA (Neural Document Archive) binary protocol provides **90x faster parsing** than JSON:
+The NDA (Neural Document Archive) binary protocol parses **2.8x faster** than JSON (560 ns vs 1549 ns per request in the built-in microbenchmark). Measured end-to-end round trips over shared memory run **1.3–5.6x faster** than JSON-RPC depending on the method:
 
 ```
 [4 bytes: magic "NMCP"]
@@ -144,8 +144,8 @@ The NDA (Neural Document Archive) binary protocol provides **90x faster parsing*
 
 **Benefits:**
 - Zero-copy parsing with pointer arithmetic
-- Merkle tree integrity verification
-- Ed25519 cryptographic signatures
+- SHA-256 Merkle integrity check on every frame
+- Ed25519 signatures for NDA documents (`compile_signed`)
 - 3.1x faster shared memory throughput
 - 12.7M req/s at 8 threads
 

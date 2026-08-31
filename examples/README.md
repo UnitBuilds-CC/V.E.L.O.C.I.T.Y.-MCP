@@ -78,7 +78,7 @@ NDA document format processing. Demonstrates:
 - Converting files to NDA format
 - Reading NDA documents
 - Understanding NDA structure
-- Converting JSON tools to NDA for 90x faster execution
+- Converting JSON tools to NDA for 2.8x faster parsing (measured)
 
 **Run:**
 ```bash

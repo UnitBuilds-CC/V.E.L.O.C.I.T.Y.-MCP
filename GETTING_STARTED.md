@@ -109,7 +109,7 @@ VELOCITY-MCP comes with 8 powerful tools ready to use:
 **convert_to_nda_document** - Convert files to NDA format
 **read_nda** - Read NDA documents
 **execute_nda** - Execute NDA containers
-**convert_to_nda_tool** - Convert JSON tools to NDA for 90x faster execution
+**convert_to_nda_tool** - Convert JSON tools to NDA for 2.8x faster parsing (measured)
 
 ## Configuration
 
