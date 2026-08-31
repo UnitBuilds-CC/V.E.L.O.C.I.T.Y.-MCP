@@ -72,6 +72,10 @@ thiserror = "2"
 # Date/time handling
 chrono = { version = "0.4", features = ["serde"] }
 
+# Filesystem utilities
+glob = "0.3"
+diffy = "0.4"
+
 # Linux-specific sandboxing
 [target.'cfg(target_os = "linux")'.dependencies]
 seccompiler = "0.4"

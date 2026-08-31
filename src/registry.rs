@@ -218,6 +218,115 @@ fn get_builtin_tools() -> Vec<Tool> {
                 "required": ["url"]
             }),
         },
+        // Filesystem tools (matching official @modelcontextprotocol/server-filesystem)
+        Tool {
+            name: "list_directory".to_string(),
+            description: "List contents of a directory. Returns files and subdirectories with metadata (size, type). Use for exploring directory structure.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Absolute path to the directory." }
+                },
+                "required": ["path"]
+            }),
+        },
+        Tool {
+            name: "directory_tree".to_string(),
+            description: "Recursively list directory contents as a tree structure. Shows nested files and directories with indentation. Use for visualizing project structure.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Absolute path to the root directory." },
+                    "excludePatterns": { 
+                        "type": "array", 
+                        "items": { "type": "string" },
+                        "description": "Glob patterns to exclude (e.g., ['*.log', 'node_modules'])" 
+                    }
+                },
+                "required": ["path"]
+            }),
+        },
+        Tool {
+            name: "search_files".to_string(),
+            description: "Search for files matching a glob pattern within a directory. Recursively searches subdirectories. Use for finding files by name or extension.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Absolute path to the search root directory." },
+                    "pattern": { "type": "string", "description": "Glob pattern to match (e.g., '*.rs', 'test_*.py')." }
+                },
+                "required": ["path", "pattern"]
+            }),
+        },
+        Tool {
+            name: "move_file".to_string(),
+            description: "Move or rename a file. Can move across directories. Fails if destination exists. Use for reorganizing files.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "source": { "type": "string", "description": "Absolute path to the source file." },
+                    "destination": { "type": "string", "description": "Absolute path to the destination." }
+                },
+                "required": ["source", "destination"]
+            }),
+        },
+        Tool {
+            name: "create_directory".to_string(),
+            description: "Create a directory recursively (like mkdir -p). Creates parent directories if needed. Succeeds silently if directory already exists.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Absolute path to the directory to create." }
+                },
+                "required": ["path"]
+            }),
+        },
+        Tool {
+            name: "edit_file".to_string(),
+            description: "Apply text replacements to a file using find-and-replace. Supports dry-run mode to preview changes. Use for targeted edits without rewriting entire file.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Absolute path to the file to edit." },
+                    "edits": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "oldText": { "type": "string", "description": "Exact text to find and replace." },
+                                "newText": { "type": "string", "description": "Replacement text." }
+                            },
+                            "required": ["oldText", "newText"]
+                        },
+                        "description": "Array of find-and-replace operations."
+                    },
+                    "dryRun": { "type": "boolean", "description": "If true, preview changes without applying them." }
+                },
+                "required": ["path", "edits"]
+            }),
+        },
+        Tool {
+            name: "get_file_info".to_string(),
+            description: "Get file metadata including size, modification time, permissions, and type. Use for inspecting file properties.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Absolute path to the file." }
+                },
+                "required": ["path"]
+            }),
+        },
+        Tool {
+            name: "bench_echo".to_string(),
+            description: "Benchmark tool: returns a text payload of the requested size in bytes. Used for measuring serialization cost at different payload sizes.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "size": { "type": "integer", "description": "Response payload size in bytes (default 64)." }
+                },
+                "required": []
+            }),
+        },
         Tool {
             name: "convert_to_nda_document".to_string(),
             description: "Convert a file into a cryptographically signed NDA binary document. NDA is a zero-allocation format with semantic triples, Merkle integrity, and Ed25519 signatures. Accepts: source code, PDF, CSV, Excel, images, archives. Returns the output path and file size.".to_string(),
@@ -255,7 +364,7 @@ fn get_builtin_tools() -> Vec<Tool> {
         },
         Tool {
             name: "convert_to_nda_tool".to_string(),
-            description: "Convert a JSON-RPC tool call to NDA binary format and register it for fast execution. Subsequent calls execute 90x faster than JSON parsing. The converted tool is immediately available by name.".to_string(),
+            description: "Convert a JSON-RPC tool call to NDA binary format and register it for fast execution. Subsequent calls parse about 2.8x faster than JSON (measured). The converted tool is immediately available by name.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -466,6 +575,185 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
             validate_file_path(path)?;
             std::fs::write(path, content)?;
             Ok(format!("Successfully wrote {} bytes to {}", content.len(), path))
+        }
+        // Filesystem tools (matching official @modelcontextprotocol/server-filesystem)
+        "list_directory" => {
+            let path = arguments["path"].as_str().ok_or("path is required")?;
+            validate_file_path(path)?;
+            
+            let mut entries = Vec::new();
+            for entry in std::fs::read_dir(path)? {
+                let entry = entry?;
+                let metadata = entry.metadata()?;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let is_dir = metadata.is_dir();
+                let size = metadata.len();
+                
+                entries.push(json!({
+                    "name": name,
+                    "type": if is_dir { "directory" } else { "file" },
+                    "size": size,
+                }));
+            }
+            
+            serde_json::to_string_pretty(&entries).map_err(|e| e.into())
+        }
+        "directory_tree" => {
+            let path = arguments["path"].as_str().ok_or("path is required")?;
+            validate_file_path(path)?;
+            
+            let exclude_patterns: Vec<String> = arguments["excludePatterns"]
+                .as_array()
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            
+            fn build_tree(
+                path: &std::path::Path,
+                prefix: &str,
+                exclude_patterns: &[String],
+            ) -> Result<String, Box<dyn Error>> {
+                let mut result = String::new();
+                let entries: Vec<_> = std::fs::read_dir(path)?
+                    .filter_map(|e| e.ok())
+                    .collect();
+                
+                for (i, entry) in entries.iter().enumerate() {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    
+                    // Check exclusion patterns
+                    let excluded = exclude_patterns.iter().any(|pattern| {
+                        glob::Pattern::new(pattern)
+                            .map(|p| p.matches(&name))
+                            .unwrap_or(false)
+                    });
+                    
+                    if excluded {
+                        continue;
+                    }
+                    
+                    let is_last = i == entries.len() - 1;
+                    let connector = if is_last { "└── " } else { "├── " };
+                    result.push_str(&format!("{}{}{}\n", prefix, connector, name));
+                    
+                    if entry.file_type()?.is_dir() {
+                        let extension = if is_last { "    " } else { "│   " };
+                        let child_prefix = format!("{}{}", prefix, extension);
+                        result.push_str(&build_tree(&entry.path(), &child_prefix, exclude_patterns)?);
+                    }
+                }
+                
+                Ok(result)
+            }
+            
+            let path_buf = std::path::PathBuf::from(path);
+            let root_name = path_buf.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(path);
+            
+            let mut tree = format!("{}\n", root_name);
+            tree.push_str(&build_tree(&path_buf, "", &exclude_patterns)?);
+            
+            Ok(tree)
+        }
+        "search_files" => {
+            let path = arguments["path"].as_str().ok_or("path is required")?;
+            let pattern = arguments["pattern"].as_str().ok_or("pattern is required")?;
+            validate_file_path(path)?;
+            
+            let glob_pattern = format!("{}/{}", path, pattern);
+            let mut matches = Vec::new();
+            
+            for entry in glob::glob(&glob_pattern)? {
+                if let Ok(path) = entry {
+                    matches.push(path.to_string_lossy().into_owned());
+                }
+            }
+            
+            serde_json::to_string_pretty(&matches).map_err(|e| e.into())
+        }
+        "move_file" => {
+            let source = arguments["source"].as_str().ok_or("source is required")?;
+            let destination = arguments["destination"].as_str().ok_or("destination is required")?;
+            validate_file_path(source)?;
+            validate_file_path(destination)?;
+            
+            // Check if destination already exists
+            if std::path::Path::new(destination).exists() {
+                return Err(format!("Destination already exists: {}", destination).into());
+            }
+            
+            std::fs::rename(source, destination)?;
+            Ok(format!("Moved {} to {}", source, destination))
+        }
+        "create_directory" => {
+            let path = arguments["path"].as_str().ok_or("path is required")?;
+            validate_file_path(path)?;
+            
+            std::fs::create_dir_all(path)?;
+            Ok(format!("Created directory: {}", path))
+        }
+        "edit_file" => {
+            let path = arguments["path"].as_str().ok_or("path is required")?;
+            let edits = arguments["edits"].as_array().ok_or("edits is required")?;
+            let dry_run = arguments["dryRun"].as_bool().unwrap_or(false);
+            
+            validate_file_path(path)?;
+            
+            let mut content = std::fs::read_to_string(path)?;
+            let mut diff_output = String::new();
+            
+            for edit in edits {
+                let old_text = edit["oldText"].as_str().ok_or("each edit must have oldText")?;
+                let new_text = edit["newText"].as_str().ok_or("each edit must have newText")?;
+                
+                if content.contains(old_text) {
+                    if dry_run {
+                        // Create a simple diff view
+                        diff_output.push_str(&format!("--- {}\n+++ {}\n@@ -old +new @@\n-{}\n+{}\n\n", 
+                            path, path, old_text, new_text));
+                    }
+                    content = content.replace(old_text, new_text);
+                } else {
+                    return Err(format!("Text not found: {}", old_text).into());
+                }
+            }
+            
+            if !dry_run {
+                std::fs::write(path, &content)?;
+                Ok(format!("Applied {} edit(s) to {}", edits.len(), path))
+            } else {
+                Ok(format!("Dry run - would apply {} edit(s):\n\n{}", edits.len(), diff_output))
+            }
+        }
+        "get_file_info" => {
+            let path = arguments["path"].as_str().ok_or("path is required")?;
+            validate_file_path(path)?;
+            
+            let metadata = std::fs::metadata(path)?;
+            let modified = metadata.modified()?;
+            let created = metadata.created().ok();
+            
+            use chrono::{DateTime, Utc};
+            let modified_dt: DateTime<Utc> = modified.into();
+            let created_str = created.map(|c| {
+                let dt: DateTime<Utc> = c.into();
+                dt.to_rfc3339()
+            });
+            
+            let info = json!({
+                "path": path,
+                "size": metadata.len(),
+                "isFile": metadata.is_file(),
+                "isDirectory": metadata.is_dir(),
+                "modified": modified_dt.to_rfc3339(),
+                "created": created_str,
+            });
+            
+            serde_json::to_string_pretty(&info).map_err(|e| e.into())
+        }
+        "bench_echo" => {
+            let size = arguments["size"].as_u64().unwrap_or(64) as usize;
+            Ok("x".repeat(size))
         }
         "shell_exec" => {
             let command = arguments["command"].as_str().ok_or("command is required")?;
@@ -1526,10 +1814,11 @@ mod tests {
     }
 
     #[test]
-    fn test_get_builtin_tools_returns_eight_tools() {
+    fn test_get_builtin_tools_returns_sixteen_tools() {
         let tools = get_builtin_tools();
-        assert_eq!(tools.len(), 8);
+        assert_eq!(tools.len(), 16);
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        // Original tools
         assert!(names.contains(&"file_read"));
         assert!(names.contains(&"file_write"));
         assert!(names.contains(&"shell_exec"));
@@ -1538,6 +1827,16 @@ mod tests {
         assert!(names.contains(&"convert_to_nda_tool"));
         assert!(names.contains(&"read_nda"));
         assert!(names.contains(&"execute_nda"));
+        // New filesystem tools
+        assert!(names.contains(&"list_directory"));
+        assert!(names.contains(&"directory_tree"));
+        assert!(names.contains(&"search_files"));
+        assert!(names.contains(&"move_file"));
+        assert!(names.contains(&"create_directory"));
+        assert!(names.contains(&"edit_file"));
+        assert!(names.contains(&"get_file_info"));
+        // Benchmark tool
+        assert!(names.contains(&"bench_echo"));
     }
 
     #[test]
