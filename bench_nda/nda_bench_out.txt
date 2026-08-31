@@ -1,0 +1,133 @@
+========================================================================
+  NDA-Native Benchmark: Binary-over-Shmem vs JSON-RPC-over-Stdio
+  VELOCITY-MCP v3.0.0 — 200 iterations × 3 rounds (median) per method
+========================================================================
+
+  Server: ../target/release/velocity_mcp.exe
+  Buffer: nda_bench_1788213099205301700.bin
+  Shmem input limit: 4086 bytes, output limit: 61440 bytes
+
+  Transport primitive costs (this machine):
+  Micro: event ping-pong RTT (2 threads, same proc): 4.99 us  (one wake = 2.50 us)
+  Micro: event ping-pong RTT (2 processes):          5.15 us  (one wake = 2.58 us)
+  Micro: flush_async (FlushViewOfFile, dirty page):  23.07 us
+
+Starting NDA shmem server...
+Warming up NDA path...
+Running NDA-native benchmarks... (3 rounds, median kept)
+    [client phases] write=0.0us wait=8.4us read+copy=0.2us
+    [client phases] write=0.0us wait=6.8us read+copy=0.2us
+    [client phases] write=0.0us wait=6.8us read+copy=0.2us
+  Semantic check: NDA tools/list decoded to 16 tools (incl. read_nda, bench_echo) — OK
+Starting JSON-RPC stdio server...
+Warming up stdio path...
+Running stdio benchmarks... (3 rounds, median kept)
+Starting shmem server for JSON-over-shmem test...
+Running JSON-over-shmem benchmarks... (3 rounds, median kept)
+  Semantic check: JSON/shmem tools/list matches NDA tool set (16 tools) — OK
+
+Running tools/list payload-scaling benchmark...
+  +0 tools: 16 tools total — NDA 7916 B vs JSON 7520 B, sets match (16 names)
+  +32 tools: 48 tools total — NDA 17772 B vs JSON 16896 B, sets match (48 names)
+  +64 tools: 80 tools total — NDA 27628 B vs JSON 26272 B, sets match (80 names)
+  +128 tools: 144 tools total — NDA 47340 B vs JSON 45024 B, sets match (144 names)
+
+========================================================================
+  RESULTS
+========================================================================
+
+  Three transport modes compared:
+    NDA/shmem    = NDA binary TLV over shared memory (zero-poll Win32 events)
+    JSON/stdio   = JSON-RPC over stdin/stdout pipes (thread + channel + 200ms poll)
+    JSON/shmem   = JSON-RPC over shared memory (isolates encoding cost)
+
+─── Ping ──────────────────────────────────────────
+                                NDA/shmem     JSON/stdio     JSON/shmem
+  Avg latency                     0.007 ms        0.020 ms        0.008 ms
+  p50                             0.006 ms        0.019 ms        0.007 ms
+  p95                             0.008 ms        0.031 ms        0.008 ms
+  p99                             0.038 ms        0.042 ms        0.016 ms
+  Throughput                     140815 r/s        48840 r/s       132022 r/s
+
+  Avg speedup:  2.9x faster (NDA vs stdio JSON-RPC)
+  P99 speedup:  1.1x faster
+  Encoding speedup: 1.1x (binary TLV vs JSON, same shmem transport)
+  Transport speedup: 2.9x (shmem vs stdio pipes, same JSON encoding)
+
+─── Tools/List ──────────────────────────────────────────
+                                NDA/shmem     JSON/stdio     JSON/shmem
+  Avg latency                     0.014 ms        0.208 ms        0.077 ms
+  p50                             0.011 ms        0.194 ms        0.069 ms
+  p95                             0.026 ms        0.278 ms        0.139 ms
+  p99                             0.055 ms        0.420 ms        0.185 ms
+  Throughput                      72301 r/s         4801 r/s        12924 r/s
+
+  Avg speedup:  15.1x faster (NDA vs stdio JSON-RPC)
+  P99 speedup:  7.6x faster
+  Encoding speedup: 5.6x (binary TLV vs JSON, same shmem transport)
+  Transport speedup: 15.1x (shmem vs stdio pipes, same JSON encoding)
+
+─── Tools/Call (64B) ──────────────────────────────────────────
+                                NDA/shmem     JSON/stdio     JSON/shmem
+  Avg latency                     0.010 ms        0.024 ms        0.013 ms
+  p50                             0.008 ms        0.021 ms        0.012 ms
+  p95                             0.010 ms        0.037 ms        0.017 ms
+  p99                             0.041 ms        0.065 ms        0.050 ms
+  Throughput                     105180 r/s        41916 r/s        74963 r/s
+
+  Avg speedup:  2.5x faster (NDA vs stdio JSON-RPC)
+  P99 speedup:  1.6x faster
+  Encoding speedup: 1.4x (binary TLV vs JSON, same shmem transport)
+  Transport speedup: 2.5x (shmem vs stdio pipes, same JSON encoding)
+
+─── Health/Check ──────────────────────────────────────────
+                                NDA/shmem     JSON/stdio     JSON/shmem
+  Avg latency                     0.008 ms        0.021 ms        0.011 ms
+  p50                             0.007 ms        0.019 ms        0.011 ms
+  p95                             0.010 ms        0.031 ms        0.011 ms
+  p99                             0.029 ms        0.049 ms        0.013 ms
+  Throughput                     125826 r/s        46796 r/s        91811 r/s
+
+  Avg speedup:  2.7x faster (NDA vs stdio JSON-RPC)
+  P99 speedup:  1.7x faster
+  Encoding speedup: 1.4x (binary TLV vs JSON, same shmem transport)
+  Transport speedup: 2.7x (shmem vs stdio pipes, same JSON encoding)
+
+─── Payload Scaling: bench_echo ──────────────────────────────────────────
+
+     Payload     NDA/shmem   JSON/stdio   JSON/shmem       Avg Δ      P99 Δ
+  ────────────────────────────────────────────────────────────────────────────
+       256 B       0.009 ms      0.032 ms      0.013 ms       3.4x      2.5x
+        1 KB       0.010 ms      0.027 ms      0.012 ms       2.6x      1.6x
+        4 KB       0.013 ms      0.028 ms      0.013 ms       2.1x      2.2x
+
+─── tools/list Payload Scaling: registry size (NDA/shmem vs JSON/shmem) ──
+
+  (JSON/stdio excluded: its tools/list paginates at 100 tools,
+   so payloads would not be comparable at larger registries.)
+
+      +tools  tools  NDA bytes JSON bytes     NDA/shmem   JSON/shmem  Speedup
+  ──────────────────────────────────────────────────────────────────────────────
+           0     16       7916       7520       0.013 ms      0.076 ms     5.9x
+          32     48      17772      16896       0.023 ms      0.207 ms     9.1x
+          64     80      27628      26272       0.056 ms      0.317 ms     5.7x
+         128    144      47340      45024       0.073 ms      0.501 ms     6.9x
+
+========================================================================
+  SUMMARY
+========================================================================
+
+  NDA-binary/shmem avg: 0.008 ms   (binary TLV frame parse, Win32 events)
+  JSON-RPC/stdio avg:   0.022 ms   (serde_json + pipe + thread channel)
+  Overall avg speedup:  2.7x faster (NDA vs stdio JSON-RPC)
+  Overall p99 speedup:  1.4x faster
+
+  What's being measured:
+    NDA path:   TLV encode → SHA-256 → mmap write → SetEvent → server processes
+                → mmap write → SetEvent → client reads. No JSON parsing anywhere.
+    Stdio path: JSON stringify → pipe write → thread recv → channel send →
+                serde_json parse → handle → serde_json stringify → pipe write →
+                pipe read → JSON parse. Two JSON serialize+parse cycles per request.
+
+  Shmem buffer limits: input ≤ 4086 bytes, output ≤ 61440 bytes
+  (4KB input / 61KB output — sufficient for typical MCP tool calls)

@@ -1,5 +1,5 @@
 # Build artifacts
-/target
+target/
 
 # IDE and editor files
 .idea/
