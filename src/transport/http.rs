@@ -303,10 +303,17 @@ async fn rate_limit_middleware(
 /// Handle a JSON-RPC request over HTTP POST (stateless).
 async fn handle_json_rpc(
     State(state): State<Arc<ServerState>>,
+    headers: axum::http::HeaderMap,
     Json(request): Json<Value>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let start_time = std::time::Instant::now();
-    
+
+    let session_id = headers.get("X-Session-ID")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| sanitize_session_id(s).unwrap_or_else(|_| Uuid::new_v4().to_string()))
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    crate::audit::set_session_context(session_id);
+
     if state.shutdown.load(Ordering::Relaxed) {
         let latency_us = start_time.elapsed().as_micros() as u64;
         state.metrics.record_request(latency_us, false);
@@ -344,12 +351,19 @@ async fn handle_json_rpc(
 /// Returns NDA binary response frames.
 async fn handle_nda_rpc(
     State(state): State<Arc<ServerState>>,
+    headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<axum::body::Bytes, StatusCode> {
     use crate::protocol::nmcp_binary;
-    
+
     let start_time = std::time::Instant::now();
-    
+
+    let session_id = headers.get("X-Session-ID")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| sanitize_session_id(s).unwrap_or_else(|_| Uuid::new_v4().to_string()))
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    crate::audit::set_session_context(session_id);
+
     if state.shutdown.load(Ordering::Relaxed) {
         let latency_us = start_time.elapsed().as_micros() as u64;
         state.metrics.record_request(latency_us, false);
@@ -423,6 +437,8 @@ async fn handle_streamable(
     let session_id_clone = session_id.clone();
     let state_clone = state.clone();
     tokio::spawn(async move {
+        crate::audit::set_session_context(session_id_clone.clone());
+
         // Send session ID as first event
         if tx.send(format!("event: session\ndata: {}\n\n", session_id_clone)).await.is_err() {
             tracing::debug!("SSE client disconnected before session event");
@@ -576,7 +592,17 @@ async fn broadcast_event(state: &ServerState, event_type: &str, data: &Value) {
 async fn cleanup_sessions(state: &ServerState) {
     let mut sessions = state.sessions.write().await;
     let now = std::time::Instant::now();
-    sessions.retain(|_, session| now.duration_since(session.last_activity) < SESSION_TTL);
+    let mut evicted = Vec::new();
+    sessions.retain(|id, session| {
+        let keep = now.duration_since(session.last_activity) < SESSION_TTL;
+        if !keep {
+            evicted.push(id.clone());
+        }
+        keep
+    });
+    for id in &evicted {
+        crate::audit::audit_registry().remove(id);
+    }
 }
 
 /// Health check endpoint.
@@ -666,12 +692,13 @@ async fn performance(State(state): State<Arc<ServerState>>) -> Json<Value> {
     }))
 }
 
-/// Audit log export endpoint (JSON format).
+/// Audit log export endpoint (JSON format) — aggregate across all sessions.
 async fn audit_export_json() -> Result<
     (StatusCode, [(axum::http::header::HeaderName, &'static str); 1], String),
     StatusCode
 > {
-    match crate::audit::global_audit().export_json() {
+    let entries = crate::audit::audit_registry().aggregate_all();
+    match serde_json::to_string_pretty(&entries) {
         Ok(json) => Ok((
             StatusCode::OK,
             [(axum::http::header::CONTENT_TYPE, "application/json")],
@@ -681,19 +708,174 @@ async fn audit_export_json() -> Result<
     }
 }
 
-/// Audit log export endpoint (CSV format).
+/// Audit log export endpoint (CSV format) — aggregate across all sessions.
 async fn audit_export_csv() -> Result<
     (StatusCode, [(axum::http::header::HeaderName, &'static str); 1], String),
     StatusCode
 > {
-    match crate::audit::global_audit().export_csv() {
-        Ok(csv) => Ok((
+    let entries = crate::audit::audit_registry().aggregate_all();
+    let csv = format_audit_csv(&entries);
+    Ok((
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "text/csv")],
+        csv,
+    ))
+}
+
+/// Flush all audit logs to disk. Uses VELOCITY_AUDIT_LOG_PATH env var or defaults to audit_logs.
+async fn audit_flush() -> Result<Json<Value>, StatusCode> {
+    let path = std::env::var("VELOCITY_AUDIT_LOG_PATH")
+        .unwrap_or_else(|_| "audit_logs".to_string());
+    match crate::audit::audit_registry().flush_all(&path) {
+        Ok(n) => Ok(Json(json!({
+            "status": "ok",
+            "entries": n,
+            "path": path
+        }))),
+        Err(e) => Ok(Json(json!({
+            "status": "error",
+            "error": e
+        }))),
+    }
+}
+
+/// Session-scoped audit export (JSON) — returns only the named session's data.
+async fn session_audit_export_json(
+    axum::extract::Path(session_id): axum::extract::Path<String>,
+) -> Result<
+    (StatusCode, [(axum::http::header::HeaderName, &'static str); 1], String),
+    StatusCode
+> {
+    match crate::audit::audit_registry().get(&session_id) {
+        Some(log) => match log.export_json() {
+            Ok(json) => Ok((
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                json,
+            )),
+            Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        },
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+/// Session-scoped audit export (CSV) — returns only the named session's data.
+async fn session_audit_export_csv(
+    axum::extract::Path(session_id): axum::extract::Path<String>,
+) -> Result<
+    (StatusCode, [(axum::http::header::HeaderName, &'static str); 1], String),
+    StatusCode
+> {
+    match crate::audit::audit_registry().get(&session_id) {
+        Some(log) => {
+            let entries = log.all();
+            let csv = format_audit_csv(&entries);
+            Ok((
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "text/csv")],
+                csv,
+            ))
+        },
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+/// Session-scoped audit flush — flush a single session to disk.
+async fn session_audit_flush(
+    axum::extract::Path(session_id): axum::extract::Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    let base_path = std::env::var("VELOCITY_AUDIT_LOG_PATH")
+        .unwrap_or_else(|_| "audit_logs".to_string());
+    match crate::audit::audit_registry().get(&session_id) {
+        Some(log) => {
+            let file_path = format!("{}/{}.json", base_path, session_id);
+            if let Err(e) = std::fs::create_dir_all(&base_path) {
+                return Ok(Json(json!({ "status": "error", "error": format!("Failed to create directory: {}", e) })));
+            }
+            let entries = log.all();
+            match serde_json::to_string_pretty(&entries) {
+                Ok(json_str) => match std::fs::write(&file_path, json_str) {
+                    Ok(_) => Ok(Json(json!({
+                        "status": "ok",
+                        "entries": entries.len(),
+                        "path": file_path
+                    }))),
+                    Err(e) => Ok(Json(json!({ "status": "error", "error": format!("Failed to write: {}", e) }))),
+                },
+                Err(e) => Ok(Json(json!({ "status": "error", "error": format!("{}", e) }))),
+            }
+        },
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+/// Admin audit export (JSON) — merged entries from all sessions.
+async fn admin_audit_export_json() -> Result<
+    (StatusCode, [(axum::http::header::HeaderName, &'static str); 1], String),
+    StatusCode
+> {
+    let entries = crate::audit::audit_registry().aggregate_all();
+    match serde_json::to_string_pretty(&entries) {
+        Ok(json) => Ok((
             StatusCode::OK,
-            [(axum::http::header::CONTENT_TYPE, "text/csv")],
-            csv,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            json,
         )),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
+}
+
+/// Admin audit export (CSV) — merged entries from all sessions.
+async fn admin_audit_export_csv() -> Result<
+    (StatusCode, [(axum::http::header::HeaderName, &'static str); 1], String),
+    StatusCode
+> {
+    let entries = crate::audit::audit_registry().aggregate_all();
+    let csv = format_audit_csv(&entries);
+    Ok((
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "text/csv")],
+        csv,
+    ))
+}
+
+/// Admin audit summary — per-session entry counts.
+async fn admin_audit_summary() -> Json<Value> {
+    let registry = crate::audit::audit_registry();
+    let session_ids = registry.session_ids();
+    let per_session: Vec<Value> = session_ids.iter().map(|id| {
+        let count = registry.get(id).map(|l| l.len()).unwrap_or(0);
+        json!({ "sessionId": id, "entries": count })
+    }).collect();
+    Json(json!({
+        "totalSessions": registry.session_count(),
+        "totalEntries": registry.aggregate_all().len(),
+        "sessions": per_session
+    }))
+}
+
+/// Format audit entries as CSV.
+fn format_audit_csv(entries: &[crate::audit::AuditEntry]) -> String {
+    let mut csv = String::from("sequence,timestamp_ms,tool_name,duration_ms,outcome,merkle_root,session_id\n");
+    for entry in entries {
+        let outcome_str = match &entry.outcome {
+            crate::audit::AuditOutcome::Success => "success".to_string(),
+            crate::audit::AuditOutcome::Error(msg) => format!("error:{}", msg.replace(',', ";")),
+            crate::audit::AuditOutcome::Timeout => "timeout".to_string(),
+            crate::audit::AuditOutcome::Rejected(msg) => format!("rejected:{}", msg.replace(',', ";")),
+        };
+        csv.push_str(&format!(
+            "{},{},{},{},{},{},{}\n",
+            entry.sequence,
+            entry.timestamp_ms,
+            entry.tool_name,
+            entry.duration_ms,
+            outcome_str,
+            entry.merkle_root.as_deref().unwrap_or(""),
+            entry.session_id.as_deref().unwrap_or(""),
+        ));
+    }
+    csv
 }
 
 /// Session management endpoints.
@@ -723,12 +905,17 @@ async fn websocket_handler(
 async fn handle_websocket(mut socket: axum::extract::ws::WebSocket, state: Arc<ServerState>) {
     use axum::extract::ws::{Message, WebSocket};
     use futures::{SinkExt, StreamExt};
-    
+
     let (mut sender, mut receiver) = socket.split();
-    
+
+    let ws_session_id = format!("ws-{}", Uuid::new_v4());
+
     // Spawn a task to receive messages from the client
     let state_clone = state.clone();
+    let session_for_task = ws_session_id.clone();
     let recv_task = tokio::spawn(async move {
+        crate::audit::set_session_context(session_for_task);
+
         while let Some(msg) = StreamExt::next(&mut receiver).await {
             match msg {
                 Ok(Message::Text(text)) => {
@@ -787,6 +974,7 @@ async fn delete_session(
 ) -> StatusCode {
     let mut sessions = state.sessions.write().await;
     if sessions.remove(&session_id).is_some() {
+        crate::audit::audit_registry().remove(&session_id);
         info!(session_id = %session_id, "Session deleted");
         StatusCode::OK
     } else {
@@ -946,6 +1134,13 @@ fn build_router(state: Arc<ServerState>) -> Router {
         .route("/performance", get(performance))
         .route("/audit/export/json", get(audit_export_json))
         .route("/audit/export/csv", get(audit_export_csv))
+        .route("/audit/flush", post(audit_flush))
+        .route("/sessions/:id/audit/export/json", get(session_audit_export_json))
+        .route("/sessions/:id/audit/export/csv", get(session_audit_export_csv))
+        .route("/sessions/:id/audit/flush", post(session_audit_flush))
+        .route("/admin/audit/export/json", get(admin_audit_export_json))
+        .route("/admin/audit/export/csv", get(admin_audit_export_csv))
+        .route("/admin/audit/summary", get(admin_audit_summary))
         .route("/sessions", get(list_sessions))
         .route("/sessions/:id", get(delete_session))
         .route("/marketplace/plugins", get(marketplace_list_plugins))

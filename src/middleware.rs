@@ -179,8 +179,15 @@ pub struct BatchRequest {
 
 /// Process a batch of requests.
 pub async fn handle_batch_request(
+    headers: axum::http::HeaderMap,
     axum::Json(batch): axum::Json<BatchRequest>,
 ) -> Response {
+    let session_id = headers.get("X-Session-ID")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    crate::audit::set_session_context(session_id);
+
     let mut responses = Vec::new();
     
     for request in batch.requests {

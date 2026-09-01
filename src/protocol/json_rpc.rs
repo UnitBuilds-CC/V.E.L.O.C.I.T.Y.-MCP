@@ -445,6 +445,9 @@ pub fn handle_request(request: &Value) -> Option<Value> {
 pub fn run_stdio_loop(shutdown: &AtomicBool) -> Result<(), Box<dyn Error>> {
     use std::io::Read;
 
+    let session_id = format!("stdio-{}", std::process::id());
+    crate::audit::set_session_context(session_id);
+
     let stdin = io::stdin();
     let mut stdin_lock = stdin.lock();
 

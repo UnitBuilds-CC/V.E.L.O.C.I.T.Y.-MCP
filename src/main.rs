@@ -3,9 +3,9 @@ use std::process;
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "http")]
 use std::sync::Arc;
-use tracing::{info, error};
+use tracing::{info, error, warn};
 
-use velocity_mcp::{protocol, registry, benchmark, config::ServerConfig};
+use velocity_mcp::{protocol, registry, benchmark, audit, config::ServerConfig};
 
 /// Server version string, referenced by all protocol handlers and help text.
 pub const VERSION: &str = velocity_mcp::VERSION;
@@ -233,6 +233,14 @@ fn main() {
             eprintln!("Error: Invalid mode '{}'. Supported modes: stdio, shmem, http", mode);
             process::exit(1);
         }
+    }
+
+    // Flush audit log to disk on shutdown
+    let audit_path = std::env::var("VELOCITY_AUDIT_LOG_PATH")
+        .unwrap_or_else(|_| "audit_logs".to_string());
+    match audit::flush_audit(&audit_path) {
+        Ok(n) => info!(entries = n, path = audit_path, "Audit log flushed to disk"),
+        Err(e) => warn!(error = %e, "Failed to flush audit log"),
     }
 
     info!("V.E.L.O.C.I.T.Y. NMCP Server shut down cleanly");

@@ -9,6 +9,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use tracing::{info, warn, error, debug};
 
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
 /// Per-phase timing recorder for profiling the shmem loop. Enabled by
 /// setting VELOCITY_PHASE_TIMING=<output-file>. Adds ~0.3us of Instant::now()
 /// overhead per request, so it is off unless the env var is present.
@@ -125,6 +129,13 @@ pub fn dispatch_nda_request(raw: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
 
     debug!(method = nda_native::method_name(req.method), "NDA-native request");
 
+    // Extract Merkle root from frame header (bytes 4..36) for audit trail
+    let merkle_root = if raw.len() >= 36 {
+        Some(hex_encode(&raw[4..36]))
+    } else {
+        None
+    };
+
     let response_frame = match req.method {
         nda_native::METHOD_PING => {
             if let Ok(delay) = std::env::var("VELOCITY_PING_DELAY_US") {
@@ -186,13 +197,13 @@ pub fn dispatch_nda_request(raw: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
 
             if !rate_limit::check_rate_limit() {
                 warn!(tool = name, "Rate limit exceeded (NDA-native)");
-                audit::record_tool_call(name, Instant::now(), AuditOutcome::Rejected("rate limited".into()));
+                audit::record_tool_call_with_merkle(name, Instant::now(), AuditOutcome::Rejected("rate limited".into()), merkle_root.clone());
                 nda_native::build_nda_error_raw(req.id_tlv, &format!("Rate limit exceeded for tool '{}'.", name))
             } else {
                 let call_start = Instant::now();
                 match registry::call_tool(name, &arguments) {
                     Ok(res) => {
-                        audit::record_tool_call(name, call_start, AuditOutcome::Success);
+                        audit::record_tool_call_with_merkle(name, call_start, AuditOutcome::Success, merkle_root.clone());
                         let result_val: Value = serde_json::from_str(&res).unwrap_or_else(|_| json!(res));
                         let mut result_tlv = Vec::new();
                         nda_native::encode_json_value(&result_val, &mut result_tlv);
@@ -200,7 +211,7 @@ pub fn dispatch_nda_request(raw: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
                     }
                     Err(e) => {
                         error!(tool = name, error = %e, "Tool execution failed (NDA-native)");
-                        audit::record_tool_call(name, call_start, AuditOutcome::Error(e.to_string()));
+                        audit::record_tool_call_with_merkle(name, call_start, AuditOutcome::Error(e.to_string()), merkle_root.clone());
                         nda_native::build_nda_error_raw(req.id_tlv, &format!("Error running tool '{}': {}", name, e))
                     }
                 }
@@ -544,6 +555,9 @@ fn handle_json_shmem(buffer: &mut SharedMemoryBuffer, input_str: &str) -> Result
 }
 
 pub fn run_shmem_loop(buffer_path: &str, shutdown: &AtomicBool) -> Result<(), Box<dyn Error>> {
+    let session_id = format!("shmem-{}", std::process::id());
+    crate::audit::set_session_context(session_id);
+
     info!(path = buffer_path, "Initializing Shared Memory Buffer");
 
     // Enable high-resolution timer for low-latency event waits on Windows

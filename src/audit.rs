@@ -4,7 +4,9 @@
 //! outcome, and duration. Logs are stored in a ring buffer to prevent unbounded
 //! memory growth.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// Maximum number of audit entries to retain in memory.
@@ -32,6 +34,12 @@ pub struct AuditEntry {
     pub duration_ms: u64,
     /// Outcome of the call.
     pub outcome: AuditOutcome,
+    /// Merkle root hash (hex-encoded) if from NDA transport, None otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merkle_root: Option<String>,
+    /// Session ID for multi-tenant isolation, None for legacy/global entries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 /// Global sequence counter for audit entries.
@@ -63,6 +71,29 @@ impl AuditLog {
         start: Instant,
         outcome: AuditOutcome,
     ) {
+        self.record_with_context(tool_name, start, outcome, None, None);
+    }
+
+    /// Record a tool execution with an optional Merkle root (from NDA transport).
+    pub fn record_with_merkle(
+        &self,
+        tool_name: &str,
+        start: Instant,
+        outcome: AuditOutcome,
+        merkle_root: Option<String>,
+    ) {
+        self.record_with_context(tool_name, start, outcome, merkle_root, None);
+    }
+
+    /// Record a tool execution with full context (Merkle root + session ID).
+    pub fn record_with_context(
+        &self,
+        tool_name: &str,
+        start: Instant,
+        outcome: AuditOutcome,
+        merkle_root: Option<String>,
+        session_id: Option<String>,
+    ) {
         let seq = AUDIT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let timestamp_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -76,6 +107,8 @@ impl AuditLog {
             tool_name: tool_name.to_string(),
             duration_ms,
             outcome,
+            merkle_root,
+            session_id,
         };
 
         // Use poisoning-tolerant lock (inspired by Velocity-IDE safety.rs)
@@ -144,7 +177,7 @@ impl AuditLog {
     /// Export audit log to CSV format.
     pub fn export_csv(&self) -> Result<String, String> {
         let entries = self.all();
-        let mut csv = String::from("sequence,timestamp_ms,tool_name,duration_ms,outcome\n");
+        let mut csv = String::from("sequence,timestamp_ms,tool_name,duration_ms,outcome,merkle_root,session_id\n");
         
         for entry in entries {
             let outcome_str = match &entry.outcome {
@@ -153,37 +186,214 @@ impl AuditLog {
                 AuditOutcome::Timeout => "timeout".to_string(),
                 AuditOutcome::Rejected(reason) => format!("rejected:{}", reason.replace(',', ";")),
             };
+            let merkle_str = entry.merkle_root.unwrap_or_default();
+            let session_str = entry.session_id.unwrap_or_default();
             
             csv.push_str(&format!(
-                "{},{},{},{},{}\n",
+                "{},{},{},{},{},{},{}\n",
                 entry.sequence,
                 entry.timestamp_ms,
                 entry.tool_name,
                 entry.duration_ms,
-                outcome_str
+                outcome_str,
+                merkle_str,
+                session_str
             ));
         }
         
         Ok(csv)
     }
+
+    /// Flush audit log to disk as JSON. Returns the number of entries written.
+    pub fn flush_to_file(&self, path: &str) -> Result<usize, String> {
+        let json = self.export_json()?;
+        std::fs::write(path, json)
+            .map_err(|e| format!("Failed to write audit log to {}: {}", path, e))?;
+        Ok(self.len())
+    }
 }
 
-/// Global audit log instance.
+/// Global audit log instance (backward-compatible, used by direct callers like sandbox.rs).
 static GLOBAL_AUDIT: std::sync::LazyLock<AuditLog> =
     std::sync::LazyLock::new(AuditLog::default);
 
 /// Get a reference to the global audit log.
+///
+/// This is for direct callers (e.g. sandbox.rs) that don't go through
+/// the convenience functions. Session-aware recording should use
+/// `record_tool_call()` / `record_tool_call_with_merkle()` instead.
 pub fn global_audit() -> &'static AuditLog {
     &GLOBAL_AUDIT
 }
 
-/// Convenience: record a tool call in the global audit log.
+// ─── Thread-local session context ────────────────────────────────────────────
+
+use std::cell::RefCell;
+
+std::thread_local! {
+    static CURRENT_SESSION_ID: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Set the session context for the current thread.
+///
+/// Must be called by transport entry points before dispatching to protocol handlers.
+/// All subsequent `record_tool_call()` invocations on this thread will route to
+/// the per-session audit buffer.
+pub fn set_session_context(session_id: String) {
+    CURRENT_SESSION_ID.with(|cell| {
+        *cell.borrow_mut() = Some(session_id);
+    });
+}
+
+/// Clear the session context for the current thread.
+pub fn clear_session_context() {
+    CURRENT_SESSION_ID.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
+}
+
+/// Get the current session ID, if set.
+pub fn current_session_id() -> Option<String> {
+    CURRENT_SESSION_ID.with(|cell| cell.borrow().clone())
+}
+
+// ─── Audit Registry (per-session buffers) ────────────────────────────────────
+
+/// Registry of per-session audit logs for multi-tenant isolation.
+///
+/// Each session gets its own `AuditLog` buffer. Entries are fully isolated —
+/// session A cannot see session B's audit data.
+pub struct AuditRegistry {
+    sessions: std::sync::RwLock<HashMap<String, Arc<AuditLog>>>,
+}
+
+impl AuditRegistry {
+    /// Get or create the audit log for a session.
+    pub fn get_or_create(&self, session_id: &str) -> Arc<AuditLog> {
+        // Fast path: read lock
+        {
+            let sessions = self.sessions.read().unwrap_or_else(|p| p.into_inner());
+            if let Some(log) = sessions.get(session_id) {
+                return Arc::clone(log);
+            }
+        }
+        // Slow path: write lock to insert
+        let mut sessions = self.sessions.write().unwrap_or_else(|p| p.into_inner());
+        sessions.entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(AuditLog::new()))
+            .clone()
+    }
+
+    /// Get the audit log for a session, if it exists.
+    pub fn get(&self, session_id: &str) -> Option<Arc<AuditLog>> {
+        let sessions = self.sessions.read().unwrap_or_else(|p| p.into_inner());
+        sessions.get(session_id).cloned()
+    }
+
+    /// Remove the audit log for a session.
+    pub fn remove(&self, session_id: &str) -> Option<Arc<AuditLog>> {
+        let mut sessions = self.sessions.write().unwrap_or_else(|p| p.into_inner());
+        sessions.remove(session_id)
+    }
+
+    /// List all active session IDs.
+    pub fn session_ids(&self) -> Vec<String> {
+        let sessions = self.sessions.read().unwrap_or_else(|p| p.into_inner());
+        sessions.keys().cloned().collect()
+    }
+
+    /// Aggregate all entries from all sessions, sorted by sequence descending.
+    pub fn aggregate_all(&self) -> Vec<AuditEntry> {
+        let sessions = self.sessions.read().unwrap_or_else(|p| p.into_inner());
+        let mut all: Vec<AuditEntry> = sessions.values()
+            .flat_map(|log| log.all())
+            .collect();
+        all.sort_by(|a, b| b.sequence.cmp(&a.sequence));
+        all
+    }
+
+    /// Aggregate recent entries from all sessions.
+    pub fn aggregate_recent(&self, count: usize) -> Vec<AuditEntry> {
+        let mut all = self.aggregate_all();
+        all.truncate(count);
+        all
+    }
+
+    /// Flush all session audit logs to disk.
+    ///
+    /// Each session is written to `{base_path}/{session_id}.json`.
+    /// Returns the total number of entries across all sessions.
+    pub fn flush_all(&self, base_path: &str) -> Result<usize, String> {
+        let sessions = self.sessions.read().unwrap_or_else(|p| p.into_inner());
+
+        // Create directory if it doesn't exist
+        std::fs::create_dir_all(base_path)
+            .map_err(|e| format!("Failed to create audit directory {}: {}", base_path, e))?;
+
+        let mut total = 0;
+        for (session_id, log) in sessions.iter() {
+            let file_path = format!("{}/{}.json", base_path, session_id);
+            let count = log.flush_to_file(&file_path)?;
+            total += count;
+        }
+        Ok(total)
+    }
+
+    /// Clear all session audit logs.
+    pub fn clear(&self) {
+        let mut sessions = self.sessions.write().unwrap_or_else(|p| p.into_inner());
+        sessions.clear();
+    }
+
+    /// Number of active sessions.
+    pub fn session_count(&self) -> usize {
+        let sessions = self.sessions.read().unwrap_or_else(|p| p.into_inner());
+        sessions.len()
+    }
+}
+
+/// Global audit registry instance.
+static AUDIT_REGISTRY: std::sync::LazyLock<AuditRegistry> =
+    std::sync::LazyLock::new(|| AuditRegistry {
+        sessions: std::sync::RwLock::new(HashMap::new()),
+    });
+
+/// Get a reference to the global audit registry.
+pub fn audit_registry() -> &'static AuditRegistry {
+    &AUDIT_REGISTRY
+}
+
+// ─── Convenience functions (session-aware) ───────────────────────────────────
+
+/// Convenience: record a tool call, routed to the current session's audit buffer.
+///
+/// Reads the session ID from thread-local context. Falls back to "default" if
+/// no session context is set.
 pub fn record_tool_call(
     tool_name: &str,
     start: Instant,
     outcome: AuditOutcome,
 ) {
-    global_audit().record(tool_name, start, outcome);
+    let session_id = current_session_id().unwrap_or_else(|| "default".to_string());
+    let log = audit_registry().get_or_create(&session_id);
+    log.record_with_context(tool_name, start, outcome, None, Some(session_id));
+}
+
+/// Convenience: record a tool call with a Merkle root, routed to the current session.
+pub fn record_tool_call_with_merkle(
+    tool_name: &str,
+    start: Instant,
+    outcome: AuditOutcome,
+    merkle_root: Option<String>,
+) {
+    let session_id = current_session_id().unwrap_or_else(|| "default".to_string());
+    let log = audit_registry().get_or_create(&session_id);
+    log.record_with_context(tool_name, start, outcome, merkle_root, Some(session_id));
+}
+
+/// Convenience: flush all session audit logs to disk.
+pub fn flush_audit(path: &str) -> Result<usize, String> {
+    audit_registry().flush_all(path)
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -252,5 +462,174 @@ mod tests {
         let entries = log.recent(10);
         assert_eq!(entries[0].outcome, AuditOutcome::Rejected("denied".into()));
         assert_eq!(entries[1].outcome, AuditOutcome::Timeout);
+    }
+
+    #[test]
+    fn test_audit_merkle_root_tracking() {
+        let log = AuditLog::new();
+        let start = Instant::now();
+
+        // JSON transport: no merkle root
+        log.record("json_tool", start, AuditOutcome::Success);
+
+        // NDA transport: with merkle root
+        let merkle = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2".to_string();
+        log.record_with_merkle("nda_tool", start, AuditOutcome::Success, Some(merkle.clone()));
+
+        let entries = log.recent(10);
+        assert_eq!(entries.len(), 2);
+
+        // Most recent first (NDA tool)
+        assert_eq!(entries[0].tool_name, "nda_tool");
+        assert_eq!(entries[0].merkle_root, Some(merkle));
+
+        // Older entry (JSON tool)
+        assert_eq!(entries[1].tool_name, "json_tool");
+        assert_eq!(entries[1].merkle_root, None);
+    }
+
+    #[test]
+    fn test_audit_csv_includes_merkle_root() {
+        let log = AuditLog::new();
+        let start = Instant::now();
+        let merkle = "abcdef0123456789".to_string();
+        log.record_with_merkle("nda_tool", start, AuditOutcome::Success, Some(merkle.clone()));
+        log.record("json_tool", start, AuditOutcome::Success);
+
+        let csv = log.export_csv().unwrap();
+        assert!(csv.contains("merkle_root"));
+        assert!(csv.contains(&merkle));
+    }
+
+    #[test]
+    fn test_audit_csv_includes_session_id() {
+        let log = AuditLog::new();
+        let start = Instant::now();
+        log.record_with_context("tool_a", start, AuditOutcome::Success, None, Some("session-1".into()));
+        log.record("tool_b", start, AuditOutcome::Success);
+
+        let csv = log.export_csv().unwrap();
+        assert!(csv.contains("session_id"));
+        assert!(csv.contains("session-1"));
+    }
+
+    #[test]
+    fn test_registry_isolation() {
+        let registry = AuditRegistry {
+            sessions: std::sync::RwLock::new(HashMap::new()),
+        };
+
+        let log_a = registry.get_or_create("session-a");
+        let log_b = registry.get_or_create("session-b");
+
+        let start = Instant::now();
+        log_a.record("tool_a", start, AuditOutcome::Success);
+        log_a.record("tool_a2", start, AuditOutcome::Success);
+        log_b.record("tool_b", start, AuditOutcome::Success);
+
+        assert_eq!(log_a.len(), 2);
+        assert_eq!(log_b.len(), 1);
+
+        let entries_a = log_a.all();
+        assert!(entries_a.iter().all(|e| e.tool_name.starts_with("tool_a")));
+
+        let entries_b = log_b.all();
+        assert_eq!(entries_b[0].tool_name, "tool_b");
+    }
+
+    #[test]
+    fn test_registry_get_nonexistent() {
+        let registry = AuditRegistry {
+            sessions: std::sync::RwLock::new(HashMap::new()),
+        };
+        assert!(registry.get("no-such-session").is_none());
+    }
+
+    #[test]
+    fn test_registry_remove() {
+        let registry = AuditRegistry {
+            sessions: std::sync::RwLock::new(HashMap::new()),
+        };
+        registry.get_or_create("session-x");
+        assert_eq!(registry.session_count(), 1);
+
+        let removed = registry.remove("session-x");
+        assert!(removed.is_some());
+        assert_eq!(registry.session_count(), 0);
+    }
+
+    #[test]
+    fn test_registry_aggregate_all() {
+        let registry = AuditRegistry {
+            sessions: std::sync::RwLock::new(HashMap::new()),
+        };
+
+        let log_a = registry.get_or_create("s1");
+        let log_b = registry.get_or_create("s2");
+
+        let start = Instant::now();
+        log_a.record("tool_1", start, AuditOutcome::Success);
+        log_b.record("tool_2", start, AuditOutcome::Success);
+        log_a.record("tool_3", start, AuditOutcome::Success);
+
+        let all = registry.aggregate_all();
+        assert_eq!(all.len(), 3);
+        // Sorted by sequence descending
+        assert!(all[0].sequence > all[1].sequence);
+        assert!(all[1].sequence > all[2].sequence);
+    }
+
+    #[test]
+    fn test_registry_session_ids() {
+        let registry = AuditRegistry {
+            sessions: std::sync::RwLock::new(HashMap::new()),
+        };
+        registry.get_or_create("alpha");
+        registry.get_or_create("beta");
+
+        let mut ids = registry.session_ids();
+        ids.sort();
+        assert_eq!(ids, vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn test_thread_local_session_context() {
+        assert!(current_session_id().is_none());
+
+        set_session_context("test-session".to_string());
+        assert_eq!(current_session_id(), Some("test-session".to_string()));
+
+        clear_session_context();
+        assert!(current_session_id().is_none());
+    }
+
+    #[test]
+    fn test_thread_local_isolation_across_threads() {
+        use std::thread;
+
+        set_session_context("main-thread".to_string());
+
+        let handle = thread::spawn(|| {
+            // Different thread should have no context
+            assert!(current_session_id().is_none());
+            set_session_context("child-thread".to_string());
+            assert_eq!(current_session_id(), Some("child-thread".to_string()));
+        });
+        handle.join().unwrap();
+
+        // Main thread context unchanged
+        assert_eq!(current_session_id(), Some("main-thread".to_string()));
+        clear_session_context();
+    }
+
+    #[test]
+    fn test_record_with_context_sets_session_id() {
+        let log = AuditLog::new();
+        let start = Instant::now();
+        log.record_with_context("tool", start, AuditOutcome::Success, None, Some("sess-42".into()));
+
+        let entries = log.all();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].session_id, Some("sess-42".to_string()));
     }
 }
