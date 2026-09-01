@@ -472,34 +472,49 @@ pub struct MarketplaceStats {
 mod tests {
     use super::*;
     use tempfile::tempdir;
-    
-    #[test]
-    fn test_marketplace_search() {
-        let dir = tempdir().unwrap();
-        let mut marketplace = Marketplace::new(dir.path());
-        
-        // Add some test plugins
-        marketplace.index.plugins.push(PluginMetadata {
-            id: "test.plugin1".to_string(),
-            name: "Test Plugin 1".to_string(),
+
+    fn test_timer(name: &str) -> impl Drop {
+        let start = std::time::Instant::now();
+        struct Timer { name: String, start: std::time::Instant }
+        impl Drop for Timer {
+            fn drop(&mut self) {
+                eprintln!("[TEST] {} completed in {:.3}ms", self.name, self.start.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
+        Timer { name: name.to_string(), start }
+    }
+
+    fn make_plugin(id: &str, name: &str, author: &str, tags: Vec<&str>, downloads: u64, rating: f64, verified: bool) -> PluginMetadata {
+        PluginMetadata {
+            id: id.to_string(),
+            name: name.to_string(),
             version: "1.0.0".to_string(),
-            author: "Test Author".to_string(),
-            description: "A test plugin".to_string(),
+            author: author.to_string(),
+            description: format!("{} description", name),
             documentation: String::new(),
-            tags: vec!["test".to_string(), "example".to_string()],
-            download_url: "https://example.com/plugin1.zip".to_string(),
+            tags: tags.into_iter().map(|s| s.to_string()).collect(),
+            download_url: format!("https://example.com/{}.zip", id),
             checksum: String::new(),
             min_velocity_version: String::new(),
             dependencies: Vec::new(),
-            downloads: 100,
-            rating: 4.5,
-            rating_count: 10,
+            downloads,
+            rating: rating as f32,
+            rating_count: if rating > 0.0 { 10 } else { 0 },
             created_at: String::new(),
             updated_at: String::new(),
-            verified: true,
+            verified,
             reviews: Vec::new(),
-        });
-        
+        }
+    }
+
+    #[test]
+    fn test_marketplace_search() {
+        let _t = test_timer("test_marketplace_search");
+        let dir = tempdir().unwrap();
+        let mut marketplace = Marketplace::new(dir.path());
+
+        marketplace.index.plugins.push(make_plugin("test.plugin1", "Test Plugin 1", "Test Author", vec!["test", "example"], 100, 4.5, true));
+
         let query = SearchQuery {
             query: "test".to_string(),
             tags: Vec::new(),
@@ -509,46 +524,228 @@ mod tests {
             limit: 10,
             offset: 0,
         };
-        
+
         let results = marketplace.search(&query);
         assert_eq!(results.total, 1);
         assert_eq!(results.plugins[0].id, "test.plugin1");
     }
-    
+
     #[test]
     fn test_marketplace_install_uninstall() {
+        let _t = test_timer("test_marketplace_install_uninstall");
         let dir = tempdir().unwrap();
         let mut marketplace = Marketplace::new(dir.path());
-        
-        // Add a test plugin
-        marketplace.index.plugins.push(PluginMetadata {
-            id: "test.plugin".to_string(),
-            name: "Test Plugin".to_string(),
-            version: "1.0.0".to_string(),
-            author: "Test".to_string(),
-            description: "Test".to_string(),
-            documentation: String::new(),
-            tags: Vec::new(),
-            download_url: "https://example.com/plugin.zip".to_string(),
-            checksum: String::new(),
-            min_velocity_version: String::new(),
-            dependencies: Vec::new(),
-            downloads: 0,
-            rating: 0.0,
-            rating_count: 0,
-            created_at: String::new(),
-            updated_at: String::new(),
-            verified: false,
-            reviews: Vec::new(),
-        });
-        
-        // Install
+
+        marketplace.index.plugins.push(make_plugin("test.plugin", "Test Plugin", "Test", vec![], 0, 0.0, false));
+
         let installed = marketplace.install("test.plugin").unwrap();
         assert_eq!(installed.metadata.id, "test.plugin");
         assert!(marketplace.is_installed("test.plugin"));
-        
-        // Uninstall
+
         marketplace.uninstall("test.plugin").unwrap();
         assert!(!marketplace.is_installed("test.plugin"));
+    }
+
+    #[test]
+    fn test_marketplace_search_by_tag() {
+        let _t = test_timer("test_marketplace_search_by_tag");
+        let dir = tempdir().unwrap();
+        let mut marketplace = Marketplace::new(dir.path());
+
+        marketplace.index.plugins.push(make_plugin("p1", "Plugin 1", "Author", vec!["database", "sql"], 100, 4.0, false));
+        marketplace.index.plugins.push(make_plugin("p2", "Plugin 2", "Author", vec!["web", "http"], 200, 4.5, false));
+        marketplace.index.plugins.push(make_plugin("p3", "Plugin 3", "Author", vec!["database", "nosql"], 150, 4.2, false));
+
+        let query = SearchQuery {
+            query: String::new(),
+            tags: vec!["database".to_string()],
+            author: None,
+            verified_only: false,
+            sort_by: "downloads".to_string(),
+            limit: 10,
+            offset: 0,
+        };
+
+        let results = marketplace.search(&query);
+        assert_eq!(results.total, 2, "Should find 2 plugins with 'database' tag");
+        assert!(results.plugins.iter().all(|p| p.tags.contains(&"database".to_string())));
+    }
+
+    #[test]
+    fn test_marketplace_search_by_author() {
+        let _t = test_timer("test_marketplace_search_by_author");
+        let dir = tempdir().unwrap();
+        let mut marketplace = Marketplace::new(dir.path());
+
+        marketplace.index.plugins.push(make_plugin("p1", "Plugin 1", "Alice", vec![], 100, 4.0, false));
+        marketplace.index.plugins.push(make_plugin("p2", "Plugin 2", "Bob", vec![], 200, 4.5, false));
+        marketplace.index.plugins.push(make_plugin("p3", "Plugin 3", "Alice", vec![], 150, 4.2, false));
+
+        let query = SearchQuery {
+            query: String::new(),
+            tags: Vec::new(),
+            author: Some("Alice".to_string()),
+            verified_only: false,
+            sort_by: "downloads".to_string(),
+            limit: 10,
+            offset: 0,
+        };
+
+        let results = marketplace.search(&query);
+        assert_eq!(results.total, 2, "Should find 2 plugins by Alice");
+        assert!(results.plugins.iter().all(|p| p.author == "Alice"));
+    }
+
+    #[test]
+    fn test_marketplace_search_verified_only() {
+        let _t = test_timer("test_marketplace_search_verified_only");
+        let dir = tempdir().unwrap();
+        let mut marketplace = Marketplace::new(dir.path());
+
+        marketplace.index.plugins.push(make_plugin("p1", "Plugin 1", "Author", vec![], 100, 4.0, true));
+        marketplace.index.plugins.push(make_plugin("p2", "Plugin 2", "Author", vec![], 200, 4.5, false));
+        marketplace.index.plugins.push(make_plugin("p3", "Plugin 3", "Author", vec![], 150, 4.2, true));
+
+        let query = SearchQuery {
+            query: String::new(),
+            tags: Vec::new(),
+            author: None,
+            verified_only: true,
+            sort_by: "downloads".to_string(),
+            limit: 10,
+            offset: 0,
+        };
+
+        let results = marketplace.search(&query);
+        assert_eq!(results.total, 2, "Should find 2 verified plugins");
+        assert!(results.plugins.iter().all(|p| p.verified));
+    }
+
+    #[test]
+    fn test_marketplace_search_sort_by_rating() {
+        let _t = test_timer("test_marketplace_search_sort_by_rating");
+        let dir = tempdir().unwrap();
+        let mut marketplace = Marketplace::new(dir.path());
+
+        marketplace.index.plugins.push(make_plugin("p1", "Plugin 1", "Author", vec![], 100, 3.5, false));
+        marketplace.index.plugins.push(make_plugin("p2", "Plugin 2", "Author", vec![], 200, 4.8, false));
+        marketplace.index.plugins.push(make_plugin("p3", "Plugin 3", "Author", vec![], 150, 4.2, false));
+
+        let query = SearchQuery {
+            query: String::new(),
+            tags: Vec::new(),
+            author: None,
+            verified_only: false,
+            sort_by: "rating".to_string(),
+            limit: 10,
+            offset: 0,
+        };
+
+        let results = marketplace.search(&query);
+        assert_eq!(results.total, 3);
+        assert_eq!(results.plugins[0].id, "p2", "Highest rating should be first");
+        assert_eq!(results.plugins[1].id, "p3");
+        assert_eq!(results.plugins[2].id, "p1", "Lowest rating should be last");
+    }
+
+    #[test]
+    fn test_marketplace_search_pagination() {
+        let _t = test_timer("test_marketplace_search_pagination");
+        let dir = tempdir().unwrap();
+        let mut marketplace = Marketplace::new(dir.path());
+
+        for i in 0..10 {
+            marketplace.index.plugins.push(make_plugin(&format!("p{}", i), &format!("Plugin {}", i), "Author", vec![], i as u64 * 10, 4.0, false));
+        }
+
+        let query = SearchQuery {
+            query: String::new(),
+            tags: Vec::new(),
+            author: None,
+            verified_only: false,
+            sort_by: "downloads".to_string(),
+            limit: 3,
+            offset: 0,
+        };
+
+        let results = marketplace.search(&query);
+        assert_eq!(results.total, 10, "Total should be 10 regardless of pagination");
+        assert_eq!(results.plugins.len(), 3, "Should return 3 plugins per page");
+
+        let query = SearchQuery {
+            query: String::new(),
+            tags: Vec::new(),
+            author: None,
+            verified_only: false,
+            sort_by: "downloads".to_string(),
+            limit: 3,
+            offset: 3,
+        };
+
+        let results = marketplace.search(&query);
+        assert_eq!(results.plugins.len(), 3, "Should return 3 plugins for second page");
+    }
+
+    #[test]
+    fn test_marketplace_submit_review() {
+        let _t = test_timer("test_marketplace_submit_review");
+        let dir = tempdir().unwrap();
+        let mut marketplace = Marketplace::new(dir.path());
+
+        marketplace.index.plugins.push(make_plugin("p1", "Plugin 1", "Author", vec![], 100, 0.0, false));
+
+        let result = marketplace.submit_review("p1", "Reviewer", 5, "Excellent plugin!".to_string());
+        assert!(result.is_ok(), "Review should be submitted successfully: {:?}", result.err());
+
+        let plugin = marketplace.index.plugins.iter().find(|p| p.id == "p1").unwrap();
+        assert_eq!(plugin.reviews.len(), 1);
+        assert!((plugin.rating - 5.0).abs() < f32::EPSILON, "Rating should be updated to 5.0, got {}", plugin.rating);
+        assert_eq!(plugin.rating_count, 1);
+    }
+
+    #[test]
+    fn test_marketplace_check_updates() {
+        let _t = test_timer("test_marketplace_check_updates");
+        let dir = tempdir().unwrap();
+        let mut marketplace = Marketplace::new(dir.path());
+
+        marketplace.index.plugins.push(make_plugin("p1", "Plugin 1", "Author", vec![], 100, 4.0, false));
+        marketplace.index.plugins[0].version = "2.0.0".to_string();
+
+        marketplace.installed.insert("p1".to_string(), InstalledPlugin {
+            metadata: make_plugin("p1", "Plugin 1", "Author", vec![], 100, 4.0, false),
+            install_path: PathBuf::from("/tmp/p1"),
+            installed_at: "2026-01-01".to_string(),
+            enabled: true,
+        });
+
+        let updates = marketplace.check_updates();
+        assert_eq!(updates.len(), 1, "Should detect 1 available update");
+        assert_eq!(updates[0].plugin_id, "p1");
+        assert_eq!(updates[0].latest_version, "2.0.0");
+    }
+
+    #[test]
+    fn test_marketplace_stats() {
+        let _t = test_timer("test_marketplace_stats");
+        let dir = tempdir().unwrap();
+        let mut marketplace = Marketplace::new(dir.path());
+
+        marketplace.index.plugins.push(make_plugin("p1", "Plugin 1", "Author", vec![], 100, 4.0, true));
+        marketplace.index.plugins.push(make_plugin("p2", "Plugin 2", "Author", vec![], 200, 4.5, false));
+        marketplace.index.plugins.push(make_plugin("p3", "Plugin 3", "Author", vec![], 150, 4.2, true));
+
+        marketplace.installed.insert("p1".to_string(), InstalledPlugin {
+            metadata: make_plugin("p1", "Plugin 1", "Author", vec![], 100, 4.0, true),
+            install_path: PathBuf::from("/tmp/p1"),
+            installed_at: "2026-01-01".to_string(),
+            enabled: true,
+        });
+
+        let stats = marketplace.stats();
+        assert_eq!(stats.total_plugins, 3);
+        assert_eq!(stats.installed_plugins, 1);
+        assert_eq!(stats.verified_plugins, 2);
+        assert_eq!(stats.total_downloads, 450, "Total downloads should be 100 + 200 + 150");
     }
 }

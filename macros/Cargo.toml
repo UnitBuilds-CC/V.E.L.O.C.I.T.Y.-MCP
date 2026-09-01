@@ -5,6 +5,9 @@ edition = "2021"
 authors = ["UnitBuilds <ian@unitbuilds.com>"]
 description = "Proc-macro crate for type-safe MCP tool registration"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP"
+keywords = ["mcp", "proc-macro", "ai", "llm"]
+categories = ["development-tools::procedural-macro-helpers"]
 
 [lib]
 proc-macro = true

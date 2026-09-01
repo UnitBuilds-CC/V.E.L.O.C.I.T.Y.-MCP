@@ -227,24 +227,190 @@ pub fn cache_middleware(cache: ResponseCache) -> impl Fn(Request, Next) -> std::
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{Router, routing::post, body::Body, http::{Request, StatusCode}};
+    use tower::ServiceExt;
+    use std::time::Duration;
+    
+    fn test_timer(name: &str) -> impl Drop {
+        let start = std::time::Instant::now();
+        struct Timer { name: String, start: std::time::Instant }
+        impl Drop for Timer {
+            fn drop(&mut self) {
+                eprintln!("[TEST] {} completed in {:.3}ms", self.name, self.start.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
+        Timer { name: name.to_string(), start }
+    }
     
     #[test]
     fn test_cache_creation() {
+        let _t = test_timer("test_cache_creation");
         let cache = ResponseCache::new(Duration::from_secs(60));
         assert_eq!(cache.default_ttl, Duration::from_secs(60));
     }
     
     #[test]
     fn test_cache_clear() {
+        let _t = test_timer("test_cache_clear");
         let cache = ResponseCache::new(Duration::from_secs(60));
         cache.clear();
-        // Should not panic
     }
     
     #[test]
     fn test_cache_cleanup() {
+        let _t = test_timer("test_cache_cleanup");
         let cache = ResponseCache::new(Duration::from_secs(60));
         cache.cleanup();
-        // Should not panic
+    }
+    
+    #[tokio::test]
+    async fn test_request_validator_rejects_bad_content_type() {
+        let _t = test_timer("test_request_validator_rejects_bad_content_type");
+        let app = Router::new()
+            .route("/test", post(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(request_validator_middleware));
+        
+        let request = Request::builder()
+            .method("POST")
+            .uri("/test")
+            .header("content-type", "text/plain")
+            .body(Body::empty())
+            .unwrap();
+        
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+    
+    #[tokio::test]
+    async fn test_request_validator_accepts_json() {
+        let _t = test_timer("test_request_validator_accepts_json");
+        let app = Router::new()
+            .route("/test", post(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(request_validator_middleware));
+        
+        let request = Request::builder()
+            .method("POST")
+            .uri("/test")
+            .header("content-type", "application/json")
+            .body(Body::empty())
+            .unwrap();
+        
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    
+    #[tokio::test]
+    async fn test_request_validator_passes_get() {
+        let _t = test_timer("test_request_validator_passes_get");
+        let app = Router::new()
+            .route("/test", axum::routing::get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(request_validator_middleware));
+        
+        let request = Request::builder()
+            .method("GET")
+            .uri("/test")
+            .body(Body::empty())
+            .unwrap();
+        
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    
+    #[tokio::test]
+    async fn test_cache_set_and_get() {
+        let _t = test_timer("test_cache_set_and_get");
+        let cache = ResponseCache::new(Duration::from_secs(60));
+        
+        let response = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::from("test data"))
+            .unwrap();
+        
+        cache.set("test_key".to_string(), response, None).await;
+        
+        let cached = cache.get("test_key");
+        assert!(cached.is_some());
+        let cached_response = cached.unwrap();
+        assert_eq!(cached_response.status(), StatusCode::OK);
+        assert_eq!(cached_response.headers().get("X-Cache").unwrap(), "HIT");
+    }
+    
+    #[tokio::test]
+    async fn test_cache_ttl_expiration() {
+        let _t = test_timer("test_cache_ttl_expiration");
+        let cache = ResponseCache::new(Duration::from_millis(10));
+        
+        let response = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::from("test"))
+            .unwrap();
+        
+        cache.set("expire_key".to_string(), response, Some(Duration::from_millis(10))).await;
+        
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        
+        let cached = cache.get("expire_key");
+        assert!(cached.is_none(), "Cache entry should have expired");
+    }
+    
+    #[tokio::test]
+    async fn test_cache_skip_non_success() {
+        let _t = test_timer("test_cache_skip_non_success");
+        let cache = ResponseCache::new(Duration::from_secs(60));
+        
+        let response = Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .body(Body::from("error"))
+            .unwrap();
+        
+        let cache_key = "error_key".to_string();
+        let returned = if response.status().is_success() {
+            cache.set(cache_key.clone(), response, None).await
+        } else {
+            response
+        };
+        
+        assert_eq!(returned.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        
+        let cached = cache.get(&cache_key);
+        assert!(cached.is_none(), "Error responses should not be cached");
+    }
+    
+    #[tokio::test]
+    async fn test_batch_request_multiple() {
+        let _t = test_timer("test_batch_request_multiple");
+        let batch = BatchRequest {
+            requests: vec![
+                serde_json::json!({"jsonrpc": "2.0", "method": "ping", "id": 1}),
+                serde_json::json!({"jsonrpc": "2.0", "method": "ping", "id": 2}),
+            ],
+        };
+        
+        let headers = axum::http::HeaderMap::new();
+        let response = handle_batch_request(headers, axum::Json(batch)).await;
+        
+        assert_eq!(response.status(), StatusCode::OK);
+        
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let responses: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(responses.len(), 2);
+    }
+    
+    #[tokio::test]
+    async fn test_batch_request_notifications() {
+        let _t = test_timer("test_batch_request_notifications");
+        let batch = BatchRequest {
+            requests: vec![
+                serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+            ],
+        };
+        
+        let headers = axum::http::HeaderMap::new();
+        let response = handle_batch_request(headers, axum::Json(batch)).await;
+        
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let responses: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0]["status"], "notification processed");
     }
 }

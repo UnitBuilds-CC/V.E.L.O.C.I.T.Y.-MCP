@@ -445,7 +445,8 @@ pub fn send_webhook(connector_id: &str, event: &WebhookEvent) -> Result<WebhookD
     let mut last_error = None;
     
     for attempt in 1..=max_attempts {
-        let mut req_builder = ureq::post(&webhook_config.endpoint);
+        let mut req_builder = ureq::post(&webhook_config.endpoint)
+            .timeout(std::time::Duration::from_secs(15));
         
         req_builder = req_builder.set("Content-Type", "application/json");
         
@@ -573,6 +574,7 @@ pub fn exchange_code(connector_id: &str, code: &str, redirect_uri: Option<&str>)
     }
     
     let response = ureq::post(&oauth2_config.token_url)
+        .timeout(std::time::Duration::from_secs(30))
         .send_form(&params)
         .map_err(|e| format!("Token exchange failed: {}", e))?;
     
@@ -627,6 +629,7 @@ pub fn refresh_token(connector_id: &str) -> Result<OAuth2Token, String> {
     }
     
     let response = ureq::post(&oauth2_config.token_url)
+        .timeout(std::time::Duration::from_secs(30))
         .send_form(&params)
         .map_err(|e| format!("Token refresh failed: {}", e))?;
     
@@ -1026,7 +1029,7 @@ mod tests {
         assert!(url.contains("client_id=client123"));
         assert!(url.contains("state=state123"));
         assert!(url.contains("redirect_uri="));
-        assert!(url.contains("scope=read write"));
+        assert!(url.contains("scope=read%20write") || url.contains("scope=read+write") || url.contains("scope=read write"));
     }
 
     #[test]

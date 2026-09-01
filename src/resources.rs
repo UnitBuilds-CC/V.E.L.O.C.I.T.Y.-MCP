@@ -137,7 +137,12 @@ struct ApiResourceConfig {
 }
 
 impl ResourceStore {
-    fn register_file_resource(&mut self, uri: &str, name: &str, description: &str, path: PathBuf) {
+    const MAX_RESOURCES: usize = 10_000;
+
+    fn register_file_resource(&mut self, uri: &str, name: &str, description: &str, path: PathBuf) -> Result<(), String> {
+        if self.resources.len() >= Self::MAX_RESOURCES {
+            return Err(format!("Resource limit reached ({}), cannot register more resources", Self::MAX_RESOURCES));
+        }
         let mime_type = guess_mime(path.extension().and_then(|e| e.to_str()).unwrap_or(""));
         self.resources.push(Resource {
             uri: uri.to_string(),
@@ -146,9 +151,13 @@ impl ResourceStore {
             mime_type: Some(mime_type),
         });
         self.file_resources.insert(uri.to_string(), path);
+        Ok(())
     }
 
-    fn register_db_resource(&mut self, uri: &str, name: &str, description: &str, query: &str, params: Vec<String>) {
+    fn register_db_resource(&mut self, uri: &str, name: &str, description: &str, query: &str, params: Vec<String>) -> Result<(), String> {
+        if self.resources.len() >= Self::MAX_RESOURCES {
+            return Err(format!("Resource limit reached ({}), cannot register more resources", Self::MAX_RESOURCES));
+        }
         self.resources.push(Resource {
             uri: uri.to_string(),
             name: name.to_string(),
@@ -159,9 +168,13 @@ impl ResourceStore {
             query: query.to_string(),
             params,
         });
+        Ok(())
     }
 
-    fn register_api_resource(&mut self, uri: &str, name: &str, description: &str, endpoint: &str, method: &str, headers: HashMap<String, String>) {
+    fn register_api_resource(&mut self, uri: &str, name: &str, description: &str, endpoint: &str, method: &str, headers: HashMap<String, String>) -> Result<(), String> {
+        if self.resources.len() >= Self::MAX_RESOURCES {
+            return Err(format!("Resource limit reached ({}), cannot register more resources", Self::MAX_RESOURCES));
+        }
         self.resources.push(Resource {
             uri: uri.to_string(),
             name: name.to_string(),
@@ -173,6 +186,7 @@ impl ResourceStore {
             method: method.to_string(),
             headers,
         });
+        Ok(())
     }
 
     fn register_template(&mut self, template: ResourceTemplate) {
@@ -400,7 +414,9 @@ fn guess_mime(ext: &str) -> String {
 pub fn register_file_resource(uri: &str, name: &str, description: &str, path: &str) {
     let store = get_resource_registry();
     if let Ok(mut s) = store.lock() {
-        s.register_file_resource(uri, name, description, PathBuf::from(path));
+        if let Err(e) = s.register_file_resource(uri, name, description, PathBuf::from(path)) {
+            tracing::error!(uri = %uri, error = %e, "Failed to register file resource");
+        }
     }
 }
 
@@ -421,7 +437,9 @@ pub fn register_resource_template(uri_template: &str, name: &str, description: &
 pub fn register_db_resource(uri: &str, name: &str, description: &str, query: &str, params: Vec<String>) {
     let store = get_resource_registry();
     if let Ok(mut s) = store.lock() {
-        s.register_db_resource(uri, name, description, query, params);
+        if let Err(e) = s.register_db_resource(uri, name, description, query, params) {
+            tracing::error!(uri = %uri, error = %e, "Failed to register database resource");
+        }
     }
 }
 
@@ -429,7 +447,9 @@ pub fn register_db_resource(uri: &str, name: &str, description: &str, query: &st
 pub fn register_api_resource(uri: &str, name: &str, description: &str, endpoint: &str, method: &str, headers: HashMap<String, String>) {
     let store = get_resource_registry();
     if let Ok(mut s) = store.lock() {
-        s.register_api_resource(uri, name, description, endpoint, method, headers);
+        if let Err(e) = s.register_api_resource(uri, name, description, endpoint, method, headers) {
+            tracing::error!(uri = %uri, error = %e, "Failed to register API resource");
+        }
     }
 }
 
@@ -811,10 +831,22 @@ pub fn handle_prompts_get(name: &str, arguments: &Value) -> Result<Value, String
 mod tests {
     use super::*;
 
+    fn test_timer(name: &str) -> impl Drop {
+        let start = std::time::Instant::now();
+        struct Timer { name: String, start: std::time::Instant }
+        impl Drop for Timer { fn drop(&mut self) {
+            eprintln!("[TEST] {} completed in {:.3}ms", self.name, self.start.elapsed().as_secs_f64() * 1000.0);
+        }}
+        Timer { name: name.to_string(), start }
+    }
+
     #[test]
     fn test_register_and_list_resources() {
+        let _t = test_timer("test_register_and_list_resources");
+        let t0 = std::time::Instant::now();
         register_file_resource("file:///test.txt", "Test File", "A test file", "/tmp/test.txt");
         let resources = list_resources();
+        eprintln!("[METRIC] register+list_resources: {:.3}us ({} resources)", t0.elapsed().as_secs_f64() * 1e6, resources.len());
         assert!(!resources.is_empty());
         let found = resources.iter().any(|r| r.uri == "file:///test.txt");
         assert!(found, "Should find 'file:///test.txt' in resources");
@@ -871,7 +903,7 @@ mod tests {
 
     #[test]
     fn test_resource_subscription() {
-        // Register a test resource
+        let _t = test_timer("test_resource_subscription");
         register_file_resource("test://sub", "Test", "Test resource", "/tmp/test.txt");
         
         // Subscribe to the resource

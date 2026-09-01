@@ -353,9 +353,22 @@ pub fn plugins_to_registry_tools(plugins: &[LoadedPlugin]) -> Vec<crate::registr
 mod tests {
     use super::*;
     use serde_json::json;
+    use tempfile::tempdir;
+
+    fn test_timer(name: &str) -> impl Drop {
+        let start = std::time::Instant::now();
+        struct Timer { name: String, start: std::time::Instant }
+        impl Drop for Timer {
+            fn drop(&mut self) {
+                eprintln!("[TEST] {} completed in {:.3}ms", self.name, self.start.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
+        Timer { name: name.to_string(), start }
+    }
 
     #[test]
     fn test_substitute_template_variables() {
+        let _t = test_timer("test_substitute_template_variables");
         let template = "Hello {{name}}, you are {{age}} years old";
         let arguments = json!({
             "name": "Alice",
@@ -368,6 +381,7 @@ mod tests {
 
     #[test]
     fn test_substitute_template_variables_missing() {
+        let _t = test_timer("test_substitute_template_variables_missing");
         let template = "Hello {{name}}";
         let arguments = json!({});
 
@@ -377,6 +391,7 @@ mod tests {
 
     #[test]
     fn test_load_plugin_manifest() {
+        let _t = test_timer("test_load_plugin_manifest");
         let manifest_json = r#"{
             "name": "test-plugin",
             "version": "1.0.0",
@@ -405,4 +420,198 @@ mod tests {
         assert_eq!(manifest.tools.len(), 1);
         assert_eq!(manifest.tools[0].name, "test_tool");
     }
+
+    #[test]
+    fn test_execute_plugin_tool_echo() {
+        let _t = test_timer("test_execute_plugin_tool_echo");
+        let tool = PluginTool {
+            name: "echo_tool".to_string(),
+            description: "Echo tool".to_string(),
+            input_schema: json!({"type": "object", "properties": {"msg": {"type": "string"}}}),
+            executor: PluginExecutor {
+                executor_type: "process".to_string(),
+                command: if cfg!(windows) { "cmd".to_string() } else { "echo".to_string() },
+                args: if cfg!(windows) { vec!["/C".to_string(), "echo".to_string(), "{{msg}}".to_string()] } else { vec!["{{msg}}".to_string()] },
+                working_dir: None,
+                env: HashMap::new(),
+                timeout: 5,
+            },
+        };
+
+        let result = execute_plugin_tool(&tool, &json!({"msg": "hello"}));
+        assert!(result.is_ok(), "Echo tool should succeed");
+        let output = result.unwrap();
+        assert!(output.contains("hello"), "Output should contain 'hello': {}", output);
+    }
+
+    #[test]
+    fn test_execute_plugin_tool_nonzero_exit() {
+        let _t = test_timer("test_execute_plugin_tool_nonzero_exit");
+        let tool = PluginTool {
+            name: "fail_tool".to_string(),
+            description: "Failing tool".to_string(),
+            input_schema: json!({"type": "object"}),
+            executor: PluginExecutor {
+                executor_type: "process".to_string(),
+                command: if cfg!(windows) { "cmd".to_string() } else { "false".to_string() },
+                args: if cfg!(windows) { vec!["/C".to_string(), "exit".to_string(), "1".to_string()] } else { vec![] },
+                working_dir: None,
+                env: HashMap::new(),
+                timeout: 5,
+            },
+        };
+
+        let result = execute_plugin_tool(&tool, &json!({}));
+        assert!(result.is_err(), "Tool should fail with non-zero exit");
+    }
+
+    #[test]
+    fn test_execute_plugin_tool_timeout() {
+        let _t = test_timer("test_execute_plugin_tool_timeout");
+        let tool = PluginTool {
+            name: "sleep_tool".to_string(),
+            description: "Sleep tool".to_string(),
+            input_schema: json!({"type": "object"}),
+            executor: PluginExecutor {
+                executor_type: "process".to_string(),
+                command: if cfg!(windows) { "cmd".to_string() } else { "sleep".to_string() },
+                args: if cfg!(windows) {
+                    vec!["/C".to_string(), "ping -n 10 127.0.0.1 > nul".to_string()]
+                } else {
+                    vec!["10".to_string()]
+                },
+                working_dir: None,
+                env: HashMap::new(),
+                timeout: 1,
+            },
+        };
+
+        let result = execute_plugin_tool(&tool, &json!({}));
+        assert!(result.is_err(), "Tool should timeout");
+        let err = result.unwrap_err();
+        assert!(err.contains("timed out") || err.contains("Timeout"), "Error should mention timeout: {}", err);
+    }
+
+    #[test]
+    fn test_execute_plugin_unsupported_executor() {
+        let _t = test_timer("test_execute_plugin_unsupported_executor");
+        let tool = PluginTool {
+            name: "bad_tool".to_string(),
+            description: "Bad tool".to_string(),
+            input_schema: json!({"type": "object"}),
+            executor: PluginExecutor {
+                executor_type: "wasm".to_string(),
+                command: "test".to_string(),
+                args: vec![],
+                working_dir: None,
+                env: HashMap::new(),
+                timeout: 5,
+            },
+        };
+
+        let result = execute_plugin_tool(&tool, &json!({}));
+        assert!(result.is_err(), "Unsupported executor should fail");
+        assert!(result.unwrap_err().contains("Unsupported"));
+    }
+
+    #[test]
+    fn test_load_plugins_from_directory() {
+        let _t = test_timer("test_load_plugins_from_directory");
+        let dir = tempdir().unwrap();
+
+        let valid_manifest = r#"{
+            "name": "valid-plugin",
+            "version": "1.0.0",
+            "tools": [{
+                "name": "tool1",
+                "description": "Tool 1",
+                "inputSchema": {"type": "object"},
+                "executor": {"executor_type": "process", "command": "echo", "args": []}
+            }]
+        }"#;
+
+        let invalid_manifest = "not valid json";
+
+        std::fs::write(dir.path().join("valid.json"), valid_manifest).unwrap();
+        std::fs::write(dir.path().join("invalid.json"), invalid_manifest).unwrap();
+        std::fs::write(dir.path().join("readme.txt"), "not a manifest").unwrap();
+
+        let plugins = load_plugins_from_directory(dir.path());
+        assert_eq!(plugins.len(), 1, "Should load only valid JSON manifests");
+        assert_eq!(plugins[0].manifest.name, "valid-plugin");
+    }
+
+    #[test]
+    fn test_load_plugin_manifest_validation() {
+        let _t = test_timer("test_load_plugin_manifest_validation");
+        let dir = tempdir().unwrap();
+
+        let empty_name = r#"{
+            "name": "",
+            "version": "1.0.0",
+            "tools": [{"name": "t", "description": "d", "inputSchema": {}, "executor": {"executor_type": "process", "command": "echo", "args": []}}]
+        }"#;
+        let path = dir.path().join("empty_name.json");
+        std::fs::write(&path, empty_name).unwrap();
+        let result = load_plugin_manifest(&path);
+        assert!(result.is_err(), "Empty name should be rejected");
+        assert!(result.unwrap_err().contains("name"));
+
+        let empty_tools = r#"{
+            "name": "test",
+            "version": "1.0.0",
+            "tools": []
+        }"#;
+        let path = dir.path().join("empty_tools.json");
+        std::fs::write(&path, empty_tools).unwrap();
+        let result = load_plugin_manifest(&path);
+        assert!(result.is_err(), "Empty tools should be rejected");
+        assert!(result.unwrap_err().contains("at least one tool"));
+
+        let bad_executor = r#"{
+            "name": "test",
+            "version": "1.0.0",
+            "tools": [{"name": "t", "description": "d", "inputSchema": {}, "executor": {"executor_type": "wasm", "command": "echo", "args": []}}]
+        }"#;
+        let path = dir.path().join("bad_executor.json");
+        std::fs::write(&path, bad_executor).unwrap();
+        let result = load_plugin_manifest(&path);
+        assert!(result.is_err(), "Bad executor type should be rejected");
+        assert!(result.unwrap_err().contains("Unsupported"));
+    }
+
+    #[test]
+    fn test_plugins_to_registry_tools() {
+        let _t = test_timer("test_plugins_to_registry_tools");
+        let plugins = vec![
+            LoadedPlugin {
+                manifest: PluginManifest {
+                    name: "plugin1".to_string(),
+                    version: "1.0.0".to_string(),
+                    tools: vec![
+                        PluginTool {
+                            name: "tool_a".to_string(),
+                            description: "Tool A".to_string(),
+                            input_schema: json!({"type": "object", "properties": {"x": {"type": "string"}}}),
+                            executor: PluginExecutor {
+                                executor_type: "process".to_string(),
+                                command: "echo".to_string(),
+                                args: vec![],
+                                working_dir: None,
+                                env: HashMap::new(),
+                                timeout: 5,
+                            },
+                        },
+                    ],
+                },
+                path: std::path::PathBuf::from("plugin1.json"),
+            },
+        ];
+
+        let tools = plugins_to_registry_tools(&plugins);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "tool_a");
+        assert_eq!(tools[0].description, "Tool A");
+    }
+
 }

@@ -3,7 +3,7 @@
 [![CI](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/actions/workflows/ci.yml/badge.svg)](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/actions/workflows/ci.yml)
 [![Version](https://img.shields.io/badge/version-3.0.0-blue.svg)](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/releases)
 [![License](https://img.shields.io/badge/license-MIT%20|%20Apache%202.0-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-284%20passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-330%20passing-brightgreen.svg)]()
 [![Dependencies](https://img.shields.io/badge/dependencies-0%20vulns-brightgreen.svg)]()
 
 **The fastest, most secure, production-ready Model Context Protocol (MCP) server.**
@@ -27,7 +27,6 @@ That's it! Your MCP server is running. Now configure your client.
 - 📖 [Getting Started Guide](docs/USER_GUIDE.md) - Install and configure in 5 minutes
 - 🔄 [Migration Guide](docs/MIGRATION.md) - Moving from Node.js MCP? We've got you covered
 - 🔌 [Client Integration](docs/CLIENT_INTEGRATION.md) - Setup for Claude Desktop, Cursor, Windsurf, and more
-- 💡 [Examples](examples/) - Working code samples for common use cases
 - 📊 [Performance Comparison](docs/COMPARISON.md) - See benchmark results across 8 pipelines
 - 🏪 [Plugin Marketplace](docs/MARKETPLACE.md) - Discover and install plugins
 
@@ -44,7 +43,7 @@ That's it! Your MCP server is running. Now configure your client.
 | **Config** | Complex | **Zero-config** | Works out of the box |
 | **Protocol** | JSON only | **JSON + NDA binary** | Zero-copy parsing (measured) |
 | **Transport** | stdio, HTTP | **stdio, HTTP, shmem, NDA** | 8 pipeline combinations |
-| **Testing** | Limited | **284 tests** | Comprehensive coverage |
+| **Testing** | Limited | **330 tests** | Comprehensive coverage |
 | **Monitoring** | None | **Full observability** | Prometheus, Grafana, OpenTelemetry |
 
 ---
@@ -100,7 +99,7 @@ That's it! Your MCP server is running. Now configure your client.
 - **NDA/shmem** - Combined binary + shmem for maximum throughput
 
 ### 📦 Production Ready
-- **284 passing tests** (210 unit + 17 fuzz + 43 integration + 8 macro + 6 enhanced)
+- **330 passing tests** (253 lib + 17 integration + 46 fuzz + 14 other)
 - **Zero warnings**, zero errors
 - **Cross-platform** (Windows, Linux, macOS)
 - **Docker** and **Kubernetes** deployment ready
@@ -113,7 +112,6 @@ That's it! Your MCP server is running. Now configure your client.
 ### Getting Started
 - [**User Guide**](docs/USER_GUIDE.md) - Complete installation and configuration guide
 - [**Quick Start**](#-quick-start) - Get running in 30 seconds
-- [**Examples**](examples/) - Working code samples
 
 ### Migration & Integration
 - [**Migration Guide**](docs/MIGRATION.md) - Move from Node.js MCP
@@ -145,7 +143,7 @@ The NDA (Neural Document Archive) binary protocol uses zero-copy TLV parsing wit
 | Method | Latency | Throughput | vs JSON/stdio |
 |--------|---------|------------|---------------|
 | ping | 1µs | 1.66M req/s | 34x faster |
-| tools/list (17 tools) | 6µs | 166K req/s | 30x faster |
+| tools/list (16 tools) | 6µs | 166K req/s | 30x faster |
 | tools/call (64B) | 1µs | 750K req/s | 18x faster |
 
 ```
@@ -172,6 +170,14 @@ The NDA (Neural Document Archive) binary protocol uses zero-copy TLV parsing wit
 | `file_write` | Write files with path validation |
 | `shell_exec` | Execute shell commands in sandbox |
 | `http_request` | Make HTTP requests with retry logic |
+| `list_directory` | List directory contents with optional recursion |
+| `directory_tree` | Display directory tree structure |
+| `search_files` | Search files by pattern/regex |
+| `move_file` | Move/rename files with validation |
+| `create_directory` | Create directories recursively |
+| `edit_file` | Apply targeted edits to files |
+| `get_file_info` | Get file metadata (size, permissions, timestamps) |
+| `bench_echo` | Echo tool for benchmarking |
 | `convert_to_nda_document` | Convert files to NDA binary format |
 | `convert_to_nda_tool` | Convert JSON tools to NDA binary |
 | `read_nda` | Read and parse NDA documents |
@@ -268,7 +274,7 @@ curl http://localhost:3000/performance
 
 ## 🧪 Testing
 
-**284 tests** with comprehensive coverage:
+**330 tests** with comprehensive coverage:
 
 ```bash
 # All tests
@@ -357,7 +363,7 @@ tools, err := client.ListTools()
 | Method | Latency | Throughput | vs JSON/stdio |
 |--------|---------|------------|---------------|
 | ping | 0.001 ms (1µs) | 1,657,825 r/s | 34.3x faster |
-| tools/list (17 tools) | 0.006 ms | 165,981 r/s | 29.7x faster |
+| tools/list (16 tools) | 0.006 ms | 165,981 r/s | 29.7x faster |
 | tools/call (64B) | 0.001 ms | 750,413 r/s | 18.3x faster |
 | health/check | 0.000 ms | 2,190,101 r/s | 46.3x faster |
 
@@ -416,17 +422,26 @@ The 12x difference in "wait" phase (0.5µs vs 6.3µs) shows the JSON parse+strin
 │   ├── oauth2.rs               # OAuth2 framework
 │   ├── audit.rs                # Audit logging
 │   ├── rate_limit.rs           # Rate limiting
+│   ├── middleware.rs            # HTTP middleware
+│   ├── plugins/
+│   │   ├── mod.rs              # Plugin system
+│   │   └── marketplace.rs      # Plugin marketplace
 │   ├── protocol/
 │   │   ├── json_rpc.rs         # JSON-RPC handler
 │   │   ├── nmcp_binary.rs      # Shared memory protocol
 │   │   └── nda_native.rs       # NDA binary protocol
+│   ├── ipc/
+│   │   └── shmem.rs            # Shared memory IPC
 │   └── transport/
 │       └── http.rs             # HTTP/SSE/WebSocket transport
-├── client/
-│   ├── rust/                   # Rust client SDK
+├── client/                     # Rust client SDK
+├── sdk/
 │   ├── python/                 # Python client SDK
 │   ├── typescript/             # TypeScript client SDK
 │   └── go/                     # Go client SDK
+├── macros/                     # Proc-macro crate (#[mcp_tool])
+├── benches/                    # Criterion benchmarks
+├── bench_nda/                  # NDA benchmark harness
 ├── docs/
 │   ├── USER_GUIDE.md           # User guide
 │   ├── API.md                  # API reference
@@ -435,10 +450,7 @@ The 12x difference in "wait" phase (0.5µs vs 6.3µs) shows the JSON parse+strin
 │   ├── MIGRATION.md            # Migration guide
 │   ├── CLIENT_INTEGRATION.md   # Client integration
 │   └── COMPARISON.md           # Performance comparison
-├── examples/                   # Working examples
-├── tests/                      # Test suites
-├── benches/                    # Benchmarks
-└── .github/workflows/          # CI/CD pipelines
+└── Dockerfile                  # Docker build
 ```
 
 ---
@@ -450,12 +462,6 @@ The 12x difference in "wait" phase (0.5µs vs 6.3µs) shows the JSON parse+strin
 ```bash
 docker build -t velocity-mcp .
 docker run -p 3000:3000 velocity-mcp
-```
-
-### Kubernetes
-
-```bash
-kubectl apply -f deploy/kubernetes/
 ```
 
 ### Bare Metal
@@ -483,7 +489,7 @@ See [Deployment Guide](docs/DEPLOYMENT.md) for detailed instructions.
 
 ## 🤝 Contributing
 
-Contributions welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Contributions welcome! Please open an issue or pull request on [GitHub](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP).
 
 ---
 

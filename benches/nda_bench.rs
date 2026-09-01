@@ -38,10 +38,49 @@ fn benchmark_nda_verify_merkle(c: &mut Criterion) {
     compiler.add_triple("subject", "predicate", "object");
     let compiled = compiler.compile();
     let parsed = NdaDocument::read(&compiled).unwrap();
-    
+
     c.bench_function("nda_verify_merkle", |b| {
         b.iter(|| {
             black_box(parsed.verify_merkle())
+        })
+    });
+}
+
+fn benchmark_nda_compile_large(c: &mut Criterion) {
+    c.bench_function("nda_compile_large", |b| {
+        b.iter(|| {
+            let mut compiler = NdaCompiler::new();
+            for i in 0..1000 {
+                compiler.add_triple(
+                    &format!("subject_{}", i),
+                    &format!("predicate_{}", i),
+                    &format!("object_{}", i),
+                );
+            }
+            black_box(compiler.compile())
+        })
+    });
+}
+
+#[cfg(feature = "http")]
+fn benchmark_middleware_cache_lookup(c: &mut Criterion) {
+    use velocity_mcp::middleware::ResponseCache;
+    use std::time::Duration;
+
+    let cache = ResponseCache::new(Duration::from_secs(60));
+
+    c.bench_function("middleware_cache_lookup", |b| {
+        b.iter(|| {
+            let _ = cache.get("nonexistent_key");
+        })
+    });
+}
+
+#[cfg(not(feature = "http"))]
+fn benchmark_middleware_cache_lookup(c: &mut Criterion) {
+    c.bench_function("middleware_cache_lookup", |b| {
+        b.iter(|| {
+            let _ = std::hint::black_box(0);
         })
     });
 }
@@ -52,7 +91,9 @@ criterion_group! {
     targets = benchmark_nda_compile_empty,
               benchmark_nda_compile_with_triples,
               benchmark_nda_read,
-              benchmark_nda_verify_merkle
+              benchmark_nda_verify_merkle,
+              benchmark_nda_compile_large,
+              benchmark_middleware_cache_lookup
 }
 
 criterion_main!(nda_benches);

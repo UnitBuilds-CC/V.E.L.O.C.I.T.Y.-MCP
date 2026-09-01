@@ -12,11 +12,29 @@ use velocity_mcp::protocol::json_rpc::handle_request;
 use velocity_mcp::protocol::nmcp_binary::NmcpBinaryFrame;
 use velocity_mcp::registry;
 
+pub(crate) fn test_timer(name: &str) -> impl Drop {
+    let start = std::time::Instant::now();
+    struct Timer { name: String, start: std::time::Instant }
+    impl Drop for Timer {
+        fn drop(&mut self) {
+            eprintln!("[TEST] {} completed in {:.3}ms", self.name, self.start.elapsed().as_secs_f64() * 1000.0);
+        }
+    }
+    Timer { name: name.to_string(), start }
+}
+
+fn log_throughput(test_name: &str, ops: u64, elapsed: std::time::Duration) {
+    let secs = elapsed.as_secs_f64();
+    let ops_per_sec = if secs > 0.0 { ops as f64 / secs } else { 0.0 };
+    eprintln!("[METRIC] {}: {} ops in {:.3}ms ({:.0} ops/sec)", test_name, ops, elapsed.as_secs_f64() * 1000.0, ops_per_sec);
+}
+
 // ─── JSON-RPC Protocol Flow ──────────────────────────────────────────────────
 
 /// Simulate a full MCP session: initialize → notifications/initialized → tools/list → tools/call → health/check.
 #[test]
 fn test_full_mcp_session_flow() {
+    let _t = test_timer("test_full_mcp_session_flow");
     // Step 1: Initialize
     let init_req = json!({"jsonrpc": "2.0", "method": "initialize", "id": 1});
     let init_res = handle_request(&init_req).expect("initialize must return a response");
@@ -54,6 +72,7 @@ fn test_full_mcp_session_flow() {
 /// Verify that all JSON-RPC responses include the correct version string.
 #[test]
 fn test_version_consistency_across_responses() {
+    let _t = test_timer("test_version_consistency_across_responses");
     let version = velocity_mcp::VERSION;
 
     let init = handle_request(&json!({"jsonrpc":"2.0","method":"initialize","id":1})).unwrap();
@@ -66,6 +85,7 @@ fn test_version_consistency_across_responses() {
 /// Verify JSON-RPC error codes follow the spec.
 #[test]
 fn test_json_rpc_error_codes() {
+    let _t = test_timer("test_json_rpc_error_codes");
     // -32601 for unknown methods
     let res = handle_request(&json!({"jsonrpc":"2.0","method":"unknown","id":1})).unwrap();
     assert_eq!(res["error"]["code"], -32601);
@@ -79,6 +99,7 @@ fn test_json_rpc_error_codes() {
 /// Simulate a complete host↔server exchange through shared memory.
 #[test]
 fn test_shmem_full_host_server_exchange() {
+    let _t = test_timer("test_shmem_full_host_server_exchange");
     let path = "test_integration_shmem_exchange.bin";
     let _ = fs::remove_file(path);
 
@@ -124,6 +145,7 @@ fn test_shmem_full_host_server_exchange() {
 /// Verify all 5 state transitions work correctly through the public API.
 #[test]
 fn test_shmem_state_machine_transitions() {
+    let _t = test_timer("test_shmem_state_machine_transitions");
     let path = "test_integration_shmem_states.bin";
     let _ = fs::remove_file(path);
 
@@ -153,6 +175,7 @@ fn test_shmem_state_machine_transitions() {
 /// Verify that buffer size limits are enforced through the public API.
 #[test]
 fn test_shmem_buffer_boundary_conditions() {
+    let _t = test_timer("test_shmem_buffer_boundary_conditions");
     let path = "test_integration_shmem_bounds.bin";
     let _ = fs::remove_file(path);
 
@@ -175,6 +198,7 @@ fn test_shmem_buffer_boundary_conditions() {
 /// Verify binary frame parser handles all edge cases correctly.
 #[test]
 fn test_binary_frame_parser_edge_cases() {
+    let _t = test_timer("test_binary_frame_parser_edge_cases");
     // Exactly minimum size (36 bytes = 4 magic + 32 merkle, no payload)
     let mut min_frame = Vec::new();
     min_frame.extend_from_slice(b"NMCP");
@@ -203,6 +227,7 @@ fn test_binary_frame_parser_edge_cases() {
 /// Verify tool registry returns correct tool definitions with valid schemas.
 #[test]
 fn test_registry_tool_definitions() {
+    let _t = test_timer("test_registry_tool_definitions");
     let tools = registry::get_tools();
     assert!(tools.len() >= 4, "Should have at least 4 built-in tools");
 
@@ -223,6 +248,7 @@ fn test_registry_tool_definitions() {
 /// Verify that path validation blocks all attack vectors before execution.
 #[test]
 fn test_registry_path_validation_blocks_attacks() {
+    let _t = test_timer("test_registry_path_validation_blocks_attacks");
     // Path traversal
     let result = registry::call_tool(
         "read_nda",
@@ -250,6 +276,7 @@ fn test_registry_path_validation_blocks_attacks() {
 /// Verify that calling a non-existent C# path returns a clear error.
 #[test]
 fn test_registry_missing_csharp_engine() {
+    let _t = test_timer("test_registry_missing_csharp_engine");
     // Dynamic tools still require C# engine
     let result = registry::call_tool_with_csharp_path(
         "some_dynamic_tool",
@@ -263,6 +290,7 @@ fn test_registry_missing_csharp_engine() {
 /// Verify env var override for C# path.
 #[test]
 fn test_registry_env_var_path_override() {
+    let _t = test_timer("test_registry_env_var_path_override");
     let original = std::env::var("VELOCITY_CSHARP_PATH").ok();
 
     std::env::set_var("VELOCITY_CSHARP_PATH", "C:\\custom\\path\\server.exe");
@@ -281,6 +309,7 @@ fn test_registry_env_var_path_override() {
 /// to the registry and returns a well-formed error for missing params.
 #[test]
 fn test_protocol_to_registry_dispatch() {
+    let _t = test_timer("test_protocol_to_registry_dispatch");
     // Missing required param — should get isError: true with descriptive text
     let req = json!({
         "jsonrpc": "2.0",
@@ -310,6 +339,7 @@ fn test_protocol_to_registry_dispatch() {
 /// Verify that crafted XLSX files with adversarial XML don't crash the parser.
 #[test]
 fn test_adversarial_xlsx_malformed_xml() {
+    let _t = test_timer("test_adversarial_xlsx_malformed_xml");
     use std::io::Write;
 
     // Create a minimal XLSX with malformed shared strings XML
@@ -359,6 +389,7 @@ fn test_adversarial_xlsx_malformed_xml() {
 /// Verify that deeply nested XML doesn't cause stack overflow.
 #[test]
 fn test_adversarial_deeply_nested_xml() {
+    let _t = test_timer("test_adversarial_deeply_nested_xml");
     use std::io::Write;
 
     let temp_dir = std::env::temp_dir().join("veloc_deep_xml_test");
@@ -397,6 +428,7 @@ fn test_adversarial_deeply_nested_xml() {
 /// Verify that empty/minimal XLSX files are handled gracefully.
 #[test]
 fn test_adversarial_empty_xlsx() {
+    let _t = test_timer("test_adversarial_empty_xlsx");
     use std::io::Write;
 
     let temp_dir = std::env::temp_dir().join("veloc_empty_xlsx_test");
@@ -437,6 +469,7 @@ fn test_adversarial_empty_xlsx() {
 /// Verify that path traversal attempts are blocked by sandbox capabilities.
 #[test]
 fn test_adversarial_sandbox_path_traversal() {
+    let _t = test_timer("test_adversarial_sandbox_path_traversal");
     use velocity_mcp::sandbox::Sandbox;
 
     let mut sandbox = Sandbox::new().unwrap();
@@ -460,6 +493,7 @@ fn test_adversarial_sandbox_path_traversal() {
 /// Verify that network access is blocked in restricted mode.
 #[test]
 fn test_adversarial_sandbox_network_blocked() {
+    let _t = test_timer("test_adversarial_sandbox_network_blocked");
     use velocity_mcp::sandbox::Sandbox;
 
     let mut sandbox = Sandbox::new().unwrap();
@@ -478,6 +512,7 @@ fn test_adversarial_sandbox_network_blocked() {
 /// Verify that unauthorized interpreters are blocked.
 #[test]
 fn test_adversarial_sandbox_interpreter_control() {
+    let _t = test_timer("test_adversarial_sandbox_interpreter_control");
     use velocity_mcp::sandbox::Sandbox;
 
     let mut sandbox = Sandbox::new().unwrap();
@@ -498,6 +533,7 @@ fn test_adversarial_sandbox_interpreter_control() {
 /// Verify that sandbox violations are properly recorded and categorized.
 #[test]
 fn test_adversarial_sandbox_violation_recording() {
+    let _t = test_timer("test_adversarial_sandbox_violation_recording");
     use velocity_mcp::sandbox::{Sandbox, ViolationCategory};
 
     let mut sandbox = Sandbox::new().unwrap();
@@ -525,6 +561,7 @@ fn test_adversarial_sandbox_violation_recording() {
 /// Verify that tampered NDA documents are detected through the full pipeline.
 #[test]
 fn test_adversarial_tampered_nda_detection() {
+    let _t = test_timer("test_adversarial_tampered_nda_detection");
     use velocity_mcp::nda_document::{NdaCompiler, NdaDocument};
     use ed25519_dalek::SigningKey;
 
@@ -550,6 +587,7 @@ fn test_adversarial_tampered_nda_detection() {
 /// Verify that signature verification works through registry dispatch.
 #[test]
 fn test_adversarial_signature_through_registry() {
+    let _t = test_timer("test_adversarial_signature_through_registry");
     use velocity_mcp::nda_document::NdaCompiler;
     use ed25519_dalek::SigningKey;
 
@@ -586,6 +624,7 @@ fn test_adversarial_signature_through_registry() {
 /// Verify that rate limiter properly throttles under load.
 #[test]
 fn test_adversarial_rate_limiter_burst() {
+    let _t = test_timer("test_adversarial_rate_limiter_burst");
     use velocity_mcp::rate_limit::{check_rate_limit, available_tokens};
 
     // Drain available tokens rapidly
@@ -610,6 +649,7 @@ fn test_adversarial_rate_limiter_burst() {
 /// Verify that audit log handles high-volume writes without crashing.
 #[test]
 fn test_adversarial_audit_log_overflow() {
+    let _t = test_timer("test_adversarial_audit_log_overflow");
     use velocity_mcp::audit::{global_audit, AuditOutcome};
 
     let audit = global_audit();
@@ -634,6 +674,7 @@ fn test_adversarial_audit_log_overflow() {
 /// Verify that error messages don't leak internal paths or sensitive info.
 #[test]
 fn test_adversarial_error_sanitization() {
+    let _t = test_timer("test_adversarial_error_sanitization");
     use velocity_mcp::sandbox::sanitize_error;
 
     // Windows paths should be stripped
@@ -659,6 +700,7 @@ fn test_adversarial_error_sanitization() {
 /// Verify that the NDA parser handles corrupted headers gracefully.
 #[test]
 fn test_adversarial_corrupted_header() {
+    let _t = test_timer("test_adversarial_corrupted_header");
     use velocity_mcp::nda_document::{NdaDocument, NdaCompiler, HEADER_SIZE};
 
     // Create a valid NDA
@@ -678,6 +720,7 @@ fn test_adversarial_corrupted_header() {
 /// Verify that truncated NDA documents are handled gracefully.
 #[test]
 fn test_adversarial_truncated_nda() {
+    let _t = test_timer("test_adversarial_truncated_nda");
     use velocity_mcp::nda_document::{NdaDocument, NdaCompiler};
 
     let mut compiler = NdaCompiler::new();
@@ -697,6 +740,7 @@ fn test_adversarial_truncated_nda() {
 /// Verify that NDA with garbage appended still parses correctly.
 #[test]
 fn test_adversarial_nda_with_garbage_appended() {
+    let _t = test_timer("test_adversarial_nda_with_garbage_appended");
     use velocity_mcp::nda_document::{NdaDocument, NdaCompiler};
 
     let mut compiler = NdaCompiler::new();
@@ -717,6 +761,7 @@ fn test_adversarial_nda_with_garbage_appended() {
 #[test]
 #[cfg(feature = "oauth2")]
 fn test_oauth2_complete_flow() {
+    let _t = test_timer("test_oauth2_complete_flow");
     use velocity_mcp::oauth2::*;
     
     // Register a connector with OAuth2 config
@@ -761,6 +806,7 @@ fn test_oauth2_complete_flow() {
 #[test]
 #[cfg(feature = "http")]
 fn test_streaming_sse_integration() {
+    let _t = test_timer("test_streaming_sse_integration");
     use velocity_mcp::streaming::*;
     
     let token = ProgressToken::String("test_stream".to_string());
@@ -794,6 +840,7 @@ fn test_streaming_sse_integration() {
 /// Test resource subscription and notification flow.
 #[test]
 fn test_resource_subscription_flow() {
+    let _t = test_timer("test_resource_subscription_flow");
     use velocity_mcp::resources::*;
     
     // Register a file resource
@@ -821,6 +868,7 @@ fn test_resource_subscription_flow() {
 /// Test multi-turn sampling conversation with history tracking.
 #[test]
 fn test_sampling_conversation_history() {
+    let _t = test_timer("test_sampling_conversation_history");
     use velocity_mcp::sampling::*;
     
     let conv_id = "test_conversation";
@@ -868,6 +916,7 @@ fn test_sampling_conversation_history() {
 #[test]
 #[cfg(feature = "http")]
 fn test_http_security_config() {
+    let _t = test_timer("test_http_security_config");
     use velocity_mcp::transport::http::HttpSecurityConfig;
     
     // Test default config
@@ -900,6 +949,7 @@ mod http_auth_tests {
 
     #[test]
     fn test_health_endpoint_no_auth_required() {
+        let _t = super::test_timer("test_health_endpoint_no_auth_required");
         // /health should always be accessible without auth
         let _shutdown = Arc::new(AtomicBool::new(false));
         let _security = HttpSecurityConfig {
@@ -912,6 +962,7 @@ mod http_auth_tests {
 
     #[test]
     fn test_constant_time_eq() {
+        let _t = super::test_timer("test_constant_time_eq");
         let key1 = "test_api_key_12345";
         let key2 = "test_api_key_12345";
         let key3 = "test_api_key_12346";
@@ -925,6 +976,7 @@ mod http_auth_tests {
 #[test]
 #[cfg(feature = "http")]
 fn test_batch_request_processing() {
+    let _t = test_timer("test_batch_request_processing");
     use velocity_mcp::middleware::BatchRequest;
     
     // This tests the batch request structure
@@ -941,6 +993,7 @@ fn test_batch_request_processing() {
 
 #[test]
 fn test_resource_subscription_notifications() {
+    let _t = test_timer("test_resource_subscription_notifications");
     use velocity_mcp::resources;
     
     // Register a resource
@@ -971,6 +1024,7 @@ fn test_resource_subscription_notifications() {
 /// Test that malformed JSON doesn't crash the server
 #[test]
 fn test_chaos_malformed_json() {
+    let _t = test_timer("test_chaos_malformed_json");
     // Completely invalid JSON
     let malformed = "not json at all {{{";
     let result = std::panic::catch_unwind(|| {
@@ -987,6 +1041,7 @@ fn test_chaos_malformed_json() {
 /// Test that invalid tool parameters are handled gracefully
 #[test]
 fn test_chaos_invalid_tool_params() {
+    let _t = test_timer("test_chaos_invalid_tool_params");
     // Missing required parameter
     let req = json!({
         "jsonrpc": "2.0",
@@ -1011,6 +1066,7 @@ fn test_chaos_invalid_tool_params() {
 /// Test that file operations handle missing files gracefully
 #[test]
 fn test_chaos_file_not_found() {
+    let _t = test_timer("test_chaos_file_not_found");
     let req = json!({
         "jsonrpc": "2.0",
         "method": "tools/call",
@@ -1030,6 +1086,7 @@ fn test_chaos_file_not_found() {
 /// Test that shell_exec handles timeouts correctly
 #[test]
 fn test_chaos_shell_timeout() {
+    let _t = test_timer("test_chaos_shell_timeout");
     // This test verifies that the timeout parameter is accepted
     // Use a simple command that should succeed on all platforms
     let req = json!({
@@ -1054,6 +1111,7 @@ fn test_chaos_shell_timeout() {
 /// Test concurrent access to shared resources
 #[test]
 fn test_chaos_concurrent_access() {
+    let _t = test_timer("test_chaos_concurrent_access");
     use std::thread;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1089,6 +1147,7 @@ fn test_chaos_concurrent_access() {
 /// Test that rate limiting works under load
 #[test]
 fn test_chaos_rate_limiting() {
+    let _t = test_timer("test_chaos_rate_limiting");
     use velocity_mcp::rate_limit;
     
     // Create a rate limiter with low limits for testing
@@ -1107,7 +1166,115 @@ fn test_chaos_rate_limiting() {
 #[test]
 #[cfg(feature = "http")]
 fn test_chaos_resource_limits() {
+    let _t = test_timer("test_chaos_resource_limits");
     // This test verifies that constants are defined
     // Actual limit enforcement is tested in the HTTP transport tests
     assert!(velocity_mcp::transport::http::HttpMetrics::default().total_requests.load(std::sync::atomic::Ordering::Relaxed) == 0);
+}
+
+// ─── Concurrent Access Tests ──────────────────────────────────────────────────
+
+/// Test concurrent audit recording from multiple threads.
+#[test]
+fn test_concurrent_audit_recording() {
+    let _t = test_timer("test_concurrent_audit_recording");
+    use std::thread;
+    use velocity_mcp::audit::{global_audit, AuditOutcome};
+
+    let audit = global_audit();
+    let start = std::time::Instant::now();
+
+    let mut handles = vec![];
+    for _i in 0..10 {
+        let handle = thread::spawn(move || {
+            for _j in 0..100 {
+                audit.record("test_tool", std::time::Instant::now(), AuditOutcome::Success);
+            }
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().expect("Thread should not panic");
+    }
+
+    let elapsed = start.elapsed();
+    log_throughput("concurrent_audit_recording", 1000, elapsed);
+    eprintln!("[METRIC] concurrent_audit_recording: 10 threads × 100 ops = 1000 total ops in {:.3}ms", elapsed.as_secs_f64() * 1000.0);
+}
+
+/// Test concurrent resource subscription and unsubscription.
+#[test]
+fn test_concurrent_resource_subscriptions() {
+    let _t = test_timer("test_concurrent_resource_subscriptions");
+    use std::thread;
+    use velocity_mcp::resources;
+
+    let start = std::time::Instant::now();
+
+    let mut handles = vec![];
+    for i in 0..10 {
+        let handle = thread::spawn(move || {
+            let uri = format!("test://concurrent_sub/{}", i);
+            resources::register_file_resource(&uri, &format!("Resource {}", i), "Test", "/tmp/test.txt");
+
+            for j in 0..10 {
+                let client = format!("client_{}_{}", i, j);
+                let _ = resources::subscribe_resource(&uri, &client);
+                let _ = resources::unsubscribe_resource(&uri, &client);
+            }
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().expect("Thread should not panic");
+    }
+
+    let elapsed = start.elapsed();
+    log_throughput("concurrent_resource_subscriptions", 100, elapsed);
+    eprintln!("[METRIC] concurrent_resource_subscriptions: 10 threads × 10 sub/unsub cycles = 100 total ops in {:.3}ms", elapsed.as_secs_f64() * 1000.0);
+}
+
+/// Test concurrent cache access from multiple threads.
+#[test]
+#[cfg(feature = "http")]
+fn test_concurrent_cache_access() {
+    let _t = test_timer("test_concurrent_cache_access");
+    use std::thread;
+    use velocity_mcp::middleware::ResponseCache;
+    use std::time::Duration;
+
+    let cache = std::sync::Arc::new(ResponseCache::new(Duration::from_secs(60)));
+    let start = std::time::Instant::now();
+
+    let mut handles = vec![];
+    for i in 0..10 {
+        let cache_clone = std::sync::Arc::clone(&cache);
+        let handle = thread::spawn(move || {
+            for j in 0..100 {
+                let key = format!("key_{}_{}", i, j);
+                let response = axum::response::Response::builder()
+                    .status(axum::http::StatusCode::OK)
+                    .body(axum::body::Body::from("test"))
+                    .unwrap();
+
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .unwrap();
+                rt.block_on(cache_clone.set(key.clone(), response, None));
+
+                let _ = cache_clone.get(&key);
+            }
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().expect("Thread should not panic");
+    }
+
+    let elapsed = start.elapsed();
+    log_throughput("concurrent_cache_access", 1000, elapsed);
+    eprintln!("[METRIC] concurrent_cache_access: 10 threads × 100 get/set ops = 1000 total ops in {:.3}ms", elapsed.as_secs_f64() * 1000.0);
 }

@@ -547,8 +547,25 @@ pub fn flush_audit(path: &str) -> Result<usize, String> {
 mod tests {
     use super::*;
 
+    fn test_timer(name: &str) -> impl Drop {
+        let start = std::time::Instant::now();
+        struct Timer { name: String, start: std::time::Instant }
+        impl Drop for Timer { fn drop(&mut self) {
+            eprintln!("[TEST] {} completed in {:.3}ms", self.name, self.start.elapsed().as_secs_f64() * 1000.0);
+        }}
+        Timer { name: name.to_string(), start }
+    }
+
+    fn log_throughput(label: &str, ops: u64, elapsed: std::time::Duration) {
+        let secs = elapsed.as_secs_f64();
+        if secs > 0.0 {
+            eprintln!("[METRIC] {}: {:.0} ops/sec ({} ops in {:.3}ms)", label, ops as f64 / secs, ops, elapsed.as_secs_f64() * 1000.0);
+        }
+    }
+
     #[test]
     fn test_audit_log_record_and_retrieve() {
+        let _t = test_timer("test_audit_log_record_and_retrieve");
         let log = AuditLog::new();
         let start = Instant::now();
         log.record("test_tool", start, AuditOutcome::Success);
@@ -564,14 +581,15 @@ mod tests {
 
     #[test]
     fn test_audit_log_ring_buffer_eviction() {
+        let _t = test_timer("test_audit_log_ring_buffer_eviction");
         let log = AuditLog::new();
         let start = Instant::now();
 
-        // Insert more than MAX_AUDIT_ENTRIES would be slow in a test,
-        // so we just verify the mechanism works at small scale
+        let t0 = Instant::now();
         for i in 0..100 {
             log.record(&format!("tool_{}", i), start, AuditOutcome::Success);
         }
+        log_throughput("audit_record_100", 100, t0.elapsed());
         assert_eq!(log.len(), 100);
     }
 
@@ -635,13 +653,16 @@ mod tests {
 
     #[test]
     fn test_audit_csv_includes_merkle_root() {
+        let _t = test_timer("test_audit_csv_includes_merkle_root");
         let log = AuditLog::new();
         let start = Instant::now();
         let merkle = "abcdef0123456789".to_string();
         log.record_with_merkle("nda_tool", start, AuditOutcome::Success, Some(merkle.clone()));
         log.record("json_tool", start, AuditOutcome::Success);
 
+        let t0 = Instant::now();
         let csv = log.export_csv().unwrap();
+        eprintln!("[METRIC] audit_csv_export: {:.3}us", t0.elapsed().as_secs_f64() * 1e6);
         assert!(csv.contains("merkle_root"));
         assert!(csv.contains(&merkle));
     }
@@ -705,6 +726,7 @@ mod tests {
 
     #[test]
     fn test_registry_aggregate_all() {
+        let _t = test_timer("test_registry_aggregate_all");
         let registry = AuditRegistry {
             sessions: std::sync::RwLock::new(HashMap::new()),
         };
@@ -717,7 +739,9 @@ mod tests {
         log_b.record("tool_2", start, AuditOutcome::Success);
         log_a.record("tool_3", start, AuditOutcome::Success);
 
+        let t0 = Instant::now();
         let all = registry.aggregate_all();
+        eprintln!("[METRIC] registry_aggregate_all: {:.3}us", t0.elapsed().as_secs_f64() * 1e6);
         assert_eq!(all.len(), 3);
         // Sorted by sequence descending
         assert!(all[0].sequence > all[1].sequence);

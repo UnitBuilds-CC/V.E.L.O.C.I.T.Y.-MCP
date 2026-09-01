@@ -5,6 +5,15 @@ edition = "2021"
 authors = ["UnitBuilds <ian@unitbuilds.com>"]
 description = "A high-performance, zero-allocation Model Context Protocol (MCP) server in Rust"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP"
+homepage = "https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP"
+documentation = "https://docs.rs/velocity_mcp"
+keywords = ["mcp", "model-context-protocol", "ai", "llm", "server"]
+categories = ["web-programming", "development-tools"]
+readme = "README.md"
+
+[workspace]
+members = [".", "macros", "client"]
 
 [features]
 default = []
@@ -27,7 +36,7 @@ regex = "1"
 quick-xml = "0.41"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand = "0.8"
-velocity_mcp_macros = { path = "macros" }
+velocity_mcp_macros = { version = "0.1.0", path = "macros" }
 ctor = "0.2"
 
 # Optional: HTTP/SSE transport

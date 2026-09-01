@@ -762,8 +762,18 @@ pub fn parse_flat_response(frame: &[u8]) -> Result<FlatResponse, Box<dyn Error>>
 mod tests {
     use super::*;
 
+    fn test_timer(name: &str) -> impl Drop {
+        let start = std::time::Instant::now();
+        struct Timer { name: String, start: std::time::Instant }
+        impl Drop for Timer { fn drop(&mut self) {
+            eprintln!("[TEST] {} completed in {:.3}ms", self.name, self.start.elapsed().as_secs_f64() * 1000.0);
+        }}
+        Timer { name: name.to_string(), start }
+    }
+
     #[test]
     fn test_is_nda_frame_valid() {
+        let _t = test_timer("test_is_nda_frame_valid");
         let mut data = Vec::new();
         data.extend_from_slice(b"NMCP");
         data.extend_from_slice(&[0u8; 32]);
@@ -992,7 +1002,7 @@ mod tests {
         let start = Instant::now();
         for _ in 0..iters {
             let s = serde_json::to_string(&json!({"jsonrpc":"2.0","id":1,"result": &result}));
-            std::hint::black_box(s);
+            let _ = std::hint::black_box(s);
         }
         let serde_us = start.elapsed().as_secs_f64() * 1e6 / iters as f64;
 
@@ -1020,6 +1030,7 @@ mod tests {
 
     #[test]
     fn tools_list_direct_encoder_byte_identical() {
+        let _t = test_timer("tools_list_direct_encoder_byte_identical");
         let tools = crate::registry::get_tools();
         // Reference: the old json!-based path.
         let tools_json: Vec<Value> = tools.iter().map(|t| {
@@ -1062,8 +1073,11 @@ mod tests {
 
     #[test]
     fn tools_list_cache_hit_and_invalidation() {
+        let _t = test_timer("tools_list_cache_hit_and_invalidation");
         // Repeat calls serve identical cached bytes, matching a direct encoding.
+        let t0 = std::time::Instant::now();
         let (first, second, expected) = stable_encoded_triple();
+        eprintln!("[METRIC] encoded_tools_list_result (3 calls): {:.3}us", t0.elapsed().as_secs_f64() * 1e6);
         assert_eq!(first, second);
         assert_eq!(first, expected);
 
@@ -1159,6 +1173,7 @@ mod tests {
 
     #[test]
     fn inplace_parse_matches_value_parser() {
+        let _t = test_timer("inplace_parse_matches_value_parser");
         let cases = [
             (METHOD_PING, json!(1), Value::Null),
             (METHOD_TOOLS_LIST, json!(99), Value::Null),

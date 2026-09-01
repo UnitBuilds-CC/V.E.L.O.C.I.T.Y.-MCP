@@ -906,31 +906,103 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
             let dangerous_unix = [
                 "rm -rf /", "rm -rf /*", "rm -rf ~", "rm -rf ~/*", 
                 "rm -rf .", "rm -rf ..",
-                "mkfs.", "mkfs ", "dd if=", "dd of=/dev/",
+                "rm -rf /", "rm -rf /*",
+                "mkfs.", "mkfs ",
+                "dd if=", "dd of=/dev/",
                 ":(){ :|:& };:",  // fork bomb
-                "> /dev/sda", "> /dev/nvme",
-                "chmod -R 777 /", "chown -R",
+                "> /dev/sda", "> /dev/nvme", "> /dev/sd", "> /dev/hd",
+                "chmod -R 777 /", "chmod -R 777 ~", "chmod -R 777 .",
+                "chown -R", "chgrp -R",
                 "wget | sh", "curl | sh", "wget|sh", "curl|sh",
-                "wget | bash", "curl | bash",
+                "wget | bash", "curl | bash", "wget|bash", "curl|bash",
+                "wget | python", "curl | python", "wget | perl", "curl | perl",
+                "unset path", "export path=", "export PATH=",
+                "crontab -r", "crontab -e",
+                "find / -exec", "find / -delete", "find ~ -delete",
+                "ln -sf /", "ln -sf ~",
+                "tar czf - / |", "tar czf - ~ |",
+                "nc -e", "ncat -e", "nc -c", "ncat -c",
+                "eval $(curl", "eval $(wget", "eval `curl", "eval `wget",
+                "curl http://", "wget http://",
+                "> ~/.bashrc", "> ~/.bash_profile", "> ~/.profile",
+                "> /etc/passwd", "> /etc/shadow",
+                "echo * > /", "echo * > ~",
             ];
             
             // Windows destructive commands
             let dangerous_windows = [
                 "del /f /s /q", "del /s /q c:\\", "del /s /q %systemdrive%",
-                "format ", "format c:", "format d:",
+                "format ", "format c:", "format d:", "format e:",
                 "rd /s /q", "rmdir /s /q",
                 "diskpart", "bootrec",
                 "bcdedit", "reg delete",
                 "net user", "net localgroup",
                 "powershell -enc", "powershell -encodedcommand",
+                "wmic process", "wmic os",
+                "schtasks /delete", "schtasks /change",
+                "sc delete", "sc stop", "sc config",
+                "taskkill /f /im svchost", "taskkill /f /im lsass",
+                "taskkill /f /im csrss", "taskkill /f /im wininit",
+                "cipher /w",
+                "takeown /f", "icacls /grant", "icacls /remove",
+                "reg add hklm", "reg add hkcu\\software\\microsoft\\windows\\currentversion\\run",
+                "net stop", "net start",
+                "shutdown", "restart",
+                "bitsadmin /transfer",
+                "certutil -urlcache", "certutil -encode", "certutil -decode",
+                "powershell iex", "powershell invoke-expression",
+                "powershell downloadstring", "powershell downloadfile",
+                "powershell -nop -sta",
+                "rundll32", "regsvr32",
+                "mshta", "msiexec",
             ];
             
             let cmd_lower = command.to_lowercase();
             let cmd_normalized = collapse_whitespace(&cmd_lower);
             
+            // Second normalization: strip backslash escapes to catch r\m → rm bypasses
+            let cmd_stripped: String = cmd_normalized.replace('\\', "");
+            let cmd_stripped = collapse_whitespace(&cmd_stripped);
+            
+            // Detect bypass attempts via variable expansion
+            let bypass_patterns = [
+                "${ifs}", "$ifs", "${path}", "${home}",
+                "$(curl", "$(wget", "$(eval",
+                "`curl", "`wget", "`eval",
+                "base64 -d |", "base64 --decode |",
+                "python -c \"import base64",
+                "python3 -c \"import base64",
+            ];
+            for pattern in &bypass_patterns {
+                if cmd_normalized.contains(pattern) {
+                    tracing::warn!(pattern = %pattern, command = %command, "Blocked shell_exec bypass attempt");
+                    return Err(format!(
+                        "Security error: Command contains a bypass pattern: '{}'\n\
+                        Variable expansion and encoding tricks are not permitted.\n\
+                        Suggestions:\n\
+                        - Use literal values instead of variable expansion\n\
+                        - Write the command directly without encoding tricks\n\
+                        - If you need dynamic values, use a script file instead",
+                        pattern
+                    ).into());
+                }
+            }
+            
+            // Command length limit to prevent obfuscation via extremely long commands
+            if command.len() > 10_000 {
+                return Err(format!(
+                    "Security error: Command exceeds maximum length ({} > 10000)\n\
+                    Extremely long commands are blocked to prevent obfuscation.\n\
+                    Suggestions:\n\
+                    - Write the logic to a script file and execute it\n\
+                    - Break the command into smaller, focused steps",
+                    command.len()
+                ).into());
+            }
+            
             // Check Unix patterns on non-Windows, all patterns on Windows (WSL/cross-platform)
             for pattern in &dangerous_unix {
-                if cmd_normalized.contains(pattern) {
+                if cmd_normalized.contains(pattern) || cmd_stripped.contains(pattern) {
                     tracing::warn!(pattern = %pattern, command = %command, "Blocked dangerous Unix command pattern");
                     return Err(format!(
                         "Security error: Command contains dangerous pattern: '{}'\n\
@@ -945,7 +1017,7 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
             }
             
             for pattern in &dangerous_windows {
-                if cmd_normalized.contains(pattern) {
+                if cmd_normalized.contains(pattern) || cmd_stripped.contains(pattern) {
                     tracing::warn!(pattern = %pattern, command = %command, "Blocked dangerous Windows command pattern");
                     return Err(format!(
                         "Security error: Command contains dangerous pattern: '{}'\n\
@@ -1217,6 +1289,49 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
                         - Contact your administrator if you need access to internal services",
                         pattern
                     ).into());
+                }
+            }
+
+            // Block hex/octal IP representations that bypass string matching
+            if host.starts_with("0x") || host.starts_with("0X")
+                || (host.starts_with('0') && host.len() > 1 && host.chars().skip(1).all(|c| c.is_ascii_digit()))
+                || host.chars().all(|c| c.is_ascii_digit())
+            {
+                return Err("Security error: URL contains numeric IP representation that bypasses host validation".into());
+            }
+
+            // DNS resolution check: resolve hostname and verify no resolved IP is private
+            {
+                use std::net::{ToSocketAddrs, IpAddr};
+                let host_port = if host.contains(':') {
+                    format!("{}", host)
+                } else {
+                    format!("{}:80", host)
+                };
+                if let Ok(addrs) = (&host_port as &str).to_socket_addrs() {
+                    for addr in addrs {
+                        let ip = addr.ip();
+                        let blocked = match ip {
+                            IpAddr::V4(v4) => {
+                                v4.is_loopback() || v4.is_private() || v4.is_link_local()
+                                    || v4.is_unspecified() || v4.is_broadcast()
+                                    || v4.is_documentation()
+                            }
+                            IpAddr::V6(v6) => {
+                                v6.is_loopback() || v6.is_unspecified()
+                                    // fc00::/7 unique local
+                                    || (v6.segments()[0] & 0xfe00) == 0xfc00
+                            }
+                        };
+                        if blocked {
+                            return Err(format!(
+                                "Security error: Host '{}' resolves to blocked IP {}\n\
+                                DNS resolution returned a private/reserved IP address.\n\
+                                This prevents SSRF via DNS rebinding or internal hostname resolution.",
+                                host, ip
+                            ).into());
+                        }
+                    }
                 }
             }
             
@@ -1850,9 +1965,29 @@ fn convert_json_to_nda_binary(json_request: &str, output_path: &str) -> Result<S
 mod tests {
     use super::*;
 
+    fn test_timer(name: &str) -> impl Drop {
+        let start = std::time::Instant::now();
+        struct Timer { name: String, start: std::time::Instant }
+        impl Drop for Timer { fn drop(&mut self) {
+            eprintln!("[TEST] {} completed in {:.3}ms", self.name, self.start.elapsed().as_secs_f64() * 1000.0);
+        }}
+        Timer { name: name.to_string(), start }
+    }
+
+    #[allow(dead_code)]
+    fn log_throughput(label: &str, ops: u64, elapsed: std::time::Duration) {
+        let secs = elapsed.as_secs_f64();
+        if secs > 0.0 {
+            eprintln!("[METRIC] {}: {:.0} ops/sec ({} ops in {:.3}ms)", label, ops as f64 / secs, ops, elapsed.as_secs_f64() * 1000.0);
+        }
+    }
+
     #[test]
     fn test_get_tools_returns_builtin_tools() {
+        let _t = test_timer("test_get_tools_returns_builtin_tools");
+        let t0 = std::time::Instant::now();
         let tools = get_tools();
+        eprintln!("[METRIC] get_tools_dispatch: {:.3}us ({} tools)", t0.elapsed().as_secs_f64() * 1e6, tools.len());
         // At least the 8 built-in tools should be present
         assert!(tools.len() >= 8, "Should have at least 8 built-in tools, got {}", tools.len());
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
@@ -1913,8 +2048,11 @@ mod tests {
 
     #[test]
     fn test_convert_to_nda_tool_success() {
+        let _t = test_timer("test_convert_to_nda_tool_success");
         let json_request = r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"hello_world","arguments":{"message":"Hello"}},"id":1}"#;
+        let t0 = std::time::Instant::now();
         let result = call_tool("convert_to_nda_tool", &json!({"jsonRequest": json_request}));
+        eprintln!("[METRIC] convert_to_nda_tool: {:.3}us", t0.elapsed().as_secs_f64() * 1e6);
         assert!(result.is_ok(), "Conversion should succeed: {:?}", result);
         // Should return base64-encoded binary data (tool is also registered)
         let base64_output = result.unwrap();
@@ -1953,6 +2091,7 @@ mod tests {
 
     #[test]
     fn test_tlv_round_trip_all_types() {
+        let _t = test_timer("test_tlv_round_trip_all_types");
         // Test that encode -> decode produces the original JSON for all types
         let test_value = json!({
             "string": "hello world",
@@ -1983,6 +2122,7 @@ mod tests {
 
     #[test]
     fn test_convert_complex_tool_to_nda() {
+        let _t = test_timer("test_convert_complex_tool_to_nda");
         // Test with nested objects, arrays, special characters
         let json_request = r#"{
             "jsonrpc": "2.0",

@@ -17,8 +17,6 @@
 #[cfg(feature = "observability")]
 use opentelemetry::global;
 #[cfg(feature = "observability")]
-use opentelemetry::trace::TracerProvider as _;
-#[cfg(feature = "observability")]
 use opentelemetry_otlp::WithExportConfig;
 #[cfg(feature = "observability")]
 use tracing_subscriber::layer::SubscriberExt;
