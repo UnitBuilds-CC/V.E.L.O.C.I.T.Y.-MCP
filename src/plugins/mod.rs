@@ -241,17 +241,56 @@ pub fn execute_plugin_tool(tool: &PluginTool, arguments: &Value) -> Result<Strin
         cmd.env(key, value);
     }
 
-    // Execute the command
-    let output = cmd.output()
-        .map_err(|e| format!("Failed to execute plugin tool: {}", e))?;
+    // Execute the command with timeout
+    let timeout_secs = executor.timeout.min(300);
+    let mut child = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn plugin tool: {}", e))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Plugin tool execution failed: {}", stderr));
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut stdout = Vec::new();
+                let mut stderr = Vec::new();
+                if let Some(mut out) = child.stdout {
+                    use std::io::Read;
+                    if let Err(e) = out.read_to_end(&mut stdout) {
+                        tracing::warn!(error = %e, "Failed to read plugin stdout");
+                    }
+                }
+                if let Some(mut err) = child.stderr {
+                    use std::io::Read;
+                    if let Err(e) = err.read_to_end(&mut stderr) {
+                        tracing::warn!(error = %e, "Failed to read plugin stderr");
+                    }
+                }
+                if !status.success() {
+                    let stderr_str = String::from_utf8_lossy(&stderr);
+                    return Err(format!("Plugin tool execution failed: {}", stderr_str));
+                }
+                let stdout_str = String::from_utf8_lossy(&stdout);
+                return Ok(stdout_str.to_string());
+            }
+            Ok(None) => {
+                if start.elapsed().as_secs() > timeout_secs {
+                    if let Err(e) = child.kill() {
+                        tracing::debug!(error = %e, "Failed to kill timed-out plugin process");
+                    }
+                    return Err(format!("Plugin tool timed out after {} seconds", timeout_secs));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => {
+                if let Err(ke) = child.kill() {
+                    tracing::debug!(error = %ke, "Failed to kill plugin process after wait error");
+                }
+                return Err(format!("Failed to wait for plugin tool: {}", e));
+            }
+        }
     }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(stdout.to_string())
 }
 
 /// Substitute template variables in a string.

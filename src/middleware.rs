@@ -79,7 +79,13 @@ impl ResponseCache {
         let expires_at = Instant::now() + ttl;
         
         let (parts, body) = response.into_parts();
-        let body_bytes = axum::body::to_bytes(body, 10 * 1024 * 1024).await.unwrap_or_default();
+        let body_bytes = match axum::body::to_bytes(body, 10 * 1024 * 1024).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(error = %e, "Cache: response body exceeded 10MB limit, skipping cache");
+                return Response::from_parts(parts, Body::empty());
+            }
+        };
         
         let entry = CacheEntry {
             response: body_bytes.to_vec(),
@@ -152,10 +158,11 @@ pub async fn request_validator_middleware(
     // Validate content-type for POST requests
     if request.method() == axum::http::Method::POST {
         if let Some(content_type) = request.headers().get("content-type") {
-            if !content_type.to_str().unwrap_or("").contains("application/json") {
+            let ct = content_type.to_str().unwrap_or("");
+            if !ct.contains("application/json") && !ct.contains("application/octet-stream") {
                 return (
                     StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                    "Content-Type must be application/json"
+                    "Content-Type must be application/json or application/octet-stream"
                 ).into_response();
             }
         }

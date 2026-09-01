@@ -65,8 +65,10 @@ pub struct ClientInfo {
 /// Initialize response
 #[derive(Debug, Deserialize)]
 pub struct InitializeResult {
+    #[serde(rename = "protocolVersion", alias = "protocol_version")]
     pub protocol_version: String,
     pub capabilities: ServerCapabilities,
+    #[serde(rename = "serverInfo", alias = "server_info")]
     pub server_info: ServerInfo,
 }
 
@@ -88,19 +90,23 @@ pub struct ServerCapabilities {
 /// Tools capability
 #[derive(Debug, Deserialize)]
 pub struct ToolsCapability {
+    #[serde(default, rename = "listChanged", alias = "list_changed")]
     pub list_changed: bool,
 }
 
 /// Resources capability
 #[derive(Debug, Deserialize)]
 pub struct ResourcesCapability {
+    #[serde(default)]
     pub subscribe: bool,
+    #[serde(default, rename = "listChanged", alias = "list_changed")]
     pub list_changed: bool,
 }
 
 /// Prompts capability
 #[derive(Debug, Deserialize)]
 pub struct PromptsCapability {
+    #[serde(default, rename = "listChanged", alias = "list_changed")]
     pub list_changed: bool,
 }
 
@@ -116,6 +122,7 @@ pub struct ServerInfo {
 pub struct Tool {
     pub name: String,
     pub description: String,
+    #[serde(rename = "inputSchema", alias = "input_schema")]
     pub input_schema: serde_json::Value,
 }
 
@@ -123,7 +130,7 @@ pub struct Tool {
 #[derive(Debug, Deserialize)]
 pub struct ToolsListResult {
     pub tools: Vec<Tool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", rename = "nextCursor", alias = "next_cursor")]
     pub next_cursor: Option<String>,
 }
 
@@ -131,7 +138,7 @@ pub struct ToolsListResult {
 #[derive(Debug, Deserialize)]
 pub struct ToolCallResult {
     pub content: Vec<Content>,
-    #[serde(default)]
+    #[serde(default, rename = "isError", alias = "is_error")]
     pub is_error: bool,
 }
 
@@ -142,7 +149,7 @@ pub enum Content {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "image")]
-    Image { data: String, mime_type: String },
+    Image { data: String, #[serde(rename = "mimeType", alias = "mime_type")] mime_type: String },
     #[serde(rename = "resource")]
     Resource { resource: ResourceContent },
 }
@@ -151,7 +158,7 @@ pub enum Content {
 #[derive(Debug, Deserialize, Clone)]
 pub struct ResourceContent {
     pub uri: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", rename = "mimeType", alias = "mime_type")]
     pub mime_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
@@ -164,7 +171,7 @@ pub struct Resource {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", rename = "mimeType", alias = "mime_type")]
     pub mime_type: Option<String>,
 }
 
@@ -172,7 +179,7 @@ pub struct Resource {
 #[derive(Debug, Deserialize)]
 pub struct ResourcesListResult {
     pub resources: Vec<Resource>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", rename = "nextCursor", alias = "next_cursor")]
     pub next_cursor: Option<String>,
 }
 
@@ -206,7 +213,7 @@ pub struct PromptArgument {
 #[derive(Debug, Deserialize)]
 pub struct PromptsListResult {
     pub prompts: Vec<Prompt>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", rename = "nextCursor", alias = "next_cursor")]
     pub next_cursor: Option<String>,
 }
 

@@ -18,7 +18,9 @@ use std::sync::atomic::Ordering;
 const STATE_OFFSET: usize = 0;
 const INPUT_LEN_OFFSET: usize = 1;
 const OUTPUT_LEN_OFFSET: usize = 5;
-const INPUT_BUFFER_OFFSET: usize = 10;
+#[allow(dead_code)]
+const REQUEST_SEQ_OFFSET: usize = 9;
+const INPUT_BUFFER_OFFSET: usize = 16;
 const OUTPUT_BUFFER_OFFSET: usize = 4096;
 const TOTAL_BUFFER_SIZE: usize = 65536;
 
@@ -243,22 +245,28 @@ impl JsonShmemClient {
     }
 
     fn send_json(&mut self, request: &serde_json::Value) -> String {
+        let (resp, _, _, _) = self.send_json_phased(request);
+        resp
+    }
+
+    fn send_json_phased(&mut self, request: &serde_json::Value) -> (String, f64, f64, f64) {
+        let t_write = Instant::now();
         let json_str = serde_json::to_string(request).unwrap();
         let bytes = json_str.as_bytes();
-
         self.inner.mmap[INPUT_LEN_OFFSET..INPUT_LEN_OFFSET + 4]
             .copy_from_slice(&(bytes.len() as u32).to_le_bytes());
         self.inner.mmap[INPUT_BUFFER_OFFSET..INPUT_BUFFER_OFFSET + bytes.len()]
             .copy_from_slice(bytes);
         std::sync::atomic::fence(Ordering::SeqCst);
         self.inner.mmap[STATE_OFFSET] = STATE_REQ_READY;
-        // No flush: same-section views are cache-coherent cross-process.
+        let t_wait = Instant::now();
 
         unsafe {
             SetEvent(self.inner.h_req_event);
             let rc = WaitForSingleObject(self.inner.h_res_event, WAIT_TIMEOUT_MS);
             assert_eq!(rc, 0, "Timed out waiting for server response ({} ms)", WAIT_TIMEOUT_MS);
         }
+        let t_read = Instant::now();
 
         std::sync::atomic::fence(Ordering::SeqCst);
         let out_len = u32::from_le_bytes([
@@ -267,10 +275,17 @@ impl JsonShmemClient {
             self.inner.mmap[OUTPUT_LEN_OFFSET + 2],
             self.inner.mmap[OUTPUT_LEN_OFFSET + 3],
         ]) as usize;
-        // Events carry all synchronization; no state write/flush needed after read.
-        String::from_utf8(
+        let result = String::from_utf8(
             self.inner.mmap[OUTPUT_BUFFER_OFFSET..OUTPUT_BUFFER_OFFSET + out_len].to_vec()
-        ).unwrap()
+        ).unwrap();
+        let t_done = Instant::now();
+
+        (
+            result,
+            t_wait.duration_since(t_write).as_secs_f64() * 1_000_000.0,
+            t_read.duration_since(t_wait).as_secs_f64() * 1_000_000.0,
+            t_done.duration_since(t_read).as_secs_f64() * 1_000_000.0,
+        )
     }
 }
 
@@ -301,24 +316,36 @@ impl StdioClient {
     }
 
     fn send_request(&mut self, request: &serde_json::Value) -> String {
+        let (resp, _, _, _) = self.send_request_phased(request);
+        resp
+    }
+
+    fn send_request_phased(&mut self, request: &serde_json::Value) -> (String, f64, f64, f64) {
+        let t_encode = Instant::now();
         let json_str = serde_json::to_string(request).unwrap() + "\n";
+        let encode_us = t_encode.elapsed().as_secs_f64() * 1_000_000.0;
+
+        let t_write = Instant::now();
         let stdin = self.child.stdin.as_mut().unwrap();
         stdin.write_all(json_str.as_bytes()).unwrap();
         stdin.flush().unwrap();
+        let write_us = t_write.elapsed().as_secs_f64() * 1_000_000.0;
 
-        // Read lines until we get valid JSON (skip log lines)
-        loop {
+        let t_read = Instant::now();
+        let result = loop {
             let mut line = String::new();
             self.reader.read_line(&mut line).unwrap();
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
             }
-            // Try to parse as JSON - if it fails, it's a log line, skip it
             if serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
-                return trimmed.to_string();
+                break trimmed.to_string();
             }
-        }
+        };
+        let read_us = t_read.elapsed().as_secs_f64() * 1_000_000.0;
+
+        (result, encode_us, write_us, read_us)
     }
 }
 
@@ -326,6 +353,513 @@ impl Drop for StdioClient {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+// ─── NDA-over-Stdio Client (NDA binary frames over stdin/stdout pipes) ────
+
+struct NdaStdioClient {
+    child: Child,
+    reader: std::io::BufReader<std::process::ChildStdout>,
+}
+
+impl NdaStdioClient {
+    fn new(server_path: &str) -> Self {
+        let mut child = Command::new(server_path)
+            .arg("--mode").arg("stdio")
+            .env("VELOCITY_RATE_LIMIT", "1000000")
+            .env("VELOCITY_RATE_BURST", "1000000")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("Failed to start NDA stdio server");
+
+        let stdout = child.stdout.take().unwrap();
+        let reader = BufReader::new(stdout);
+
+        NdaStdioClient { child, reader }
+    }
+
+    fn send_request(&mut self, request: &serde_json::Value) -> String {
+        let (resp, _, _, _) = self.send_request_phased(request);
+        resp
+    }
+
+    fn send_request_phased(&mut self, request: &serde_json::Value) -> (String, f64, f64, f64) {
+        use std::io::Read;
+
+        let t_build = Instant::now();
+        let method_str = request["method"].as_str().unwrap_or("");
+        let method_code = match method_str {
+            "initialize" => METHOD_INITIALIZE,
+            "notifications/initialized" => NOTIF_INITIALIZED,
+            "ping" => METHOD_PING,
+            "tools/list" => METHOD_TOOLS_LIST,
+            "tools/call" => METHOD_TOOLS_CALL,
+            "health/check" => METHOD_HEALTH_CHECK,
+            _ => 0xFF,
+        };
+        let id = request["id"].as_u64().unwrap_or(0);
+        let params = &request["params"];
+        let frame = build_nda_request(method_code, id, params);
+        let build_us = t_build.elapsed().as_secs_f64() * 1_000_000.0;
+
+        let t_write = Instant::now();
+        let stdin = self.child.stdin.as_mut().unwrap();
+        stdin.write_all(&(frame.len() as u32).to_be_bytes()).unwrap();
+        stdin.write_all(&frame).unwrap();
+        stdin.flush().unwrap();
+        let write_us = t_write.elapsed().as_secs_f64() * 1_000_000.0;
+
+        let t_read = Instant::now();
+        let mut len_buf = [0u8; 4];
+        self.reader.read_exact(&mut len_buf).unwrap();
+        let frame_len = u32::from_be_bytes(len_buf) as usize;
+        let mut resp_frame = vec![0u8; frame_len];
+        self.reader.read_exact(&mut resp_frame).unwrap();
+        assert_eq!(&resp_frame[0..4], b"NMCP", "Invalid NDA response magic");
+        let payload = &resp_frame[36..];
+        let result = if payload.len() > 1 {
+            let mut offset = 1;
+            let id_consumed = skip_tlv_size(&payload[offset..]);
+            offset += id_consumed;
+            if offset < payload.len() {
+                let (json_val, _) = decode_json_value_from_tlv(&payload[offset..]);
+                serde_json::to_string(&json_val).unwrap()
+            } else {
+                "{}".to_string()
+            }
+        } else {
+            "{}".to_string()
+        };
+        let read_us = t_read.elapsed().as_secs_f64() * 1_000_000.0;
+
+        (result, build_us, write_us, read_us)
+    }
+}
+
+// ─── HTTP Client (JSON-RPC over HTTP using ureq) ────────────────────────────
+
+struct HttpClient {
+    url: String,
+    agent: ureq::Agent,
+}
+
+impl HttpClient {
+    fn new(port: u16) -> Self {
+        HttpClient {
+            url: format!("http://127.0.0.1:{}/v1/mcp", port),
+            agent: ureq::AgentBuilder::new()
+                .timeout_connect(Duration::from_secs(5))
+                .timeout_read(Duration::from_secs(5))
+                .build(),
+        }
+    }
+
+    fn send_request(&mut self, request: &serde_json::Value) -> String {
+        let (resp, _, _, _) = self.send_request_phased(request);
+        resp
+    }
+
+    fn send_request_phased(&mut self, request: &serde_json::Value) -> (String, f64, f64, f64) {
+        let t_encode = Instant::now();
+        let body = serde_json::to_string(request).unwrap();
+        let encode_us = t_encode.elapsed().as_secs_f64() * 1_000_000.0;
+
+        let t_send = Instant::now();
+        let resp = self.agent
+            .post(&self.url)
+            .set("Content-Type", "application/json")
+            .send_string(&body)
+            .unwrap_or_else(|e| panic!("HTTP request failed: {}", e));
+        let send_us = t_send.elapsed().as_secs_f64() * 1_000_000.0;
+
+        let t_read = Instant::now();
+        let result = resp.into_string().unwrap_or_else(|e| panic!("Failed to read HTTP response: {}", e));
+        let read_us = t_read.elapsed().as_secs_f64() * 1_000_000.0;
+
+        (result, encode_us, send_us, read_us)
+    }
+}
+
+// ─── NDA/HTTP Client ─────────────────────────────────────────────────────────
+
+struct NdaHttpClient {
+    url: String,
+    agent: ureq::Agent,
+}
+
+impl NdaHttpClient {
+    fn new(port: u16) -> Self {
+        NdaHttpClient {
+            url: format!("http://127.0.0.1:{}/v1/mcp/nda", port),
+            agent: ureq::AgentBuilder::new()
+                .timeout_connect(Duration::from_secs(5))
+                .timeout_read(Duration::from_secs(5))
+                .build(),
+        }
+    }
+
+    fn send_nda_request(&mut self, method_code: u8, id: u64, data: &serde_json::Value) -> Vec<u8> {
+        let (resp, _, _, _) = self.send_nda_request_phased(method_code, id, data);
+        resp
+    }
+
+    fn send_nda_request_phased(&mut self, method_code: u8, id: u64, data: &serde_json::Value) -> (Vec<u8>, f64, f64, f64) {
+        use std::io::Read;
+        // Phase 1: Build NDA frame (TLV encode + SHA-256)
+        let t_build = Instant::now();
+        let mut payload = Vec::new();
+        payload.push(method_code);
+        
+        // Encode ID as TLV integer
+        payload.push(0x02); // Integer type
+        payload.extend_from_slice(&(id as i64).to_be_bytes());
+        
+        // Encode data if not null
+        if !data.is_null() {
+            encode_json_value_to_tlv(data, &mut payload);
+        }
+        
+        // Build frame with magic + merkle + payload
+        let mut frame = Vec::new();
+        frame.extend_from_slice(b"NMCP"); // magic
+        
+        // Compute SHA-256 of payload
+        use sha2::{Sha256, Digest};
+        let mut hasher = Sha256::new();
+        hasher.update(&payload);
+        let merkle = hasher.finalize();
+        frame.extend_from_slice(&merkle);
+        
+        frame.extend_from_slice(&payload);
+        let frame_build_us = t_build.elapsed().as_secs_f64() * 1_000_000.0;
+        
+        // Phase 2: HTTP POST (send request + wait for response headers)
+        let t_http = Instant::now();
+        let resp = self.agent
+            .post(&self.url)
+            .set("Content-Type", "application/octet-stream")
+            .send_bytes(&frame)
+            .unwrap_or_else(|e| panic!("NDA/HTTP request failed: {}", e));
+        let http_send_us = t_http.elapsed().as_secs_f64() * 1_000_000.0;
+        
+        // Phase 3: Read response body
+        let t_read = Instant::now();
+        let mut buf = Vec::new();
+        resp.into_reader()
+            .read_to_end(&mut buf)
+            .unwrap_or_else(|e| panic!("Failed to read NDA/HTTP response: {}", e));
+        let response_read_us = t_read.elapsed().as_secs_f64() * 1_000_000.0;
+        
+        (buf, frame_build_us, http_send_us, response_read_us)
+    }
+}
+
+fn encode_json_value_to_tlv(value: &serde_json::Value, buf: &mut Vec<u8>) {
+    match value {
+        serde_json::Value::String(s) => {
+            buf.push(0x01);
+            let bytes = s.as_bytes();
+            buf.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+            buf.extend_from_slice(bytes);
+        }
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                buf.push(0x02);
+                buf.extend_from_slice(&i.to_be_bytes());
+            } else if let Some(f) = n.as_f64() {
+                buf.push(0x07);
+                buf.extend_from_slice(&f.to_be_bytes());
+            } else {
+                buf.push(0x02);
+                buf.extend_from_slice(&0i64.to_be_bytes());
+            }
+        }
+        serde_json::Value::Bool(b) => {
+            buf.push(0x03);
+            buf.push(if *b { 1 } else { 0 });
+        }
+        serde_json::Value::Null => {
+            buf.push(0x04);
+        }
+        serde_json::Value::Array(arr) => {
+            buf.push(0x05);
+            buf.extend_from_slice(&(arr.len() as u32).to_be_bytes());
+            for item in arr {
+                encode_json_value_to_tlv(item, buf);
+            }
+        }
+        serde_json::Value::Object(obj) => {
+            buf.push(0x06);
+            buf.extend_from_slice(&(obj.len() as u32).to_be_bytes());
+            for (k, v) in obj {
+                buf.extend_from_slice(&(k.len() as u16).to_be_bytes());
+                buf.extend_from_slice(k.as_bytes());
+                encode_json_value_to_tlv(v, buf);
+            }
+        }
+    }
+}
+
+fn spawn_http_server(server_path: &str, port: u16) -> Child {
+    let child = Command::new(server_path)
+        .arg("--mode").arg("http")
+        .arg("--addr").arg(format!("127.0.0.1:{}", port))
+        .env("VELOCITY_RATE_LIMIT", "1000000")
+        .env("VELOCITY_RATE_BURST", "1000000")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("Failed to start HTTP server");
+
+    // Wait for server to accept connections, then give it extra time to initialize
+    for _ in 0..100 {
+        std::thread::sleep(Duration::from_millis(50));
+        if std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() {
+            std::thread::sleep(Duration::from_millis(200));
+            return child;
+        }
+    }
+    panic!("HTTP server didn't start on port {} within 5s", port);
+}
+
+// ─── Path Resolution ─────────────────────────────────────────────────────────
+
+/// Find bench_nodejs/server.js relative to CWD or the executable location.
+fn resolve_node_server() -> String {
+    // Try CWD-relative first (normal case when running from workspace root)
+    let cwd_path = "bench_nodejs/server.js";
+    if std::path::Path::new(cwd_path).exists() {
+        return cwd_path.to_string();
+    }
+
+    // Try relative to the executable (bench_nda/target/release/bench_nda.exe -> ../../bench_nodejs/server.js)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join("../../bench_nodejs/server.js");
+            if candidate.exists() {
+                return candidate.to_string_lossy().to_string();
+            }
+        }
+    }
+
+    panic!("Cannot find bench_nodejs/server.js. Run from workspace root or ensure server.js is accessible.");
+}
+
+// ─── Node.js JSON/stdio Client ───────────────────────────────────────────────
+
+struct NodeJsStdioClient {
+    child: Child,
+    reader: BufReader<std::process::ChildStdout>,
+}
+
+impl NodeJsStdioClient {
+    fn new(server_js_path: &str) -> Self {
+        let mut child = Command::new("node")
+            .arg(server_js_path)
+            .env("VELOCITY_RATE_LIMIT", "1000000")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("Failed to start Node.js server (is 'node' in PATH?)");
+
+        let stdout = child.stdout.take().unwrap();
+        let reader = BufReader::new(stdout);
+
+        NodeJsStdioClient { child, reader }
+    }
+
+    fn send_request(&mut self, request: &serde_json::Value) -> String {
+        let (resp, _, _, _) = self.send_request_phased(request);
+        resp
+    }
+
+    fn send_request_phased(&mut self, request: &serde_json::Value) -> (String, f64, f64, f64) {
+        let t_encode = Instant::now();
+        let json_str = serde_json::to_string(request).unwrap() + "\n";
+        let encode_us = t_encode.elapsed().as_secs_f64() * 1_000_000.0;
+
+        let t_write = Instant::now();
+        let stdin = self.child.stdin.as_mut().unwrap();
+        stdin.write_all(json_str.as_bytes()).unwrap();
+        stdin.flush().unwrap();
+        let write_us = t_write.elapsed().as_secs_f64() * 1_000_000.0;
+
+        let t_read = Instant::now();
+        let result = loop {
+            let mut line = String::new();
+            self.reader.read_line(&mut line).unwrap();
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
+                break trimmed.to_string();
+            }
+        };
+        let read_us = t_read.elapsed().as_secs_f64() * 1_000_000.0;
+
+        (result, encode_us, write_us, read_us)
+    }
+}
+
+impl Drop for NodeJsStdioClient {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+// ─── Node.js JSON/HTTP Client ────────────────────────────────────────────────
+
+struct NodeJsHttpClient {
+    child: Child,
+    inner: HttpClient,
+}
+
+impl NodeJsHttpClient {
+    fn new(server_js_path: &str, port: u16) -> Self {
+        let mut child = Command::new("node")
+            .arg(server_js_path)
+            .arg("--http")
+            .arg(port.to_string())
+            .env("VELOCITY_RATE_LIMIT", "1000000")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("Failed to start Node.js HTTP server");
+
+        // Wait for server to accept connections
+        for _ in 0..100 {
+            std::thread::sleep(Duration::from_millis(50));
+            if std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() {
+                std::thread::sleep(Duration::from_millis(200));
+                return NodeJsHttpClient {
+                    child,
+                    inner: HttpClient::new(port),
+                };
+            }
+        }
+        let _ = child.kill();
+        panic!("Node.js HTTP server didn't start on port {} within 5s", port);
+    }
+
+    fn send_request(&mut self, request: &serde_json::Value) -> String {
+        let (resp, _, _, _) = self.send_request_phased(request);
+        resp
+    }
+
+    fn send_request_phased(&mut self, request: &serde_json::Value) -> (String, f64, f64, f64) {
+        self.inner.send_request_phased(request)
+    }
+}
+
+impl Drop for NodeJsHttpClient {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Compute the byte size of a single TLV value (type tag + length + data).
+fn skip_tlv_size(buf: &[u8]) -> usize {
+    if buf.is_empty() { return 0; }
+    match buf[0] {
+        0x01 => { // String
+            if buf.len() < 5 { return buf.len(); }
+            let len = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+            5 + len
+        }
+        0x02 => 9, // Integer (tag + 8 bytes)
+        0x03 => 2, // Bool (tag + 1 byte)
+        0x04 => 1, // Null (tag only)
+        0x05 => { // Array
+            if buf.len() < 5 { return buf.len(); }
+            let count = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+            let mut offset = 5;
+            for _ in 0..count {
+                offset += skip_tlv_size(&buf[offset..]);
+            }
+            offset
+        }
+        0x06 => { // Object
+            if buf.len() < 5 { return buf.len(); }
+            let count = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+            let mut offset = 5;
+            for _ in 0..count {
+                if offset + 2 > buf.len() { break; }
+                let klen = u16::from_be_bytes([buf[offset], buf[offset + 1]]) as usize;
+                offset += 2 + klen;
+                offset += skip_tlv_size(&buf[offset..]);
+            }
+            offset
+        }
+        0x07 => 9, // Float64
+        _ => buf.len(),
+    }
+}
+
+impl Drop for NdaStdioClient {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn decode_json_value_from_tlv(buf: &[u8]) -> (serde_json::Value, usize) {
+    if buf.is_empty() {
+        return (serde_json::Value::Null, 0);
+    }
+    
+    let type_code = buf[0];
+    match type_code {
+        0x01 => { // String
+            let len = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+            let s = String::from_utf8_lossy(&buf[5..5 + len]).to_string();
+            (serde_json::Value::String(s), 5 + len)
+        }
+        0x02 => { // Integer
+            let i = i64::from_be_bytes([buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8]]);
+            (serde_json::Value::Number(serde_json::Number::from(i)), 9)
+        }
+        0x03 => { // Bool
+            (serde_json::Value::Bool(buf[1] != 0), 2)
+        }
+        0x04 => { // Null
+            (serde_json::Value::Null, 1)
+        }
+        0x05 => { // Array
+            let count = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+            let mut arr = Vec::new();
+            let mut offset = 5;
+            for _ in 0..count {
+                let (val, consumed) = decode_json_value_from_tlv(&buf[offset..]);
+                arr.push(val);
+                offset += consumed;
+            }
+            (serde_json::Value::Array(arr), offset)
+        }
+        0x06 => { // Object
+            let count = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+            let mut obj = serde_json::Map::new();
+            let mut offset = 5;
+            for _ in 0..count {
+                let key_len = u16::from_be_bytes([buf[offset], buf[offset + 1]]) as usize;
+                offset += 2;
+                let key = String::from_utf8_lossy(&buf[offset..offset + key_len]).to_string();
+                offset += key_len;
+                let (val, consumed) = decode_json_value_from_tlv(&buf[offset..]);
+                obj.insert(key, val);
+                offset += consumed;
+            }
+            (serde_json::Value::Object(obj), offset)
+        }
+        _ => (serde_json::Value::Null, 0)
     }
 }
 
@@ -694,24 +1228,50 @@ fn wait_for_buffer_file(buffer_path: &str) {
 // ─── Benchmark Helpers ────────────────────────────────────────────────────
 
 struct BenchResult {
-    latencies_us: Vec<f64>,
+    first_call_us: Option<f64>,
+    second_call_us: Option<f64>,
+    warm_latencies_us: Vec<f64>,
 }
 
 impl BenchResult {
     fn avg_ms(&self) -> f64 {
-        self.latencies_us.iter().sum::<f64>() / self.latencies_us.len() as f64 / 1000.0
+        if self.warm_latencies_us.is_empty() {
+            0.0
+        } else {
+            self.warm_latencies_us.iter().sum::<f64>() / self.warm_latencies_us.len() as f64 / 1000.0
+        }
+    }
+
+    fn first_call_ms(&self) -> Option<f64> {
+        self.first_call_us.map(|us| us / 1000.0)
+    }
+
+    fn second_call_ms(&self) -> Option<f64> {
+        self.second_call_us.map(|us| us / 1000.0)
+    }
+
+    fn warm_avg_ms(&self) -> f64 {
+        self.avg_ms()
     }
 
     fn percentile(&self, p: f64) -> f64 {
-        let mut sorted = self.latencies_us.clone();
+        let mut sorted = self.warm_latencies_us.clone();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let idx = ((p / 100.0) * sorted.len() as f64).ceil() as usize;
-        sorted[idx.min(sorted.len()) - 1] / 1000.0
+        if sorted.is_empty() {
+            0.0
+        } else {
+            let idx = ((p / 100.0) * sorted.len() as f64).ceil() as usize;
+            sorted[idx.min(sorted.len()) - 1] / 1000.0
+        }
     }
 
     fn throughput(&self) -> f64 {
-        let total_ms: f64 = self.latencies_us.iter().sum::<f64>() / 1000.0;
-        self.latencies_us.len() as f64 / total_ms * 1000.0
+        let total_ms: f64 = self.warm_latencies_us.iter().sum::<f64>() / 1000.0;
+        if total_ms == 0.0 {
+            0.0
+        } else {
+            self.warm_latencies_us.len() as f64 / total_ms * 1000.0
+        }
     }
 }
 
@@ -727,14 +1287,25 @@ const ROUNDS: usize = 3;
 
 fn bench_nda_ping(client: &mut NdaShmemClient, iterations: usize) -> BenchResult {
     let frame = build_nda_request(METHOD_PING, 1, &serde_json::Value::Null);
-    let mut latencies = Vec::with_capacity(iterations);
+    let mut warm_latencies = Vec::with_capacity(iterations);
+    let mut first_call_us = None;
+    let mut second_call_us = None;
     let (mut write_us, mut wait_us, mut read_us) = (0.0f64, 0.0f64, 0.0f64);
 
-    for _ in 0..iterations {
+    for i in 0..iterations {
         let start = Instant::now();
         let (resp, w, wt, r) = client.send_request_phased(&frame);
         let elapsed = start.elapsed();
-        latencies.push(elapsed.as_secs_f64() * 1_000_000.0);
+        let latency_us = elapsed.as_secs_f64() * 1_000_000.0;
+
+        if i == 0 {
+            first_call_us = Some(latency_us);
+        } else if i == 1 {
+            second_call_us = Some(latency_us);
+        } else {
+            warm_latencies.push(latency_us);
+        }
+
         validate_nda_response(&resp, 1, "nda_ping");
         write_us += w;
         wait_us += wt;
@@ -742,61 +1313,97 @@ fn bench_nda_ping(client: &mut NdaShmemClient, iterations: usize) -> BenchResult
     }
     let n = iterations as f64;
     println!(
-        "    [client phases] write={:.1}us wait={:.1}us read+copy={:.1}us",
+        "    [client phases] write={:.1}us wait={:.1}us read={:.1}us",
         write_us / n, wait_us / n, read_us / n
     );
 
-    BenchResult { latencies_us: latencies }
+    BenchResult { first_call_us, second_call_us, warm_latencies_us: warm_latencies }
 }
 
 fn bench_nda_tools_list(client: &mut NdaShmemClient, iterations: usize) -> BenchResult {
     let frame = build_nda_request(METHOD_TOOLS_LIST, 1, &serde_json::Value::Null);
-    let mut latencies = Vec::with_capacity(iterations);
+    let mut warm_latencies = Vec::with_capacity(iterations);
+    let mut first_call_us = None;
+    let mut second_call_us = None;
 
     for i in 0..iterations {
         let start = Instant::now();
         let resp = client.send_request(&frame);
         let elapsed = start.elapsed();
-        latencies.push(elapsed.as_secs_f64() * 1_000_000.0);
+        let latency_us = elapsed.as_secs_f64() * 1_000_000.0;
+
+        if i == 0 {
+            first_call_us = Some(latency_us);
+        } else if i == 1 {
+            second_call_us = Some(latency_us);
+        } else {
+            warm_latencies.push(latency_us);
+        }
+
         validate_nda_response(&resp, 1, &format!("nda_tools_list[{}]", i));
     }
 
-    BenchResult { latencies_us: latencies }
+    BenchResult { first_call_us, second_call_us, warm_latencies_us: warm_latencies }
 }
 
 fn bench_nda_tools_call(client: &mut NdaShmemClient, iterations: usize, tool: &str, args: &serde_json::Value) -> BenchResult {
     let data = serde_json::json!({"name": tool, "arguments": args});
     let frame = build_nda_request(METHOD_TOOLS_CALL, 1, &data);
-    let mut latencies = Vec::with_capacity(iterations);
+    let mut warm_latencies = Vec::with_capacity(iterations);
+    let mut first_call_us = None;
+    let mut second_call_us = None;
 
     for i in 0..iterations {
         let start = Instant::now();
         let resp = client.send_request(&frame);
         let elapsed = start.elapsed();
-        latencies.push(elapsed.as_secs_f64() * 1_000_000.0);
+        let latency_us = elapsed.as_secs_f64() * 1_000_000.0;
+
+        if i == 0 {
+            first_call_us = Some(latency_us);
+        } else if i == 1 {
+            second_call_us = Some(latency_us);
+        } else {
+            warm_latencies.push(latency_us);
+        }
+
         validate_nda_response(&resp, 1, &format!("nda_tools_call[{}]", i));
     }
 
-    BenchResult { latencies_us: latencies }
+    BenchResult { first_call_us, second_call_us, warm_latencies_us: warm_latencies }
 }
 
 fn bench_nda_health(client: &mut NdaShmemClient, iterations: usize) -> BenchResult {
     let frame = build_nda_request(METHOD_HEALTH_CHECK, 1, &serde_json::Value::Null);
-    let mut latencies = Vec::with_capacity(iterations);
+    let mut warm_latencies = Vec::with_capacity(iterations);
+    let mut first_call_us = None;
+    let mut second_call_us = None;
 
     for i in 0..iterations {
         let start = Instant::now();
         let resp = client.send_request(&frame);
         let elapsed = start.elapsed();
-        latencies.push(elapsed.as_secs_f64() * 1_000_000.0);
+        let latency_us = elapsed.as_secs_f64() * 1_000_000.0;
+
+        if i == 0 {
+            first_call_us = Some(latency_us);
+        } else if i == 1 {
+            second_call_us = Some(latency_us);
+        } else {
+            warm_latencies.push(latency_us);
+        }
+
         validate_nda_response(&resp, 1, &format!("nda_health[{}]", i));
     }
 
-    BenchResult { latencies_us: latencies }
+    BenchResult { first_call_us, second_call_us, warm_latencies_us: warm_latencies }
 }
 
 fn bench_stdio(client: &mut StdioClient, iterations: usize, method: &str, params: &serde_json::Value) -> BenchResult {
-    let mut latencies = Vec::with_capacity(iterations);
+    let mut warm_latencies = Vec::with_capacity(iterations);
+    let mut first_call_us = None;
+    let mut second_call_us = None;
+    let (mut encode_us, mut write_us, mut read_us) = (0.0f64, 0.0f64, 0.0f64);
 
     for i in 0..iterations {
         let req = serde_json::json!({
@@ -807,11 +1414,21 @@ fn bench_stdio(client: &mut StdioClient, iterations: usize, method: &str, params
         });
 
         let start = Instant::now();
-        let resp_str = client.send_request(&req);
+        let (resp_str, e, w, r) = client.send_request_phased(&req);
         let elapsed = start.elapsed();
-        latencies.push(elapsed.as_secs_f64() * 1_000_000.0);
+        let latency_us = elapsed.as_secs_f64() * 1_000_000.0;
+        encode_us += e;
+        write_us += w;
+        read_us += r;
 
-        // Validate response is valid JSON-RPC (skip ID check due to buffer sync issues)
+        if i == 0 {
+            first_call_us = Some(latency_us);
+        } else if i == 1 {
+            second_call_us = Some(latency_us);
+        } else {
+            warm_latencies.push(latency_us);
+        }
+
         let resp: serde_json::Value = serde_json::from_str(&resp_str)
             .expect(&format!("Invalid JSON response at iter {}: {}", i, &resp_str[..resp_str.len().min(100)]));
         assert!(resp.get("result").is_some() || resp.get("error").is_some(),
@@ -820,11 +1437,18 @@ fn bench_stdio(client: &mut StdioClient, iterations: usize, method: &str, params
                 "stdio iter {} hit server rate limit — throttle too tight", i);
     }
 
-    BenchResult { latencies_us: latencies }
+    let n = iterations as f64;
+    println!("    [client phases] json_encode={:.1}us pipe_write={:.1}us pipe_read={:.1}us",
+        encode_us / n, write_us / n, read_us / n);
+
+    BenchResult { first_call_us, second_call_us, warm_latencies_us: warm_latencies }
 }
 
 fn bench_json_shmem(client: &mut JsonShmemClient, iterations: usize, method: &str, params: &serde_json::Value) -> BenchResult {
-    let mut latencies = Vec::with_capacity(iterations);
+    let mut warm_latencies = Vec::with_capacity(iterations);
+    let mut first_call_us = None;
+    let mut second_call_us = None;
+    let (mut write_us, mut wait_us, mut read_us) = (0.0f64, 0.0f64, 0.0f64);
 
     for i in 0..iterations {
         let req = serde_json::json!({
@@ -835,25 +1459,277 @@ fn bench_json_shmem(client: &mut JsonShmemClient, iterations: usize, method: &st
         });
 
         let start = Instant::now();
-        let resp_str = client.send_json(&req);
+        let (resp_str, w, wt, r) = client.send_json_phased(&req);
         let elapsed = start.elapsed();
-        latencies.push(elapsed.as_secs_f64() * 1_000_000.0);
+        let latency_us = elapsed.as_secs_f64() * 1_000_000.0;
+        write_us += w;
+        wait_us += wt;
+        read_us += r;
 
-        // Validate response is valid JSON-RPC
+        if i == 0 {
+            first_call_us = Some(latency_us);
+        } else if i == 1 {
+            second_call_us = Some(latency_us);
+        } else {
+            warm_latencies.push(latency_us);
+        }
+
         let resp: serde_json::Value = serde_json::from_str(&resp_str)
             .expect(&format!("Invalid JSON-shmem response at iter {}", i));
         assert!(resp.get("result").is_some() || resp.get("error").is_some(),
                 "JSON-shmem response missing result/error at iter {}", i);
-        assert!(!resp_str.contains("Rate limit exceeded"),
-                "json-shmem iter {} hit server rate limit — throttle too tight", i);
     }
 
-    BenchResult { latencies_us: latencies }
+    let n = iterations as f64;
+    println!("    [client phases] write={:.1}us wait={:.1}us read={:.1}us",
+        write_us / n, wait_us / n, read_us / n);
+
+    BenchResult { first_call_us, second_call_us, warm_latencies_us: warm_latencies }
+}
+
+fn bench_nda_stdio(client: &mut NdaStdioClient, iterations: usize, method: &str, params: &serde_json::Value) -> BenchResult {
+    let mut warm_latencies = Vec::with_capacity(iterations);
+    let mut first_call_us = None;
+    let mut second_call_us = None;
+    let (mut build_us, mut write_us, mut read_us) = (0.0f64, 0.0f64, 0.0f64);
+
+    for i in 0..iterations {
+        let req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+            "id": i
+        });
+
+        let start = Instant::now();
+        let (_resp_str, b, w, r) = client.send_request_phased(&req);
+        let elapsed = start.elapsed();
+        let latency_us = elapsed.as_secs_f64() * 1_000_000.0;
+        build_us += b;
+        write_us += w;
+        read_us += r;
+
+        if i == 0 {
+            first_call_us = Some(latency_us);
+        } else if i == 1 {
+            second_call_us = Some(latency_us);
+        } else {
+            warm_latencies.push(latency_us);
+        }
+    }
+
+    let n = iterations as f64;
+    println!("    [client phases] frame_build={:.1}us pipe_write={:.1}us pipe_read={:.1}us",
+        build_us / n, write_us / n, read_us / n);
+
+    BenchResult { first_call_us, second_call_us, warm_latencies_us: warm_latencies }
+}
+
+fn bench_http(client: &mut HttpClient, iterations: usize, method: &str, params: &serde_json::Value) -> BenchResult {
+    let mut warm_latencies = Vec::with_capacity(iterations);
+    let mut first_call_us = None;
+    let mut second_call_us = None;
+    let (mut encode_us, mut send_us, mut read_us) = (0.0f64, 0.0f64, 0.0f64);
+
+    for i in 0..iterations {
+        let req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+            "id": i
+        });
+
+        let start = Instant::now();
+        let (resp_str, e, s, r) = client.send_request_phased(&req);
+        let elapsed = start.elapsed();
+        let latency_us = elapsed.as_secs_f64() * 1_000_000.0;
+        encode_us += e;
+        send_us += s;
+        read_us += r;
+
+        if i == 0 {
+            first_call_us = Some(latency_us);
+        } else if i == 1 {
+            second_call_us = Some(latency_us);
+        } else {
+            warm_latencies.push(latency_us);
+        }
+
+        let resp: serde_json::Value = serde_json::from_str(&resp_str)
+            .expect(&format!("Invalid JSON response at iter {}: {}", i, &resp_str[..resp_str.len().min(100)]));
+        assert!(resp.get("result").is_some() || resp.get("error").is_some(),
+                "HTTP response missing result/error at iter {}", i);
+    }
+
+    let n = iterations as f64;
+    println!("    [client phases] json_encode={:.1}us http_send={:.1}us response_read={:.1}us",
+        encode_us / n, send_us / n, read_us / n);
+
+    BenchResult { first_call_us, second_call_us, warm_latencies_us: warm_latencies }
+}
+
+fn bench_node_stdio(client: &mut NodeJsStdioClient, iterations: usize, method: &str, params: &serde_json::Value) -> BenchResult {
+    let mut warm_latencies = Vec::with_capacity(iterations);
+    let mut first_call_us = None;
+    let mut second_call_us = None;
+    let (mut encode_us, mut write_us, mut read_us) = (0.0f64, 0.0f64, 0.0f64);
+
+    for i in 0..iterations {
+        let req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+            "id": i
+        });
+
+        let start = Instant::now();
+        let (resp_str, e, w, r) = client.send_request_phased(&req);
+        let elapsed = start.elapsed();
+        let latency_us = elapsed.as_secs_f64() * 1_000_000.0;
+        encode_us += e;
+        write_us += w;
+        read_us += r;
+
+        if i == 0 {
+            first_call_us = Some(latency_us);
+        } else if i == 1 {
+            second_call_us = Some(latency_us);
+        } else {
+            warm_latencies.push(latency_us);
+        }
+
+        let resp: serde_json::Value = serde_json::from_str(&resp_str)
+            .expect(&format!("Invalid Node.js stdio response at iter {}: {}", i, &resp_str[..resp_str.len().min(100)]));
+        assert!(resp.get("result").is_some() || resp.get("error").is_some(),
+                "Node.js stdio response missing result/error at iter {}", i);
+    }
+
+    let n = iterations as f64;
+    println!("    [client phases] json_encode={:.1}us pipe_write={:.1}us pipe_read={:.1}us",
+        encode_us / n, write_us / n, read_us / n);
+
+    BenchResult { first_call_us, second_call_us, warm_latencies_us: warm_latencies }
+}
+
+fn bench_node_http(client: &mut NodeJsHttpClient, iterations: usize, method: &str, params: &serde_json::Value) -> BenchResult {
+    let mut warm_latencies = Vec::with_capacity(iterations);
+    let mut first_call_us = None;
+    let mut second_call_us = None;
+    let (mut encode_us, mut send_us, mut read_us) = (0.0f64, 0.0f64, 0.0f64);
+
+    for i in 0..iterations {
+        let req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+            "id": i
+        });
+
+        let start = Instant::now();
+        let (resp_str, e, s, r) = client.send_request_phased(&req);
+        let elapsed = start.elapsed();
+        let latency_us = elapsed.as_secs_f64() * 1_000_000.0;
+        encode_us += e;
+        send_us += s;
+        read_us += r;
+
+        if i == 0 {
+            first_call_us = Some(latency_us);
+        } else if i == 1 {
+            second_call_us = Some(latency_us);
+        } else {
+            warm_latencies.push(latency_us);
+        }
+
+        let resp: serde_json::Value = serde_json::from_str(&resp_str)
+            .expect(&format!("Invalid Node.js HTTP response at iter {}: {}", i, &resp_str[..resp_str.len().min(100)]));
+        assert!(resp.get("result").is_some() || resp.get("error").is_some(),
+                "Node.js HTTP response missing result/error at iter {}", i);
+    }
+
+    let n = iterations as f64;
+    println!("    [client phases] json_encode={:.1}us http_send={:.1}us response_read={:.1}us",
+        encode_us / n, send_us / n, read_us / n);
+
+    BenchResult { first_call_us, second_call_us, warm_latencies_us: warm_latencies }
+}
+
+fn bench_nda_http(client: &mut NdaHttpClient, iterations: usize, method_code: u8) -> BenchResult {
+    let mut warm_latencies = Vec::with_capacity(iterations);
+    let mut first_call_us = None;
+    let mut second_call_us = None;
+    let (mut build_us, mut send_us, mut read_us) = (0.0f64, 0.0f64, 0.0f64);
+
+    for i in 0..iterations {
+        let start = Instant::now();
+        let (resp, b, s, r) = client.send_nda_request_phased(method_code, i as u64, &serde_json::Value::Null);
+        let elapsed = start.elapsed();
+        let latency_us = elapsed.as_secs_f64() * 1_000_000.0;
+        build_us += b;
+        send_us += s;
+        read_us += r;
+
+        if i == 0 {
+            first_call_us = Some(latency_us);
+        } else if i == 1 {
+            second_call_us = Some(latency_us);
+        } else {
+            warm_latencies.push(latency_us);
+        }
+
+        assert!(resp.len() >= FRAME_HEADER_SIZE + 1, "NDA/HTTP response too small: {} bytes", resp.len());
+        assert_eq!(&resp[0..4], b"NMCP", "NDA/HTTP bad magic");
+        let status = resp[FRAME_HEADER_SIZE];
+        assert_eq!(status, STATUS_OK, "NDA/HTTP error status={} at iter {}", status, i);
+    }
+
+    let n = iterations as f64;
+    println!("    [client phases] frame_build={:.1}us http_send={:.1}us response_read={:.1}us",
+        build_us / n, send_us / n, read_us / n);
+
+    BenchResult { first_call_us, second_call_us, warm_latencies_us: warm_latencies }
+}
+
+fn bench_nda_http_call(client: &mut NdaHttpClient, iterations: usize, tool: &str, args: &serde_json::Value) -> BenchResult {
+    let data = serde_json::json!({"name": tool, "arguments": args});
+    let mut warm_latencies = Vec::with_capacity(iterations);
+    let mut first_call_us = None;
+    let mut second_call_us = None;
+    let (mut build_us, mut send_us, mut read_us) = (0.0f64, 0.0f64, 0.0f64);
+
+    for i in 0..iterations {
+        let start = Instant::now();
+        let (resp, b, s, r) = client.send_nda_request_phased(METHOD_TOOLS_CALL, i as u64, &data);
+        let elapsed = start.elapsed();
+        let latency_us = elapsed.as_secs_f64() * 1_000_000.0;
+        build_us += b;
+        send_us += s;
+        read_us += r;
+
+        if i == 0 {
+            first_call_us = Some(latency_us);
+        } else if i == 1 {
+            second_call_us = Some(latency_us);
+        } else {
+            warm_latencies.push(latency_us);
+        }
+
+        assert!(resp.len() >= FRAME_HEADER_SIZE + 1, "NDA/HTTP tools/call response too small");
+        assert_eq!(&resp[0..4], b"NMCP", "NDA/HTTP tools/call bad magic");
+        let status = resp[FRAME_HEADER_SIZE];
+        assert_eq!(status, STATUS_OK, "NDA/HTTP tools/call error status={} at iter {}", status, i);
+    }
+
+    let n = iterations as f64;
+    println!("    [client phases] frame_build={:.1}us http_send={:.1}us response_read={:.1}us",
+        build_us / n, send_us / n, read_us / n);
+
+    BenchResult { first_call_us, second_call_us, warm_latencies_us: warm_latencies }
 }
 
 // ─── Output Formatting ────────────────────────────────────────────────────
 
-fn print_comparison(name: &str, nda: &BenchResult, stdio: &BenchResult, shmem_json: Option<&BenchResult>) {
+fn print_comparison(name: &str, nda: &BenchResult, stdio: &BenchResult, shmem_json: Option<&BenchResult>, nda_stdio: Option<&BenchResult>, http: Option<&BenchResult>, node_stdio: Option<&BenchResult>, node_http: Option<&BenchResult>, nda_http: Option<&BenchResult>) {
     let nda_avg = nda.avg_ms();
     let stdio_avg = stdio.avg_ms();
     let nda_p99 = nda.percentile(99.0);
@@ -862,29 +1738,100 @@ fn print_comparison(name: &str, nda: &BenchResult, stdio: &BenchResult, shmem_js
     let p99_speedup = stdio_p99 / nda_p99;
 
     println!("─── {} ──────────────────────────────────────────", name);
-    println!("  {:24} {:>14} {:>14} {:>14}", "", "NDA/shmem", "JSON/stdio", "JSON/shmem");
-    if let Some(js) = shmem_json {
-        println!("  {:24} {:>12.3} ms {:>12.3} ms {:>12.3} ms", "Avg latency", nda_avg, stdio_avg, js.avg_ms());
-        println!("  {:24} {:>12.3} ms {:>12.3} ms {:>12.3} ms", "p50", nda.percentile(50.0), stdio.percentile(50.0), js.percentile(50.0));
-        println!("  {:24} {:>12.3} ms {:>12.3} ms {:>12.3} ms", "p95", nda.percentile(95.0), stdio.percentile(95.0), js.percentile(95.0));
-        println!("  {:24} {:>12.3} ms {:>12.3} ms {:>12.3} ms", "p99", nda_p99, stdio_p99, js.percentile(99.0));
-        println!("  {:24} {:>12.0} r/s {:>12.0} r/s {:>12.0} r/s", "Throughput", nda.throughput(), stdio.throughput(), js.throughput());
+
+    let has_all_8 = shmem_json.is_some() && nda_stdio.is_some() && http.is_some()
+        && node_stdio.is_some() && node_http.is_some() && nda_http.is_some();
+
+    if has_all_8 {
+        let js = shmem_json.unwrap();
+        let ns = nda_stdio.unwrap();
+        let ht = http.unwrap();
+        let njs = node_stdio.unwrap();
+        let njh = node_http.unwrap();
+        let nh = nda_http.unwrap();
+        println!("  {:24} {:>12} {:>12} {:>12} {:>12} {:>12} {:>12} {:>12} {:>12}", "", "NDA/shmem", "JSON/stdio", "JSON/shmem", "NDA/stdio", "JSON/HTTP", "Node/stdio", "Node/HTTP", "NDA/HTTP");
+
+        // First call (cold start of measurement batch)
+        let fmt_opt = |v: Option<f64>| -> String {
+            match v {
+                Some(ms) => format!("{:>10.3} ms", ms),
+                None => "         - ".to_string(),
+            }
+        };
+        println!("  {:24} {} {} {} {} {} {} {} {}", "1st call",
+            fmt_opt(nda.first_call_ms()), fmt_opt(stdio.first_call_ms()),
+            fmt_opt(js.first_call_ms()), fmt_opt(ns.first_call_ms()),
+            fmt_opt(ht.first_call_ms()), fmt_opt(njs.first_call_ms()),
+            fmt_opt(njh.first_call_ms()), fmt_opt(nh.first_call_ms()));
+        println!("  {:24} {} {} {} {} {} {} {} {}", "2nd call",
+            fmt_opt(nda.second_call_ms()), fmt_opt(stdio.second_call_ms()),
+            fmt_opt(js.second_call_ms()), fmt_opt(ns.second_call_ms()),
+            fmt_opt(ht.second_call_ms()), fmt_opt(njs.second_call_ms()),
+            fmt_opt(njh.second_call_ms()), fmt_opt(nh.second_call_ms()));
+
+        println!("  {:24} {:>10.3} ms {:>10.3} ms {:>10.3} ms {:>10.3} ms {:>10.3} ms {:>10.3} ms {:>10.3} ms {:>10.3} ms", "Warm avg", nda_avg, stdio_avg, js.avg_ms(), ns.avg_ms(), ht.avg_ms(), njs.avg_ms(), njh.avg_ms(), nh.avg_ms());
+        println!("  {:24} {:>10.3} ms {:>10.3} ms {:>10.3} ms {:>10.3} ms {:>10.3} ms {:>10.3} ms {:>10.3} ms {:>10.3} ms", "Warm p50", nda.percentile(50.0), stdio.percentile(50.0), js.percentile(50.0), ns.percentile(50.0), ht.percentile(50.0), njs.percentile(50.0), njh.percentile(50.0), nh.percentile(50.0));
+        println!("  {:24} {:>10.3} ms {:>10.3} ms {:>10.3} ms {:>10.3} ms {:>10.3} ms {:>10.3} ms {:>10.3} ms {:>10.3} ms", "Warm p95", nda.percentile(95.0), stdio.percentile(95.0), js.percentile(95.0), ns.percentile(95.0), ht.percentile(95.0), njs.percentile(95.0), njh.percentile(95.0), nh.percentile(95.0));
+        println!("  {:24} {:>10.3} ms {:>10.3} ms {:>10.3} ms {:>10.3} ms {:>10.3} ms {:>10.3} ms {:>10.3} ms {:>10.3} ms", "Warm p99", nda_p99, stdio_p99, js.percentile(99.0), ns.percentile(99.0), ht.percentile(99.0), njs.percentile(99.0), njh.percentile(99.0), nh.percentile(99.0));
+        println!("  {:24} {:>10.0} r/s {:>10.0} r/s {:>10.0} r/s {:>10.0} r/s {:>10.0} r/s {:>10.0} r/s {:>10.0} r/s {:>10.0} r/s", "Warm throughput", nda.throughput(), stdio.throughput(), js.throughput(), ns.throughput(), ht.throughput(), njs.throughput(), njh.throughput(), nh.throughput());
+    } else if shmem_json.is_some() && nda_stdio.is_some() && http.is_some() {
+        let js = shmem_json.unwrap();
+        let ns = nda_stdio.unwrap();
+        let ht = http.unwrap();
+        println!("  {:24} {:>12} {:>12} {:>12} {:>12} {:>12}", "", "NDA/shmem", "JSON/stdio", "JSON/shmem", "NDA/stdio", "JSON/HTTP");
+        println!("  {:24} {:>10.3} ms {:>10.3} ms {:>10.3} ms {:>10.3} ms {:>10.3} ms", "Avg latency", nda_avg, stdio_avg, js.avg_ms(), ns.avg_ms(), ht.avg_ms());
+        println!("  {:24} {:>10.3} ms {:>10.3} ms {:>10.3} ms {:>10.3} ms {:>10.3} ms", "p50", nda.percentile(50.0), stdio.percentile(50.0), js.percentile(50.0), ns.percentile(50.0), ht.percentile(50.0));
+        println!("  {:24} {:>10.3} ms {:>10.3} ms {:>10.3} ms {:>10.3} ms {:>10.3} ms", "p95", nda.percentile(95.0), stdio.percentile(95.0), js.percentile(95.0), ns.percentile(95.0), ht.percentile(95.0));
+        println!("  {:24} {:>10.3} ms {:>10.3} ms {:>10.3} ms {:>10.3} ms {:>10.3} ms", "p99", nda_p99, stdio_p99, js.percentile(99.0), ns.percentile(99.0), ht.percentile(99.0));
+        println!("  {:24} {:>10.0} r/s {:>10.0} r/s {:>10.0} r/s {:>10.0} r/s {:>10.0} r/s", "Throughput", nda.throughput(), stdio.throughput(), js.throughput(), ns.throughput(), ht.throughput());
     } else {
-        println!("  {:24} {:>12.3} ms {:>12.3} ms", "Avg latency", nda_avg, stdio_avg);
-        println!("  {:24} {:>12.3} ms {:>12.3} ms", "p50", nda.percentile(50.0), stdio.percentile(50.0));
-        println!("  {:24} {:>12.3} ms {:>12.3} ms", "p95", nda.percentile(95.0), stdio.percentile(95.0));
-        println!("  {:24} {:>12.3} ms {:>12.3} ms", "p99", nda_p99, stdio_p99);
-        println!("  {:24} {:>12.0} r/s {:>12.0} r/s", "Throughput", nda.throughput(), stdio.throughput());
+        println!("  {:24} {:>12} {:>12}", "", "NDA/shmem", "JSON/stdio");
+        println!("  {:24} {:>10.3} ms {:>10.3} ms", "Avg latency", nda_avg, stdio_avg);
+        println!("  {:24} {:>10.3} ms {:>10.3} ms", "p50", nda.percentile(50.0), stdio.percentile(50.0));
+        println!("  {:24} {:>10.3} ms {:>10.3} ms", "p95", nda.percentile(95.0), stdio.percentile(95.0));
+        println!("  {:24} {:>10.3} ms {:>10.3} ms", "p99", nda_p99, stdio_p99);
+        println!("  {:24} {:>10.0} r/s {:>10.0} r/s", "Throughput", nda.throughput(), stdio.throughput());
     }
+
     println!();
-    println!("  Avg speedup:  {:.1}x faster (NDA vs stdio JSON-RPC)", avg_speedup);
+    println!("  Avg speedup:  {:.1}x faster (NDA/shmem vs JSON/stdio)", avg_speedup);
     println!("  P99 speedup:  {:.1}x faster", p99_speedup);
+    if let Some(ns) = nda_stdio {
+        let ns_avg = ns.avg_ms();
+        let ns_p99 = ns.percentile(99.0);
+        println!("  NDA/stdio vs JSON/stdio:  {:.1}x avg, {:.1}x p99 (binary encoding over pipes)", stdio_avg / ns_avg, stdio_p99 / ns_p99);
+        println!("  NDA/stdio vs NDA/shmem:   {:.1}x avg, {:.1}x p99 (stdio pipe cost for binary frames)", ns_avg / nda_avg, ns_p99 / nda_p99);
+    }
     if let Some(js) = shmem_json {
         let js_avg = js.avg_ms();
         let encoding_speedup = js_avg / nda_avg;
         let transport_speedup = stdio_avg / nda_avg;
         println!("  Encoding speedup: {:.1}x (binary TLV vs JSON, same shmem transport)", encoding_speedup);
         println!("  Transport speedup: {:.1}x (shmem vs stdio pipes, same JSON encoding)", transport_speedup);
+    }
+    if let Some(ht) = http {
+        let ht_avg = ht.avg_ms();
+        let ht_p99 = ht.percentile(99.0);
+        println!("  JSON/HTTP vs JSON/stdio:  {:.1}x avg, {:.1}x p99 (HTTP transport overhead on JSON)", stdio_avg / ht_avg, stdio_p99 / ht_p99);
+        println!("  JSON/HTTP vs NDA/shmem:   {:.1}x avg, {:.1}x p99 (full stack cost: JSON + HTTP + Axum)", ht_avg / nda_avg, ht_p99 / nda_p99);
+    }
+    if let Some(njs) = node_stdio {
+        let njs_avg = njs.avg_ms();
+        let njs_p99 = njs.percentile(99.0);
+        println!("  Node/stdio vs JSON/stdio: {:.1}x avg, {:.1}x p99 (Node.js vs Rust service layer)", stdio_avg / njs_avg, stdio_p99 / njs_p99);
+        println!("  Node/stdio vs NDA/shmem:  {:.1}x avg, {:.1}x p99 (full cross-stack cost)", njs_avg / nda_avg, njs_p99 / nda_p99);
+    }
+    if let Some(njh) = node_http {
+        let njh_avg = njh.avg_ms();
+        let njh_p99 = njh.percentile(99.0);
+        println!("  Node/HTTP vs JSON/HTTP:   {:.1}x avg, {:.1}x p99 (Node.js vs Rust HTTP service)", http.unwrap().avg_ms() / njh_avg, http.unwrap().percentile(99.0) / njh_p99);
+        println!("  Node/HTTP vs NDA/shmem:   {:.1}x avg, {:.1}x p99 (full cross-stack HTTP cost)", njh_avg / nda_avg, njh_p99 / nda_p99);
+    }
+    if let Some(nh) = nda_http {
+        let nh_avg = nh.avg_ms();
+        let nh_p99 = nh.percentile(99.0);
+        println!("  NDA/HTTP vs JSON/HTTP:   {:.1}x avg, {:.1}x p99 (binary encoding savings over HTTP)", http.unwrap().avg_ms() / nh_avg, http.unwrap().percentile(99.0) / nh_p99);
+        println!("  NDA/HTTP vs NDA/shmem:   {:.1}x avg, {:.1}x p99 (HTTP transport overhead for binary)", nh_avg / nda_avg, nh_p99 / nda_p99);
     }
     println!();
 }
@@ -953,6 +1900,25 @@ fn main() {
     wait_for_buffer_file(&buffer_path);
 
     let mut nda = NdaShmemClient::new(&buffer_path);
+
+    // Cold-start measurement: first 2 calls before any warmup
+    println!("Measuring NDA/shmem cold start...");
+    let cold_frame = build_nda_request(METHOD_PING, 999, &serde_json::Value::Null);
+    let cold_start_1 = {
+        let start = Instant::now();
+        let resp = nda.send_request(&cold_frame);
+        let elapsed = start.elapsed();
+        validate_nda_response(&resp, 999, "nda_cold_start_1");
+        elapsed.as_secs_f64() * 1000.0 // ms
+    };
+    let cold_start_2 = {
+        let start = Instant::now();
+        let resp = nda.send_request(&cold_frame);
+        let elapsed = start.elapsed();
+        validate_nda_response(&resp, 999, "nda_cold_start_2");
+        elapsed.as_secs_f64() * 1000.0
+    };
+    println!("  NDA/shmem cold start: 1st={:.3}ms, 2nd={:.3}ms", cold_start_1, cold_start_2);
 
     println!("Warming up NDA path...");
     let init_frame = build_nda_request(METHOD_INITIALIZE, 0, &serde_json::json!({}));
@@ -1088,7 +2054,173 @@ fn main() {
     drop(json_shmem);
     drop(json_server);
 
-    // ─── Phase 4: tools/list payload scaling ─────────────────────────────
+    // ─── Phase 4: NDA-over-stdio (binary TLV over stdin/stdout pipes) ─────
+
+    println!("Starting NDA-binary stdio server...");
+    let mut nda_stdio = NdaStdioClient::new(&server_path);
+
+    println!("Warming up NDA/stdio path...");
+    let init = serde_json::json!({"jsonrpc":"2.0","method":"initialize","params":{},"id":0});
+    nda_stdio.send_request(&init);
+
+    for i in 0..10 {
+        let req = serde_json::json!({"jsonrpc":"2.0","method":"ping","params":{},"id":i+10});
+        nda_stdio.send_request(&req);
+    }
+
+    println!("Running NDA/stdio benchmarks... ({} rounds, median kept)", ROUNDS);
+    let ns_ping = median_round(ROUNDS, || bench_nda_stdio(&mut nda_stdio, iterations, "ping", &serde_json::json!({})));
+    let ns_tools_list = median_round(ROUNDS, || bench_nda_stdio(&mut nda_stdio, iterations, "tools/list", &serde_json::json!({})));
+    let ns_tools_call = median_round(ROUNDS, || bench_nda_stdio(&mut nda_stdio, iterations, "tools/call",
+        &serde_json::json!({"name": "bench_echo", "arguments": {"size": 64}})));
+    let ns_health = median_round(ROUNDS, || bench_nda_stdio(&mut nda_stdio, iterations, "health/check", &serde_json::json!({})));
+
+    let ns_echo_256 = median_round(ROUNDS, || bench_nda_stdio(&mut nda_stdio, iterations, "tools/call",
+        &serde_json::json!({"name": "bench_echo", "arguments": {"size": 256}})));
+    let ns_echo_1024 = median_round(ROUNDS, || bench_nda_stdio(&mut nda_stdio, iterations, "tools/call",
+        &serde_json::json!({"name": "bench_echo", "arguments": {"size": 1024}})));
+    let ns_echo_4096 = median_round(ROUNDS, || bench_nda_stdio(&mut nda_stdio, iterations, "tools/call",
+        &serde_json::json!({"name": "bench_echo", "arguments": {"size": 4096}})));
+
+    drop(nda_stdio);
+
+    // ─── Phase 5: JSON-RPC over HTTP/1.1 keep-alive ──────────────────────
+
+    let http_port = 13000 + ((ts % 10000) as u16);
+    println!("Starting HTTP server on port {}...", http_port);
+    let mut http_child = spawn_http_server(&server_path, http_port);
+    let mut http_client = HttpClient::new(http_port);
+
+    println!("Warming up HTTP path...");
+    let init = serde_json::json!({"jsonrpc":"2.0","method":"initialize","params":{},"id":0});
+    http_client.send_request(&init);
+    let notif = serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}});
+    http_client.send_request(&notif);
+
+    for i in 0..10 {
+        let req = serde_json::json!({"jsonrpc":"2.0","method":"ping","params":{},"id":i+10});
+        http_client.send_request(&req);
+    }
+
+    println!("Running JSON/HTTP benchmarks... ({} rounds, median kept)", ROUNDS);
+    let http_ping = median_round(ROUNDS, || bench_http(&mut http_client, iterations, "ping", &serde_json::json!({})));
+    let http_tools_list = median_round(ROUNDS, || bench_http(&mut http_client, iterations, "tools/list", &serde_json::json!({})));
+    let http_tools_call = median_round(ROUNDS, || bench_http(&mut http_client, iterations, "tools/call",
+        &serde_json::json!({"name": "bench_echo", "arguments": {"size": 64}})));
+    let http_health = median_round(ROUNDS, || bench_http(&mut http_client, iterations, "health/check", &serde_json::json!({})));
+
+    let http_echo_256 = median_round(ROUNDS, || bench_http(&mut http_client, iterations, "tools/call",
+        &serde_json::json!({"name": "bench_echo", "arguments": {"size": 256}})));
+    let http_echo_1024 = median_round(ROUNDS, || bench_http(&mut http_client, iterations, "tools/call",
+        &serde_json::json!({"name": "bench_echo", "arguments": {"size": 1024}})));
+    let http_echo_4096 = median_round(ROUNDS, || bench_http(&mut http_client, iterations, "tools/call",
+        &serde_json::json!({"name": "bench_echo", "arguments": {"size": 4096}})));
+
+    drop(http_client);
+    let _ = http_child.kill();
+    let _ = http_child.wait();
+
+    // ─── Phase 7: Node.js JSON/stdio ─────────────────────────────────────
+
+    let node_server_path = resolve_node_server();
+    println!("Starting Node.js JSON/stdio server ({})...", node_server_path);
+    let mut node_stdio = NodeJsStdioClient::new(&node_server_path);
+
+    println!("Warming up Node.js/stdio path...");
+    let init = serde_json::json!({"jsonrpc":"2.0","method":"initialize","params":{},"id":0});
+    node_stdio.send_request(&init);
+    let notif = serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}});
+    let notif_str = serde_json::to_string(&notif).unwrap() + "\n";
+    let stdin = node_stdio.child.stdin.as_mut().unwrap();
+    stdin.write_all(notif_str.as_bytes()).unwrap();
+    stdin.flush().unwrap();
+
+    for i in 0..10 {
+        let req = serde_json::json!({"jsonrpc":"2.0","method":"ping","params":{},"id":i+10});
+        node_stdio.send_request(&req);
+    }
+
+    println!("Running Node.js/stdio benchmarks... ({} rounds, median kept)", ROUNDS);
+    let node_stdio_ping = median_round(ROUNDS, || bench_node_stdio(&mut node_stdio, iterations, "ping", &serde_json::json!({})));
+    let node_stdio_tools_list = median_round(ROUNDS, || bench_node_stdio(&mut node_stdio, iterations, "tools/list", &serde_json::json!({})));
+    let node_stdio_tools_call = median_round(ROUNDS, || bench_node_stdio(&mut node_stdio, iterations, "tools/call",
+        &serde_json::json!({"name": "bench_echo", "arguments": {"size": 64}})));
+    let node_stdio_health = median_round(ROUNDS, || bench_node_stdio(&mut node_stdio, iterations, "health/check", &serde_json::json!({})));
+
+    let node_stdio_echo_256 = median_round(ROUNDS, || bench_node_stdio(&mut node_stdio, iterations, "tools/call",
+        &serde_json::json!({"name": "bench_echo", "arguments": {"size": 256}})));
+    let node_stdio_echo_1024 = median_round(ROUNDS, || bench_node_stdio(&mut node_stdio, iterations, "tools/call",
+        &serde_json::json!({"name": "bench_echo", "arguments": {"size": 1024}})));
+    let node_stdio_echo_4096 = median_round(ROUNDS, || bench_node_stdio(&mut node_stdio, iterations, "tools/call",
+        &serde_json::json!({"name": "bench_echo", "arguments": {"size": 4096}})));
+
+    drop(node_stdio);
+
+    // ─── Phase 8: Node.js JSON/HTTP ──────────────────────────────────────
+
+    let node_http_port = 14000 + ((ts % 10000) as u16);
+    println!("Starting Node.js HTTP server on port {}...", node_http_port);
+    let mut node_http = NodeJsHttpClient::new(&node_server_path, node_http_port);
+
+    println!("Warming up Node.js/HTTP path...");
+    let init = serde_json::json!({"jsonrpc":"2.0","method":"initialize","params":{},"id":0});
+    node_http.send_request(&init);
+    let notif = serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}});
+    node_http.send_request(&notif);
+
+    for i in 0..10 {
+        let req = serde_json::json!({"jsonrpc":"2.0","method":"ping","params":{},"id":i+10});
+        node_http.send_request(&req);
+    }
+
+    println!("Running Node.js/HTTP benchmarks... ({} rounds, median kept)", ROUNDS);
+    let node_http_ping = median_round(ROUNDS, || bench_node_http(&mut node_http, iterations, "ping", &serde_json::json!({})));
+    let node_http_tools_list = median_round(ROUNDS, || bench_node_http(&mut node_http, iterations, "tools/list", &serde_json::json!({})));
+    let node_http_tools_call = median_round(ROUNDS, || bench_node_http(&mut node_http, iterations, "tools/call",
+        &serde_json::json!({"name": "bench_echo", "arguments": {"size": 64}})));
+    let node_http_health = median_round(ROUNDS, || bench_node_http(&mut node_http, iterations, "health/check", &serde_json::json!({})));
+
+    let node_http_echo_256 = median_round(ROUNDS, || bench_node_http(&mut node_http, iterations, "tools/call",
+        &serde_json::json!({"name": "bench_echo", "arguments": {"size": 256}})));
+    let node_http_echo_1024 = median_round(ROUNDS, || bench_node_http(&mut node_http, iterations, "tools/call",
+        &serde_json::json!({"name": "bench_echo", "arguments": {"size": 1024}})));
+    let node_http_echo_4096 = median_round(ROUNDS, || bench_node_http(&mut node_http, iterations, "tools/call",
+        &serde_json::json!({"name": "bench_echo", "arguments": {"size": 4096}})));
+
+    drop(node_http);
+
+    // ─── Phase 9: NDA/HTTP (binary TLV over HTTP/1.1 keep-alive) ──────────
+
+    let nda_http_port = 15000 + ((ts % 10000) as u16);
+    println!("Starting HTTP server for NDA/HTTP on port {}...", nda_http_port);
+    let mut nda_http_child = spawn_http_server(&server_path, nda_http_port);
+    let mut nda_http_client = NdaHttpClient::new(nda_http_port);
+
+    println!("Warming up NDA/HTTP path...");
+    {
+        let resp = nda_http_client.send_nda_request(METHOD_INITIALIZE, 0, &serde_json::json!({}));
+        assert!(resp.len() >= FRAME_HEADER_SIZE + 1, "NDA/HTTP init response too small");
+    }
+
+    for i in 0..10u64 {
+        nda_http_client.send_nda_request(METHOD_PING, i, &serde_json::Value::Null);
+    }
+
+    println!("Running NDA/HTTP benchmarks... ({} rounds, median kept)", ROUNDS);
+    let nda_http_ping = median_round(ROUNDS, || bench_nda_http(&mut nda_http_client, iterations, METHOD_PING));
+    let nda_http_tools_list = median_round(ROUNDS, || bench_nda_http(&mut nda_http_client, iterations, METHOD_TOOLS_LIST));
+    let nda_http_tools_call = median_round(ROUNDS, || bench_nda_http_call(&mut nda_http_client, iterations, "bench_echo", &serde_json::json!({"size": 64})));
+    let nda_http_health = median_round(ROUNDS, || bench_nda_http(&mut nda_http_client, iterations, METHOD_HEALTH_CHECK));
+
+    let nda_http_echo_256 = median_round(ROUNDS, || bench_nda_http_call(&mut nda_http_client, iterations, "bench_echo", &serde_json::json!({"size": 256})));
+    let nda_http_echo_1024 = median_round(ROUNDS, || bench_nda_http_call(&mut nda_http_client, iterations, "bench_echo", &serde_json::json!({"size": 1024})));
+    let nda_http_echo_4096 = median_round(ROUNDS, || bench_nda_http_call(&mut nda_http_client, iterations, "bench_echo", &serde_json::json!({"size": 4096})));
+
+    drop(nda_http_client);
+    let _ = nda_http_child.kill();
+    let _ = nda_http_child.wait();
+
+    // ─── Phase 10: tools/list payload scaling ─────────────────────────────
     //
     // Inflates the registry via VELOCITY_BENCH_EXTRA_TOOLS and measures how
     // tools/list latency scales with payload size, NDA/shmem vs JSON/shmem.
@@ -1200,40 +2332,50 @@ fn main() {
     println!("  RESULTS");
     println!("========================================================================");
     println!();
-    println!("  Three transport modes compared:");
+    println!("  Eight transport pipelines compared:");
     println!("    NDA/shmem    = NDA binary TLV over shared memory (zero-poll Win32 events)");
     println!("    JSON/stdio   = JSON-RPC over stdin/stdout pipes (thread + channel + 200ms poll)");
     println!("    JSON/shmem   = JSON-RPC over shared memory (isolates encoding cost)");
+    println!("    NDA/stdio    = NDA binary TLV over stdin/stdout pipes (length-prefixed frames)");
+    println!("    JSON/HTTP    = JSON-RPC over HTTP/1.1 keep-alive (Axum router + middleware)");
+    println!("    Node/stdio   = JSON-RPC over stdin/stdout pipes (Node.js server)");
+    println!("    Node/HTTP    = JSON-RPC over HTTP/1.1 keep-alive (Node.js http.createServer)");
+    println!("    NDA/HTTP     = NDA binary TLV over HTTP/1.1 keep-alive (Axum, binary endpoint)");
     println!();
 
-    print_comparison("Ping", &nda_ping, &stdio_ping, Some(&js_ping));
-    print_comparison("Tools/List", &nda_tools_list, &stdio_tools_list, Some(&js_tools_list));
-    print_comparison("Tools/Call (64B)", &nda_tools_call, &stdio_tools_call, Some(&js_tools_call));
-    print_comparison("Health/Check", &nda_health, &stdio_health, Some(&js_health));
+    print_comparison("Ping", &nda_ping, &stdio_ping, Some(&js_ping), Some(&ns_ping), Some(&http_ping), Some(&node_stdio_ping), Some(&node_http_ping), Some(&nda_http_ping));
+    print_comparison("Tools/List", &nda_tools_list, &stdio_tools_list, Some(&js_tools_list), Some(&ns_tools_list), Some(&http_tools_list), Some(&node_stdio_tools_list), Some(&node_http_tools_list), Some(&nda_http_tools_list));
+    print_comparison("Tools/Call (64B)", &nda_tools_call, &stdio_tools_call, Some(&js_tools_call), Some(&ns_tools_call), Some(&http_tools_call), Some(&node_stdio_tools_call), Some(&node_http_tools_call), Some(&nda_http_tools_call));
+    print_comparison("Health/Check", &nda_health, &stdio_health, Some(&js_health), Some(&ns_health), Some(&http_health), Some(&node_stdio_health), Some(&node_http_health), Some(&nda_http_health));
 
     // Payload scaling
     println!("─── Payload Scaling: bench_echo ──────────────────────────────────────────");
     println!();
-    println!("  {:>10}  {:>12} {:>12} {:>12}  {:>10} {:>10}", "Payload", "NDA/shmem", "JSON/stdio", "JSON/shmem", "Avg Δ", "P99 Δ");
-    println!("  {}", "─".repeat(76));
+    println!("  {:>10}  {:>10} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10}  {:>8} {:>8}", "Payload", "NDA/shmem", "JSON/stdio", "JSON/shmem", "NDA/stdio", "JSON/HTTP", "Node/stdio", "Node/HTTP", "NDA/HTTP", "Avg Δ", "P99 Δ");
+    println!("  {}", "─".repeat(143));
 
     let scaling_data = [
-        ("256 B", &nda_echo_256, &stdio_echo_256, &js_echo_256),
-        ("1 KB", &nda_echo_1024, &stdio_echo_1024, &js_echo_1024),
-        ("4 KB", &nda_echo_4096, &stdio_echo_4096, &js_echo_4096),
+        ("256 B", &nda_echo_256, &stdio_echo_256, &js_echo_256, &ns_echo_256, &http_echo_256, &node_stdio_echo_256, &node_http_echo_256, &nda_http_echo_256),
+        ("1 KB", &nda_echo_1024, &stdio_echo_1024, &js_echo_1024, &ns_echo_1024, &http_echo_1024, &node_stdio_echo_1024, &node_http_echo_1024, &nda_http_echo_1024),
+        ("4 KB", &nda_echo_4096, &stdio_echo_4096, &js_echo_4096, &ns_echo_4096, &http_echo_4096, &node_stdio_echo_4096, &node_http_echo_4096, &nda_http_echo_4096),
     ];
 
-    for (label, nda_r, stdio_r, js_r) in &scaling_data {
+    for (label, nda_r, stdio_r, js_r, ns_r, ht_r, nstdio_r, nhttp_r, nh_r) in &scaling_data {
         let nda_avg = nda_r.avg_ms();
         let stdio_avg = stdio_r.avg_ms();
         let js_avg = js_r.avg_ms();
+        let ns_avg = ns_r.avg_ms();
+        let ht_avg = ht_r.avg_ms();
+        let nstdio_avg = nstdio_r.avg_ms();
+        let nhttp_avg = nhttp_r.avg_ms();
+        let nh_avg = nh_r.avg_ms();
         let nda_p99 = nda_r.percentile(99.0);
         let stdio_p99 = stdio_r.percentile(99.0);
         let avg_speedup = stdio_avg / nda_avg;
         let p99_speedup = stdio_p99 / nda_p99;
 
-        println!("  {:>10}  {:>10.3} ms {:>10.3} ms {:>10.3} ms  {:>8.1}x {:>8.1}x",
-                 label, nda_avg, stdio_avg, js_avg, avg_speedup, p99_speedup);
+        println!("  {:>10}  {:>8.3} ms {:>8.3} ms {:>8.3} ms {:>8.3} ms {:>8.3} ms {:>8.3} ms {:>8.3} ms {:>8.3} ms  {:>6.1}x {:>6.1}x",
+                 label, nda_avg, stdio_avg, js_avg, ns_avg, ht_avg, nstdio_avg, nhttp_avg, nh_avg, avg_speedup, p99_speedup);
     }
 
     println!();
@@ -1255,26 +2397,73 @@ fn main() {
     println!();
 
     // Overall summary
+    let avg_first = |results: &[&BenchResult]| -> f64 {
+        let vals: Vec<f64> = results.iter().filter_map(|r| r.first_call_ms()).collect();
+        if vals.is_empty() { 0.0 } else { vals.iter().sum::<f64>() / vals.len() as f64 }
+    };
+
+    let nda_1st_all = avg_first(&[&nda_ping, &nda_tools_call, &nda_health]);
+    let stdio_1st_all = avg_first(&[&stdio_ping, &stdio_tools_call, &stdio_health]);
+    let js_1st_all = avg_first(&[&js_ping, &js_tools_call, &js_health]);
+    let ns_1st_all = avg_first(&[&ns_ping, &ns_tools_call, &ns_health]);
+    let http_1st_all = avg_first(&[&http_ping, &http_tools_call, &http_health]);
+    let node_stdio_1st_all = avg_first(&[&node_stdio_ping, &node_stdio_tools_call, &node_stdio_health]);
+    let node_http_1st_all = avg_first(&[&node_http_ping, &node_http_tools_call, &node_http_health]);
+    let nda_http_1st_all = avg_first(&[&nda_http_ping, &nda_http_tools_call, &nda_http_health]);
+
     let nda_avg_all = (nda_ping.avg_ms() + nda_tools_call.avg_ms() + nda_health.avg_ms()) / 3.0;
     let stdio_avg_all = (stdio_ping.avg_ms() + stdio_tools_call.avg_ms() + stdio_health.avg_ms()) / 3.0;
+    let js_avg_all = (js_ping.avg_ms() + js_tools_call.avg_ms() + js_health.avg_ms()) / 3.0;
+    let ns_avg_all = (ns_ping.avg_ms() + ns_tools_call.avg_ms() + ns_health.avg_ms()) / 3.0;
+    let http_avg_all = (http_ping.avg_ms() + http_tools_call.avg_ms() + http_health.avg_ms()) / 3.0;
+    let node_stdio_avg_all = (node_stdio_ping.avg_ms() + node_stdio_tools_call.avg_ms() + node_stdio_health.avg_ms()) / 3.0;
+    let node_http_avg_all = (node_http_ping.avg_ms() + node_http_tools_call.avg_ms() + node_http_health.avg_ms()) / 3.0;
+    let nda_http_avg_all = (nda_http_ping.avg_ms() + nda_http_tools_call.avg_ms() + nda_http_health.avg_ms()) / 3.0;
     let nda_p99_all = (nda_ping.percentile(99.0) + nda_tools_call.percentile(99.0) + nda_health.percentile(99.0)) / 3.0;
     let stdio_p99_all = (stdio_ping.percentile(99.0) + stdio_tools_call.percentile(99.0) + stdio_health.percentile(99.0)) / 3.0;
+    let ns_p99_all = (ns_ping.percentile(99.0) + ns_tools_call.percentile(99.0) + ns_health.percentile(99.0)) / 3.0;
+    let js_p99_all = (js_ping.percentile(99.0) + js_tools_call.percentile(99.0) + js_health.percentile(99.0)) / 3.0;
+    let http_p99_all = (http_ping.percentile(99.0) + http_tools_call.percentile(99.0) + http_health.percentile(99.0)) / 3.0;
+    let node_stdio_p99_all = (node_stdio_ping.percentile(99.0) + node_stdio_tools_call.percentile(99.0) + node_stdio_health.percentile(99.0)) / 3.0;
+    let node_http_p99_all = (node_http_ping.percentile(99.0) + node_http_tools_call.percentile(99.0) + node_http_health.percentile(99.0)) / 3.0;
+    let nda_http_p99_all = (nda_http_ping.percentile(99.0) + nda_http_tools_call.percentile(99.0) + nda_http_health.percentile(99.0)) / 3.0;
 
     println!("========================================================================");
     println!("  SUMMARY");
     println!("========================================================================");
     println!();
-    println!("  NDA-binary/shmem avg: {:.3} ms   (binary TLV frame parse, Win32 events)", nda_avg_all);
-    println!("  JSON-RPC/stdio avg:   {:.3} ms   (serde_json + pipe + thread channel)", stdio_avg_all);
-    println!("  Overall avg speedup:  {:.1}x faster (NDA vs stdio JSON-RPC)", stdio_avg_all / nda_avg_all);
-    println!("  Overall p99 speedup:  {:.1}x faster", stdio_p99_all / nda_p99_all);
+    println!("  Pipeline             1st call     Warm avg     Warm P99     vs NDA/shmem");
+    println!("  ─────────────────────────────────────────────────────────────────────────────────");
+    println!("  NDA/shmem      {:>10.3} ms {:>10.3} ms {:>10.3} ms   (baseline)", nda_1st_all, nda_avg_all, nda_p99_all);
+    println!("  NDA/stdio      {:>10.3} ms {:>10.3} ms {:>10.3} ms   {:.1}x avg, {:.1}x p99", ns_1st_all, ns_avg_all, ns_p99_all, ns_avg_all / nda_avg_all, ns_p99_all / nda_p99_all);
+    println!("  JSON/shmem     {:>10.3} ms {:>10.3} ms {:>10.3} ms   {:.1}x avg (encoding cost only)", js_1st_all, js_avg_all, js_p99_all, js_avg_all / nda_avg_all);
+    println!("  JSON/stdio     {:>10.3} ms {:>10.3} ms {:>10.3} ms   {:.1}x avg, {:.1}x p99", stdio_1st_all, stdio_avg_all, stdio_p99_all, stdio_avg_all / nda_avg_all, stdio_p99_all / nda_p99_all);
+    println!("  JSON/HTTP      {:>10.3} ms {:>10.3} ms {:>10.3} ms   {:.1}x avg, {:.1}x p99", http_1st_all, http_avg_all, http_p99_all, http_avg_all / nda_avg_all, http_p99_all / nda_p99_all);
+    println!("  Node/stdio     {:>10.3} ms {:>10.3} ms {:>10.3} ms   {:.1}x avg, {:.1}x p99", node_stdio_1st_all, node_stdio_avg_all, node_stdio_p99_all, node_stdio_avg_all / nda_avg_all, node_stdio_p99_all / nda_p99_all);
+    println!("  Node/HTTP      {:>10.3} ms {:>10.3} ms {:>10.3} ms   {:.1}x avg, {:.1}x p99", node_http_1st_all, node_http_avg_all, node_http_p99_all, node_http_avg_all / nda_avg_all, node_http_p99_all / nda_p99_all);
+    println!("  NDA/HTTP       {:>10.3} ms {:>10.3} ms {:>10.3} ms   {:.1}x avg, {:.1}x p99", nda_http_1st_all, nda_http_avg_all, nda_http_p99_all, nda_http_avg_all / nda_avg_all, nda_http_p99_all / nda_p99_all);
     println!();
     println!("  What's being measured:");
-    println!("    NDA path:   TLV encode → SHA-256 → mmap write → SetEvent → server processes");
+    println!("    NDA/shmem:  TLV encode → SHA-256 → mmap write → SetEvent → server processes");
     println!("                → mmap write → SetEvent → client reads. No JSON parsing anywhere.");
-    println!("    Stdio path: JSON stringify → pipe write → thread recv → channel send →");
+    println!("    NDA/stdio:  TLV encode → SHA-256 → pipe write → pipe read → server processes");
+    println!("                → pipe write → pipe read → TLV decode. Same binary encoding, pipes for transport.");
+    println!("    JSON/shmem: serde_json stringify → mmap write → SetEvent → server parses");
+    println!("                → mmap write → SetEvent → client JSON parses. Same shmem, JSON encoding cost.");
+    println!("    JSON/stdio: serde_json stringify → pipe write → thread recv → channel send →");
     println!("                serde_json parse → handle → serde_json stringify → pipe write →");
     println!("                pipe read → JSON parse. Two JSON serialize+parse cycles per request.");
+    println!("    JSON/HTTP:  serde_json stringify → HTTP POST → TCP write → Axum router →");
+    println!("                middleware stack → serde_json parse → handle → serde_json");
+    println!("                stringify → HTTP response → TCP read → JSON parse.");
+    println!("    Node/stdio: JSON.stringify → stdin write → Node.js readline → JSON.parse →");
+    println!("                handleRequest → JSON.stringify → stdout write → readline parse.");
+    println!("    Node/HTTP:  JSON.stringify → HTTP POST → TCP write → Node.js http server →");
+    println!("                JSON.parse → handleRequest → JSON.stringify → HTTP response →");
+    println!("                TCP read → JSON parse.");
+    println!("    NDA/HTTP:   TLV encode → SHA-256 → HTTP POST (octet-stream) → TCP write →");
+    println!("                Axum binary endpoint → TLV decode → process → TLV encode →");
+    println!("                SHA-256 → HTTP response → TCP read → TLV decode.");
     println!();
     println!("  Shmem buffer limits: input ≤ {} bytes, output ≤ {} bytes",
              OUTPUT_BUFFER_OFFSET - INPUT_BUFFER_OFFSET,

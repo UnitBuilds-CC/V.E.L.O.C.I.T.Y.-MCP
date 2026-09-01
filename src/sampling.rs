@@ -117,9 +117,20 @@ fn get_conversation_history() -> &'static Mutex<HashMap<String, Vec<SamplingMess
 /// Add a message to conversation history.
 pub fn add_to_conversation(conversation_id: &str, message: SamplingMessage) {
     if let Ok(mut history) = get_conversation_history().lock() {
-        history.entry(conversation_id.to_string())
-            .or_insert_with(Vec::new)
-            .push(message);
+        const MAX_CONVERSATIONS: usize = 256;
+        if !history.contains_key(conversation_id) && history.len() >= MAX_CONVERSATIONS {
+            if let Some(oldest_key) = history.keys().next().cloned() {
+                tracing::warn!(evicted = %oldest_key, "Conversation history full ({}), evicting oldest", MAX_CONVERSATIONS);
+                history.remove(&oldest_key);
+            }
+        }
+        let messages = history.entry(conversation_id.to_string())
+            .or_insert_with(Vec::new);
+        const MAX_HISTORY: usize = 1000;
+        if messages.len() >= MAX_HISTORY {
+            messages.remove(0);
+        }
+        messages.push(message);
     }
 }
 

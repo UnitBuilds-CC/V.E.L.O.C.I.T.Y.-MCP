@@ -71,7 +71,7 @@ impl PhaseRecorder {
         }
         if let Some(f) = self.file.as_mut() {
             let n = self.window_n as f64;
-            let _ = writeln!(
+            if let Err(e) = writeln!(
                 f,
                 "PHASE method=0x{:02x} n={} wake_read={:.1}us parse={:.1}us dispatch={:.1}us respond={:.1}us total={:.1}us",
                 self.method,
@@ -81,8 +81,12 @@ impl PhaseRecorder {
                 self.dispatch_ns as f64 / 1000.0 / n,
                 self.respond_ns as f64 / 1000.0 / n,
                 (self.wake_read_ns + self.parse_ns + self.dispatch_ns + self.respond_ns) as f64 / 1000.0 / n,
-            );
-            let _ = f.flush();
+            ) {
+                tracing::debug!(error = %e, "Failed to write phase log");
+            }
+            if let Err(e) = f.flush() {
+                tracing::debug!(error = %e, "Failed to flush phase log");
+            }
         }
         self.window_n = 0;
         self.wake_read_ns = 0;
@@ -114,31 +118,22 @@ fn build_response_value(id_tlv: &[u8], result: &Value) -> Vec<u8> {
     nda_native::build_nda_response_raw(nda_native::STATUS_OK, id_tlv, &tlv)
 }
 
-fn handle_nda_native(
-    buffer: &mut SharedMemoryBuffer,
-    raw: &[u8],
-    rec: Option<&mut PhaseRecorder>,
-    t_wake: Option<Instant>,
-    t_read: Option<Instant>,
-) -> Result<(), Box<dyn Error>> {
-    let req = match nda_native::parse_nda_request_inplace(raw) {
-        Ok(r) => r,
-        Err(e) => {
-            warn!(error = %e, "NDA frame parse error");
-            let err_frame = nda_native::build_nda_error(&Value::Null, &format!("Parse error: {}", e));
-            buffer.write_output_raw(&err_frame)?;
-            SharedMemoryBuffer::sync_fence();
-            buffer.set_state(shmem::STATE_ERROR);
-            buffer.signal_response();
-            return Ok(());
-        }
-    };
-    let t_parse = rec.is_some().then(Instant::now);
+/// Dispatch an NDA request and return the response frame.
+/// This is the core dispatch logic, separated from transport (shmem/HTTP).
+pub fn dispatch_nda_request(raw: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+    let req = nda_native::parse_nda_request_inplace(raw)?;
 
     debug!(method = nda_native::method_name(req.method), "NDA-native request");
 
     let response_frame = match req.method {
         nda_native::METHOD_PING => {
+            if let Ok(delay) = std::env::var("VELOCITY_PING_DELAY_US") {
+                if let Ok(us) = delay.parse::<u64>() {
+                    if us > 0 {
+                        std::thread::sleep(std::time::Duration::from_micros(us));
+                    }
+                }
+            }
             nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, nda_native::EMPTY_OBJECT_TLV)
         }
         nda_native::METHOD_INITIALIZE => {
@@ -174,9 +169,6 @@ fn handle_nda_native(
             nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, nda_native::EMPTY_OBJECT_TLV)
         }
         nda_native::METHOD_TOOLS_LIST => {
-            // The result TLV is cached keyed by registry generation: the tool
-            // set rarely changes, but each request used to rebuild 16 json!
-            // schemas, retry failing C# discovery, and re-encode ~8KB.
             let mut payload = Vec::with_capacity(8 * 1024);
             payload.push(nda_native::STATUS_OK);
             payload.extend_from_slice(req.id_tlv);
@@ -299,6 +291,38 @@ fn handle_nda_native(
             nda_native::build_nda_error_raw(req.id_tlv, &format!("Unknown method: 0x{:02x}", req.method))
         }
     };
+
+    Ok(response_frame)
+}
+
+fn handle_nda_native(
+    buffer: &mut SharedMemoryBuffer,
+    raw: &[u8],
+    rec: Option<&mut PhaseRecorder>,
+    t_wake: Option<Instant>,
+    t_read: Option<Instant>,
+) -> Result<(), Box<dyn Error>> {
+    let t_parse = rec.is_some().then(Instant::now);
+    
+    // Extract method code for phase recorder before dispatch consumes the frame
+    let method_code = if raw.len() > nda_native::FRAME_HEADER_SIZE {
+        raw[nda_native::FRAME_HEADER_SIZE]
+    } else {
+        0
+    };
+
+    let response_frame = match dispatch_nda_request(raw) {
+        Ok(frame) => frame,
+        Err(e) => {
+            warn!(error = %e, "NDA frame parse error");
+            let err_frame = nda_native::build_nda_error(&Value::Null, &format!("Parse error: {}", e));
+            buffer.write_output_raw(&err_frame)?;
+            SharedMemoryBuffer::sync_fence();
+            buffer.set_state(shmem::STATE_ERROR);
+            buffer.signal_response();
+            return Ok(());
+        }
+    };
     let t_dispatch = rec.is_some().then(Instant::now);
 
     buffer.write_output_raw(&response_frame)?;
@@ -308,7 +332,7 @@ fn handle_nda_native(
     // visible. FlushViewOfFile only forces disk writeback (~30us cost).
     buffer.signal_response();
     if let (Some(r), Some(tw), Some(tr), Some(tp), Some(td)) = (rec, t_wake, t_read, t_parse, t_dispatch) {
-        r.record(req.method, tw, tr, tp, td, Instant::now());
+        r.record(method_code, tw, tr, tp, td, Instant::now());
     }
     Ok(())
 }
@@ -324,7 +348,9 @@ fn handle_json_shmem(buffer: &mut SharedMemoryBuffer, input_str: &str) -> Result
                 "id": null
             });
             let res_str = serde_json::to_string(&err_res)?;
-            let _ = buffer.write_output(&res_str);
+            if let Err(e) = buffer.write_output(&res_str) {
+                tracing::warn!(error = %e, "Failed to write error response to shared memory");
+            }
             SharedMemoryBuffer::sync_fence();
             buffer.set_state(shmem::STATE_ERROR);
             buffer.signal_response();
@@ -572,7 +598,9 @@ fn run_shmem_loop_inner(buffer: &mut SharedMemoryBuffer, shutdown: &AtomicBool) 
                         "id": null
                     });
                     let res_str = serde_json::to_string(&err_res)?;
-                    let _ = buffer.write_output(&res_str);
+                    if let Err(e) = buffer.write_output(&res_str) {
+                        tracing::warn!(error = %e, "Failed to write error response to shared memory");
+                    }
                     SharedMemoryBuffer::sync_fence();
                     buffer.set_state(shmem::STATE_ERROR);
                     buffer.signal_response();
@@ -600,7 +628,9 @@ fn run_shmem_loop_inner(buffer: &mut SharedMemoryBuffer, shutdown: &AtomicBool) 
                             "id": null
                         });
                         let res_str = serde_json::to_string(&err_res)?;
-                        let _ = buffer.write_output(&res_str);
+                        if let Err(e) = buffer.write_output(&res_str) {
+                            tracing::warn!(error = %e, "Failed to write error response to shared memory");
+                        }
                         SharedMemoryBuffer::sync_fence();
                         buffer.set_state(shmem::STATE_ERROR);
                         buffer.signal_response();

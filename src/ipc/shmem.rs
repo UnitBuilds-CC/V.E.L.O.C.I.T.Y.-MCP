@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 const STATE_OFFSET: usize = 0;
 const INPUT_LEN_OFFSET: usize = 1;
 const OUTPUT_LEN_OFFSET: usize = 5;
-const INPUT_BUFFER_OFFSET: usize = 10;
+const REQUEST_SEQ_OFFSET: usize = 9;
+const INPUT_BUFFER_OFFSET: usize = 16;
 const OUTPUT_BUFFER_OFFSET: usize = 4096;
 const TOTAL_BUFFER_SIZE: usize = 65536;
 
@@ -113,17 +114,25 @@ impl SharedMemoryBuffer {
 
         // SAFETY: CreateEventW with null security attrs, manual reset, null-terminated names.
         let h_req_event = unsafe { CreateEventW(std::ptr::null_mut(), 0, 0, w_req.as_ptr()) };
-        let h_res_event = unsafe { CreateEventW(std::ptr::null_mut(), 0, 0, w_res.as_ptr()) };
+        if h_req_event.is_null() {
+            return Err("Failed to create req event".into());
+        }
 
-        if h_req_event.is_null() || h_res_event.is_null() {
-            return Err("Failed to create Win32 Event objects".into());
+        let h_res_event = unsafe { CreateEventW(std::ptr::null_mut(), 0, 0, w_res.as_ptr()) };
+        if h_res_event.is_null() {
+            unsafe { CloseHandle(h_req_event); }
+            return Err("Failed to create res event".into());
         }
 
         let mut buffer = SharedMemoryBuffer { mmap, h_req_event, h_res_event };
 
-        if buffer.get_state() == 0 && buffer.get_input_len() == 0 {
-            buffer.set_state(STATE_IDLE);
-        }
+        // Always reset to clean state on startup. If the previous server
+        // crashed mid-request, the buffer may be left in REQ_READY,
+        // PROCESSING, RES_READY, or ERROR state. Any in-flight request
+        // is lost, so we must start fresh.
+        buffer.set_input_len(0);
+        buffer.set_output_len(0);
+        buffer.set_state(STATE_IDLE);
 
         Ok(buffer)
     }
@@ -143,9 +152,10 @@ impl SharedMemoryBuffer {
 
         let mut buffer = SharedMemoryBuffer { mmap };
 
-        if buffer.get_state() == 0 && buffer.get_input_len() == 0 {
-            buffer.set_state(STATE_IDLE);
-        }
+        // Always reset to clean state on startup (see Windows path for rationale).
+        buffer.set_input_len(0);
+        buffer.set_output_len(0);
+        buffer.set_state(STATE_IDLE);
 
         Ok(buffer)
     }
@@ -266,6 +276,20 @@ impl SharedMemoryBuffer {
     pub fn set_output_len(&mut self, len: u32) {
         let bytes = len.to_le_bytes();
         self.mmap[OUTPUT_LEN_OFFSET..OUTPUT_LEN_OFFSET + 4].copy_from_slice(&bytes);
+    }
+
+    pub fn get_request_seq(&self) -> u32 {
+        u32::from_le_bytes([
+            self.mmap[REQUEST_SEQ_OFFSET],
+            self.mmap[REQUEST_SEQ_OFFSET + 1],
+            self.mmap[REQUEST_SEQ_OFFSET + 2],
+            self.mmap[REQUEST_SEQ_OFFSET + 3],
+        ])
+    }
+
+    pub fn set_request_seq(&mut self, seq: u32) {
+        let bytes = seq.to_le_bytes();
+        self.mmap[REQUEST_SEQ_OFFSET..REQUEST_SEQ_OFFSET + 4].copy_from_slice(&bytes);
     }
 
     pub fn read_input(&self) -> Result<String, Box<dyn Error>> {
@@ -452,7 +476,7 @@ mod tests {
     }
 
     #[test]
-    fn test_buffer_persists_across_open() {
+    fn test_create_or_open_resets_stale_state() {
         let path = temp_buffer_path("persist");
         cleanup(&path);
 
@@ -464,7 +488,7 @@ mod tests {
 
         {
             let buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
-            assert_eq!(buffer.get_state(), STATE_RES_READY);
+            assert_eq!(buffer.get_state(), STATE_IDLE);
         }
         cleanup(&path);
     }

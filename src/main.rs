@@ -1,6 +1,7 @@
 use std::env;
 use std::process;
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "http")]
 use std::sync::Arc;
 use tracing::{info, error};
 
@@ -15,6 +16,7 @@ static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 fn main() {
     // Initialize structured logging
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
@@ -27,7 +29,9 @@ fn main() {
     let mut cli_mode: Option<&str> = None;
     let mut cli_buffer_path: Option<&str> = None;
     let mut cli_addr: Option<&str> = None;
+    #[cfg(feature = "http")]
     let mut tls_cert: Option<&str> = None;
+    #[cfg(feature = "http")]
     let mut tls_key: Option<&str> = None;
     let mut benchmark_mode = false;
 
@@ -70,6 +74,7 @@ fn main() {
                     process::exit(1);
                 }
             }
+            #[cfg(feature = "http")]
             "--tls-cert" => {
                 if i + 1 < args.len() {
                     tls_cert = Some(&args[i + 1]);
@@ -79,6 +84,7 @@ fn main() {
                     process::exit(1);
                 }
             }
+            #[cfg(feature = "http")]
             "--tls-key" => {
                 if i + 1 < args.len() {
                     tls_key = Some(&args[i + 1]);
@@ -131,6 +137,7 @@ fn main() {
 
     let mode = cli_mode.unwrap_or(&config.mode);
     let buffer_path = cli_buffer_path.unwrap_or(&config.buffer_path);
+    #[allow(unused)]
     let addr = cli_addr.unwrap_or(&config.http.addr);
 
     // Install Ctrl+C handler for graceful shutdown

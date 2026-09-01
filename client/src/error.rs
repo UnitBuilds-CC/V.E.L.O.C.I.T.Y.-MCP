@@ -40,6 +40,10 @@ pub enum Error {
     #[error("Request timed out")]
     Timeout,
 
+    /// Response did not match the request (stale response after timeout)
+    #[error("Stale response: {0}")]
+    StaleResponse(String),
+
     /// Tool execution failed
     #[error("Tool execution failed: {0}")]
     ToolExecution(String),
@@ -55,6 +59,18 @@ pub enum Error {
     /// Internal client error
     #[error("Internal error: {0}")]
     Internal(String),
+
+    /// Shared memory transport error
+    #[error("Shared memory error: {0}")]
+    SharedMemory(String),
+
+    /// NDA binary protocol error
+    #[error("NDA protocol error: {0}")]
+    NdaProtocol(String),
+
+    /// Platform not supported for this transport
+    #[error("Platform not supported: {0}")]
+    PlatformUnsupported(String),
 }
 
 impl From<std::io::Error> for Error {

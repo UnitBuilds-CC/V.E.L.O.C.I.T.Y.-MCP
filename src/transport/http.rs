@@ -43,6 +43,16 @@ const MAX_SESSIONS: usize = 10000;
 /// Maximum number of SSE broadcast subscribers (prevents unbounded growth)
 const MAX_BROADCAST_SUBSCRIBERS: usize = 1000;
 
+fn sanitize_session_id(raw: &str) -> Result<String, String> {
+    if raw.len() > 128 || raw.is_empty() {
+        return Err("Session ID must be 1-128 characters".into());
+    }
+    if !raw.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err("Session ID must contain only alphanumeric characters, hyphens, or underscores".into());
+    }
+    Ok(raw.to_string())
+}
+
 /// HTTP security configuration.
 #[derive(Clone, Debug)]
 pub struct HttpSecurityConfig {
@@ -328,6 +338,39 @@ async fn handle_json_rpc(
     }
 }
 
+/// Handle NDA-binary RPC over HTTP.
+///
+/// Accepts NDA binary frames via POST with Content-Type: application/octet-stream.
+/// Returns NDA binary response frames.
+async fn handle_nda_rpc(
+    State(state): State<Arc<ServerState>>,
+    body: axum::body::Bytes,
+) -> Result<axum::body::Bytes, StatusCode> {
+    use crate::protocol::nmcp_binary;
+    
+    let start_time = std::time::Instant::now();
+    
+    if state.shutdown.load(Ordering::Relaxed) {
+        let latency_us = start_time.elapsed().as_micros() as u64;
+        state.metrics.record_request(latency_us, false);
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    match nmcp_binary::dispatch_nda_request(&body) {
+        Ok(response_frame) => {
+            let latency_us = start_time.elapsed().as_micros() as u64;
+            state.metrics.record_request(latency_us, true);
+            Ok(axum::body::Bytes::from(response_frame))
+        }
+        Err(e) => {
+            let latency_us = start_time.elapsed().as_micros() as u64;
+            state.metrics.record_request(latency_us, false);
+            tracing::warn!(error = %e, "NDA RPC error");
+            Err(StatusCode::BAD_REQUEST)
+        }
+    }
+}
+
 /// Handle Streamable HTTP transport (POST with SSE response).
 ///
 /// This implements the MCP Streamable HTTP transport where:
@@ -342,8 +385,14 @@ async fn handle_streamable(
     let (tx, rx) = mpsc::channel::<String>(100);
 
     // Get or create session
-    let session_id = query.session_id.unwrap_or_else(|| Uuid::new_v4().to_string());
-    
+    let session_id = match query.session_id {
+        Some(ref raw) => sanitize_session_id(raw).map_err(|e| {
+            tracing::warn!(error = %e, "Invalid session ID");
+            e
+        }).unwrap_or_else(|_| Uuid::new_v4().to_string()),
+        None => Uuid::new_v4().to_string(),
+    };
+
     {
         let mut sessions = state.sessions.write().await;
         if sessions.len() >= MAX_SESSIONS {
@@ -375,7 +424,10 @@ async fn handle_streamable(
     let state_clone = state.clone();
     tokio::spawn(async move {
         // Send session ID as first event
-        let _ = tx.send(format!("event: session\ndata: {}\n\n", session_id_clone)).await;
+        if tx.send(format!("event: session\ndata: {}\n\n", session_id_clone)).await.is_err() {
+            tracing::debug!("SSE client disconnected before session event");
+            return;
+        }
 
         // Process the request
         let response = json_rpc::handle_request(&request_json);
@@ -384,7 +436,10 @@ async fn handle_streamable(
             Some(res) => {
                 // Stream the response
                 let response_str = serde_json::to_string(&res).unwrap_or_default();
-                let _ = tx.send(format!("event: response\ndata: {}\n\n", response_str)).await;
+                if tx.send(format!("event: response\ndata: {}\n\n", response_str)).await.is_err() {
+                    tracing::debug!("SSE client disconnected before response");
+                    return;
+                }
                 
                 // Notify other SSE clients about the completed request
                 broadcast_event(&state_clone, "request_completed", &json!({
@@ -438,8 +493,14 @@ async fn sse_handler(
     }
 
     // Get or create session
-    let session_id = query.session_id.unwrap_or_else(|| Uuid::new_v4().to_string());
-    
+    let session_id = match query.session_id {
+        Some(ref raw) => sanitize_session_id(raw).map_err(|e| {
+            tracing::warn!(error = %e, "Invalid session ID");
+            e
+        }).unwrap_or_else(|_| Uuid::new_v4().to_string()),
+        None => Uuid::new_v4().to_string(),
+    };
+
     {
         let mut sessions = state.sessions.write().await;
         if sessions.len() >= MAX_SESSIONS {
@@ -459,10 +520,12 @@ async fn sse_handler(
     let tx_init = tx.clone();
     let session_id_init = session_id.clone();
     tokio::spawn(async move {
-        let _ = tx_init.send(format!(
+        if tx_init.send(format!(
             "event: connected\ndata: {{\"sessionId\": \"{}\"}}\n\n",
             session_id_init
-        )).await;
+        )).await.is_err() {
+            tracing::debug!("SSE client disconnected before connected event");
+        }
     });
 
     // Spawn heartbeat task
@@ -503,7 +566,9 @@ async fn broadcast_event(state: &ServerState, event_type: &str, data: &Value) {
     let mut broadcasts = state.event_broadcast.write().await;
     broadcasts.retain(|sender| !sender.is_closed());
     for sender in broadcasts.iter() {
-        let _ = sender.send(event_str.clone()).await;
+        if let Err(e) = sender.send(event_str.clone()).await {
+            tracing::debug!(error = %e, "SSE broadcast send failed, removing dead sender");
+        }
     }
 }
 
@@ -711,7 +776,9 @@ async fn handle_websocket(mut socket: axum::extract::ws::WebSocket, state: Arc<S
     });
     
     // Wait for the receive task to complete
-    let _ = recv_task.await;
+    if let Err(e) = recv_task.await {
+        tracing::warn!(error = %e, "WebSocket recv_task panicked");
+    }
 }
 
 async fn delete_session(
@@ -869,6 +936,7 @@ fn build_router(state: Arc<ServerState>) -> Router {
 
     let protected = Router::new()
         .route("/mcp", post(handle_json_rpc))
+        .route("/mcp/nda", post(handle_nda_rpc))
         .route("/mcp/batch", post(crate::middleware::handle_batch_request))
         .route("/mcp/stream", post(handle_streamable))
         .route("/sse", get(sse_handler))
@@ -920,6 +988,15 @@ pub async fn run_http_server(
         metrics: Arc::new(HttpMetrics::default()),
         start_time: std::time::Instant::now(),
     });
+
+    // Security warning: alert if no API key is configured
+    if state.security.api_key.is_none() {
+        tracing::warn!(
+            "HTTP server starting without API key authentication. \
+            The server is open to unauthenticated access. \
+            Set http.api_key in config or VELOCITY_HTTP_API_KEY environment variable to enable authentication."
+        );
+    }
 
     // Spawn session cleanup task
     let cleanup_state = state.clone();

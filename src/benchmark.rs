@@ -295,7 +295,7 @@ fn bench_shmem_throughput() {
 
     let path = "temp_bench_shmem.bin";
     let _ = std::fs::remove_file(path);
-    let mut buffer = SharedMemoryBuffer::create_or_open(path).unwrap();
+    let mut buffer = SharedMemoryBuffer::create_or_open(path).expect("Failed to create shmem buffer for benchmark");
 
     let json_req = r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"read_nda","arguments":{"ndaPath":"C:/test.nda"}},"id":1}"#;
     let iterations = 200_000;
@@ -303,8 +303,8 @@ fn bench_shmem_throughput() {
     println!("  JSON write+read shmem ({} iterations)...", iterations);
     let start = Instant::now();
     for _ in 0..iterations {
-        buffer.write_input(black_box(json_req)).unwrap();
-        let _ = black_box(buffer.read_input().unwrap());
+        buffer.write_input(black_box(json_req)).expect("shmem write_input failed");
+        let _ = black_box(buffer.read_input().expect("shmem read_input failed"));
     }
     let shmem_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
     println!("  JSON shmem R/W:    {:.1} ns  ({:.2}M ops/s)", shmem_ns, 1000.0 / shmem_ns);
@@ -317,7 +317,7 @@ fn bench_nda_native_shmem() {
 
     let path = "temp_bench_nda_shmem.bin";
     let _ = std::fs::remove_file(path);
-    let mut buffer = SharedMemoryBuffer::create_or_open(path).unwrap();
+    let mut buffer = SharedMemoryBuffer::create_or_open(path).expect("Failed to create shmem buffer for benchmark");
 
     let nda_frame = nda_native::build_nda_request(
         nda_native::METHOD_TOOLS_CALL,
@@ -329,8 +329,8 @@ fn bench_nda_native_shmem() {
     println!("  NDA write+read shmem ({} iterations)...", iterations);
     let start = Instant::now();
     for _ in 0..iterations {
-        buffer.write_output_raw(black_box(&nda_frame)).unwrap();
-        let _ = black_box(buffer.read_input_raw().unwrap());
+        buffer.write_output_raw(black_box(&nda_frame)).expect("shmem write_output_raw failed");
+        let _ = black_box(buffer.read_input_raw().expect("shmem read_input_raw failed"));
     }
     let nda_shmem_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
     println!("  NDA shmem R/W:     {:.1} ns  ({:.2}M ops/s)", nda_shmem_ns, 1000.0 / nda_shmem_ns);
@@ -363,7 +363,7 @@ fn bench_concurrent_dispatch() {
             })
         }).collect();
 
-        for h in handles { h.join().unwrap(); }
+        for h in handles { h.join().expect("benchmark worker thread panicked"); }
         let elapsed = start.elapsed();
         let total = counter.load(Ordering::Relaxed);
         let throughput = total as f64 / elapsed.as_secs_f64();
@@ -388,13 +388,13 @@ fn bench_concurrent_dispatch() {
             let frame = nda_frame.clone();
             thread::spawn(move || {
                 for _ in 0..requests_per_thread {
-                    let _ = nda_native::parse_nda_request(&frame).unwrap();
+                    let _ = nda_native::parse_nda_request(&frame).expect("NDA parse failed in benchmark");
                     counter.fetch_add(1, Ordering::Relaxed);
                 }
             })
         }).collect();
 
-        for h in handles { h.join().unwrap(); }
+        for h in handles { h.join().expect("benchmark worker thread panicked"); }
         let elapsed = start.elapsed();
         let total = counter.load(Ordering::Relaxed);
         let throughput = total as f64 / elapsed.as_secs_f64();
@@ -416,10 +416,10 @@ fn bench_e2e_tool_calls() {
 
     let test_file = "temp_bench_test.txt";
     let test_nda = "temp_bench_test.nda";
-    std::fs::write(test_file, "Benchmark test content for NDA conversion.\n").unwrap();
+    std::fs::write(test_file, "Benchmark test content for NDA conversion.\n").expect("Failed to write test file for benchmark");
 
     let iterations = 10;
-    let cwd = std::env::current_dir().unwrap();
+    let cwd = std::env::current_dir().expect("Failed to get current directory for benchmark");
 
     println!("  JSON tool call: convert_to_nda_document ({} iterations)...", iterations);
     let start = Instant::now();
@@ -482,7 +482,7 @@ fn bench_oauth2_encryption() {
     let start = Instant::now();
     let mut encrypted_size = 0;
     for _ in 0..iterations {
-        let encrypted = encrypt_token(black_box(&token)).unwrap();
+        let encrypted = encrypt_token(black_box(&token)).expect("OAuth2 token encryption failed");
         encrypted_size = encrypted.len();
         black_box(encrypted);
     }
@@ -490,11 +490,11 @@ fn bench_oauth2_encryption() {
     println!("  Encrypt:  {:.1} μs  (size: {} bytes)", encrypt_ns / 1000.0, encrypted_size);
     
     // Benchmark decryption
-    let encrypted = encrypt_token(&token).unwrap();
+    let encrypted = encrypt_token(&token).expect("OAuth2 token encryption failed for decrypt benchmark");
     println!("  Token decryption ({} iterations)...", iterations);
     let start = Instant::now();
     for _ in 0..iterations {
-        let decrypted = decrypt_token(black_box(&encrypted)).unwrap();
+        let decrypted = decrypt_token(black_box(&encrypted)).expect("OAuth2 token decryption failed");
         black_box(decrypted);
     }
     let decrypt_ns = start.elapsed().as_nanos() as f64 / iterations as f64;

@@ -36,7 +36,7 @@ mod types;
 mod client;
 
 pub use error::{Error, Result};
-pub use transport::{Transport, StdioTransport, HttpTransport};
+pub use transport::{Transport, StdioTransport, HttpTransport, ShmemTransport, JsonShmemTransport};
 pub use types::*;
 pub use client::McpClient;
 

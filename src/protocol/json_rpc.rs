@@ -21,11 +21,12 @@ const MAX_CANCELLED_IDS: usize = 1024;
 
 static LOG_LEVEL: Mutex<tracing::Level> = Mutex::new(tracing::Level::INFO);
 
-static CANCELLED_IDS: Mutex<Vec<Value>> = Mutex::new(Vec::new());
+static CANCELLED_IDS: std::sync::LazyLock<Mutex<std::collections::HashSet<Value>>> = 
+    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
 
 pub fn is_cancelled(id: &Value) -> bool {
     if let Ok(ids) = CANCELLED_IDS.lock() {
-        ids.iter().any(|cid| cid == id)
+        ids.contains(id)
     } else {
         false
     }
@@ -34,16 +35,16 @@ pub fn is_cancelled(id: &Value) -> bool {
 fn add_cancelled(id: Value) {
     if let Ok(mut ids) = CANCELLED_IDS.lock() {
         if ids.len() >= MAX_CANCELLED_IDS {
-            let drain_end = ids.len() - MAX_CANCELLED_IDS + 1;
-            ids.drain(..drain_end);
+            // Evict oldest entries (arbitrary since HashSet is unordered)
+            ids.clear();
         }
-        ids.push(id);
+        ids.insert(id);
     }
 }
 
 fn remove_cancelled(id: &Value) {
     if let Ok(mut ids) = CANCELLED_IDS.lock() {
-        ids.retain(|cid| cid != id);
+        ids.remove(id);
     }
 }
 
@@ -442,19 +443,202 @@ pub fn handle_request(request: &Value) -> Option<Value> {
 /// Requests exceeding the maximum size (1 MB) are rejected before JSON parsing.
 /// Parse errors and unknown methods return proper JSON-RPC error responses.
 pub fn run_stdio_loop(shutdown: &AtomicBool) -> Result<(), Box<dyn Error>> {
-    // Use a reader thread so stdin reads don't block shutdown checks.
-    // Without this, read_line() blocks indefinitely and the shutdown flag
-    // is never polled between requests.
-    let (tx, rx) = mpsc::channel::<String>();
+    use std::io::Read;
 
+    let stdin = io::stdin();
+    let mut stdin_lock = stdin.lock();
+
+    let mut peek_buf = [0u8; 4];
+    let peeked = stdin_lock.read(&mut peek_buf)?;
+
+    if peeked == 4 {
+        let maybe_len = u32::from_be_bytes(peek_buf);
+        // NDA frames are at least 37 bytes (magic+sha256+1 byte payload).
+        // "NMCP" as BE u32 = 1.3GB and JSON '{"j...' = ~2GB, both >> 10MB.
+        if maybe_len > 36 && maybe_len < 10 * 1024 * 1024 {
+            info!("NDA-binary stdio mode detected (length-prefixed)");
+            return run_stdio_nda_mode(stdin_lock, maybe_len, shutdown);
+        }
+    }
+
+    info!("JSON-RPC stdio mode");
+    run_stdio_json_mode(stdin_lock, &peek_buf[..peeked], shutdown)
+}
+
+fn run_stdio_nda_mode(
+    mut stdin_lock: std::io::StdinLock<'_>,
+    first_frame_len: u32,
+    shutdown: &AtomicBool,
+) -> Result<(), Box<dyn Error>> {
+    use std::io::{Read, Write};
+
+    let mut frame_buf = Vec::with_capacity(65536);
+
+    let mut frame_len = first_frame_len;
+    loop {
+        if shutdown.load(Ordering::Relaxed) {
+            info!("Shutdown signal received, exiting NDA stdio loop");
+            break;
+        }
+
+        frame_buf.resize(frame_len as usize, 0);
+        match stdin_lock.read_exact(&mut frame_buf) {
+            Ok(_) => {},
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(Box::new(e)),
+        }
+
+        let response_frame = handle_nda_frame(&frame_buf)?;
+
+        let mut stdout = io::stdout();
+        stdout.write_all(&(response_frame.len() as u32).to_be_bytes())?;
+        stdout.write_all(&response_frame)?;
+        stdout.flush()?;
+
+        // Read next frame length
+        let mut len_buf = [0u8; 4];
+        match stdin_lock.read_exact(&mut len_buf) {
+            Ok(_) => frame_len = u32::from_be_bytes(len_buf),
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(Box::new(e)),
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_nda_frame(raw: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+    use crate::protocol::nda_native;
+    
+    let req = match nda_native::parse_nda_request_inplace(raw) {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(error = %e, "NDA frame parse error in stdio");
+            return Ok(nda_native::build_nda_error(&Value::Null, &format!("Parse error: {}", e)));
+        }
+    };
+    
+    debug!(method = nda_native::method_name(req.method), "NDA stdio request");
+    
+    let response_frame = match req.method {
+        nda_native::METHOD_PING => {
+            nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, nda_native::EMPTY_OBJECT_TLV)
+        }
+        nda_native::METHOD_INITIALIZE => {
+            let result = json!({
+                "protocolVersion": crate::PROTOCOL_VERSION,
+                "capabilities": {
+                    "tools": { "listChanged": true },
+                    "resources": { "subscribe": true, "listChanged": true },
+                    "prompts": { "listChanged": true },
+                    "sampling": {},
+                    "logging": {}
+                },
+                "serverInfo": {
+                    "name": "velocity-mcp-rust-server",
+                    "version": crate::VERSION
+                }
+            });
+            let mut result_tlv = Vec::new();
+            nda_native::encode_json_value(&result, &mut result_tlv);
+            nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, &result_tlv)
+        }
+        nda_native::NOTIF_INITIALIZED => {
+            nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, nda_native::EMPTY_OBJECT_TLV)
+        }
+        nda_native::METHOD_TOOLS_LIST => {
+            let mut payload = Vec::with_capacity(8 * 1024);
+            payload.push(nda_native::STATUS_OK);
+            payload.extend_from_slice(req.id_tlv);
+            payload.extend_from_slice(&nda_native::encoded_tools_list_result());
+            nda_native::build_nda_frame(&payload)
+        }
+        nda_native::METHOD_TOOLS_CALL => {
+            let (name_slice, args_slice) = nda_native::extract_tools_call_fields(req.data)
+                .unwrap_or((None, None));
+            let name = name_slice.unwrap_or("");
+            let args_buf = args_slice.unwrap_or(&[]);
+            let args_json = if args_buf.is_empty() {
+                Value::Object(serde_json::Map::new())
+            } else {
+                nda_native::decode_json_value(args_buf).map(|(v, _)| v).unwrap_or(Value::Null)
+            };
+            
+            let json_req = json!({
+                "method": "tools/call",
+                "params": {
+                    "name": name,
+                    "arguments": args_json
+                }
+            });
+            
+            if let Some(json_resp) = handle_request(&json_req) {
+                if let Some(err) = json_resp.get("error") {
+                    let mut err_tlv = Vec::new();
+                    nda_native::encode_json_value(err, &mut err_tlv);
+                    nda_native::build_nda_response_raw(nda_native::STATUS_ERROR, req.id_tlv, &err_tlv)
+                } else {
+                    let result = json_resp.get("result").cloned().unwrap_or(Value::Null);
+                    let mut result_tlv = Vec::new();
+                    nda_native::encode_json_value(&result, &mut result_tlv);
+                    nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, &result_tlv)
+                }
+            } else {
+                nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, nda_native::EMPTY_OBJECT_TLV)
+            }
+        }
+        _ => {
+            // Fall back to JSON-RPC handler for other methods
+            let method_name = nda_native::method_name(req.method);
+            let (params, _) = if req.data.is_empty() {
+                (Value::Null, 0)
+            } else {
+                nda_native::decode_json_value(req.data).unwrap_or((Value::Null, 0))
+            };
+            
+            let json_req = json!({
+                "method": method_name,
+                "params": params,
+                "id": 1
+            });
+            
+            if let Some(json_resp) = handle_request(&json_req) {
+                let result = json_resp.get("result").cloned().unwrap_or(Value::Null);
+                let mut result_tlv = Vec::new();
+                nda_native::encode_json_value(&result, &mut result_tlv);
+                nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, &result_tlv)
+            } else {
+                nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, nda_native::EMPTY_OBJECT_TLV)
+            }
+        }
+    };
+    
+    Ok(response_frame)
+}
+
+fn run_stdio_json_mode(stdin_lock: std::io::StdinLock<'_>, initial_bytes: &[u8], shutdown: &AtomicBool) -> Result<(), Box<dyn Error>> {
+    // Drop the inherited stdin lock so the reader thread can acquire its own.
+    drop(stdin_lock);
+    // Use a reader thread so stdin reads don't block shutdown checks.
+    let (tx, rx) = mpsc::channel::<String>();
+    let initial_bytes_owned = initial_bytes.to_vec();
+    
     thread::spawn(move || {
         let stdin = io::stdin();
         let mut handle = stdin.lock();
+        let mut first_line = true;
         loop {
             let mut line = String::new();
             match handle.read_line(&mut line) {
                 Ok(0) => break, // EOF
                 Ok(_) => {
+                    if first_line && !initial_bytes_owned.is_empty() {
+                        // Prepend the peeked bytes to the first line
+                        let mut full_line = String::from_utf8_lossy(&initial_bytes_owned).to_string();
+                        full_line.push_str(&line);
+                        line = full_line;
+                        first_line = false;
+                    }
                     if tx.send(line).is_err() {
                         break;
                     }
@@ -640,7 +824,7 @@ mod tests {
     fn test_tools_call_respects_cancellation() {
         let id = json!(9999);
         if let Ok(mut ids) = CANCELLED_IDS.lock() {
-            ids.push(id.clone());
+            ids.insert(id.clone());
         }
         let req = json!({
             "jsonrpc": "2.0",

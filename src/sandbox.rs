@@ -125,7 +125,16 @@ impl ProcessCapabilities {
         if self.allowed_paths.is_empty() && self.allow_network {
             return true;
         }
-        // Check against allowed paths
+        // Try canonicalized comparison first (prevents symlink bypass)
+        if let Ok(canon) = std::fs::canonicalize(path) {
+            for allowed in &self.allowed_paths {
+                let allowed_canon = std::fs::canonicalize(allowed).unwrap_or_else(|_| allowed.clone());
+                if canon.starts_with(&allowed_canon) {
+                    return true;
+                }
+            }
+        }
+        // Fall back to lexical check for non-existent paths (e.g., write targets)
         for allowed in &self.allowed_paths {
             if path.starts_with(allowed) {
                 return true;
@@ -518,7 +527,9 @@ impl Sandbox {
 impl Drop for Sandbox {
     fn drop(&mut self) {
         if self.cleanup {
-            let _ = std::fs::remove_dir_all(&self.work_dir);
+            if let Err(e) = std::fs::remove_dir_all(&self.work_dir) {
+                tracing::warn!(dir = %self.work_dir.display(), error = %e, "Failed to clean up sandbox directory");
+            }
         }
     }
 }
@@ -580,15 +591,28 @@ fn apply_job_object_limits(child: &mut std::process::Child, max_memory: usize) {
         let max_ptr = info.as_mut_ptr().add(8) as *mut usize;
         *max_ptr = max_set;
 
-        let _ = SetInformationJobObject(
+        let set_result = SetInformationJobObject(
             job,
             JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
             info.as_ptr() as *const std::ffi::c_void,
             info.len() as u32,
         );
+        if set_result == 0 {
+            tracing::warn!(
+                error = std::io::Error::last_os_error().raw_os_error(),
+                "Failed to set Job Object memory limits (min={}, max={})",
+                min_set, max_set
+            );
+        }
 
         let process_handle = child.as_raw_handle();
-        let _ = AssignProcessToJobObject(job, process_handle);
+        let assign_result = AssignProcessToJobObject(job, process_handle);
+        if assign_result == 0 {
+            tracing::warn!(
+                error = std::io::Error::last_os_error().raw_os_error(),
+                "Failed to assign process to Job Object"
+            );
+        }
 
         // Note: We don't close the job handle — it stays alive as long as the
         // process runs. The OS cleans it up when the process exits.
@@ -608,8 +632,12 @@ fn wait_with_timeout(
             Ok(Some(status)) => return Ok(status),
             Ok(None) => {
                 if start.elapsed() > timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    if let Err(e) = child.kill() {
+                        tracing::debug!(error = %e, "Failed to kill timed-out sandbox process");
+                    }
+                    if let Err(e) = child.wait() {
+                        tracing::debug!(error = %e, "child.wait() failed after killing timed-out process");
+                    }
                     return Err(format!(
                         "Execution timed out after {} seconds",
                         timeout.as_secs()
@@ -618,7 +646,9 @@ fn wait_with_timeout(
                 std::thread::sleep(Duration::from_millis(50));
             }
             Err(e) => {
-                let _ = child.kill();
+                if let Err(ke) = child.kill() {
+                    tracing::debug!(error = %ke, "Failed to kill sandbox process after wait error");
+                }
                 return Err(format!("Failed to wait for process: {}", e));
             }
         }
@@ -626,12 +656,15 @@ fn wait_with_timeout(
 }
 
 fn random_suffix() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .subsec_nanos();
-    format!("{:08x}", nanos.wrapping_mul(2654435761))
+        .subsec_nanos() as u64;
+    let pid = std::process::id() as u64;
+    format!("{:08x}", (nanos ^ (pid << 16) ^ count).wrapping_mul(2654435761))
 }
 
 fn category_label(cat: &ViolationCategory) -> &'static str {

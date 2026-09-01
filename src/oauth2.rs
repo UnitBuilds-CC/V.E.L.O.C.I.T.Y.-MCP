@@ -26,6 +26,21 @@ use aes_gcm::{
 #[cfg(feature = "oauth2")]
 use rand::RngCore;
 
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => {
+                out.push_str(&format!("%{:02X}", b));
+            }
+        }
+    }
+    out
+}
+
 /// OAuth2 token with optional refresh and expiration tracking.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct OAuth2Token {
@@ -361,9 +376,20 @@ pub fn compute_webhook_signature(payload: &str, secret: &str) -> Result<String, 
 #[cfg(feature = "oauth2")]
 pub fn verify_webhook_signature(payload: &str, signature: &str, secret: &str) -> bool {
     match compute_webhook_signature(payload, secret) {
-        Ok(expected) => expected == signature,
+        Ok(expected) => constant_time_eq(expected.as_bytes(), signature.as_bytes()),
         Err(_) => false,
     }
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 /// Send a webhook event to a configured endpoint.
@@ -479,22 +505,27 @@ pub fn generate_authorize_url(connector_id: &str, state: &str, scopes: Option<Ve
     
     // Store state for validation
     if let Ok(mut state_store) = get_state_store().lock() {
+        const MAX_STATE_ENTRIES: usize = 1000;
+        if state_store.len() >= MAX_STATE_ENTRIES {
+            tracing::warn!("OAuth2 state store full ({} entries), clearing stale entries", MAX_STATE_ENTRIES);
+            state_store.clear();
+        }
         state_store.insert(state.to_string(), connector_id.to_string());
     }
     
     let mut url = format!("{}?response_type=code&client_id={}&state={}",
         oauth2_config.authorize_url,
-        oauth2_config.client_id,
-        state
+        percent_encode(&oauth2_config.client_id),
+        percent_encode(&state)
     );
-    
+
     if let Some(redirect_uri) = &oauth2_config.redirect_uri {
-        url.push_str(&format!("&redirect_uri={}", redirect_uri));
+        url.push_str(&format!("&redirect_uri={}", percent_encode(redirect_uri)));
     }
-    
+
     let effective_scopes = scopes.or(oauth2_config.scopes);
     if let Some(scopes) = effective_scopes {
-        url.push_str(&format!("&scope={}", scopes.join(" ")));
+        url.push_str(&format!("&scope={}", percent_encode(&scopes.join(" "))));
     }
     
     Ok(url)

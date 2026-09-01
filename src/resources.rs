@@ -99,7 +99,9 @@ fn get_resource_registry() -> &'static Mutex<ResourceStore> {
 /// Set the database path for database-backed resources.
 /// Must be called before any database resource is read.
 pub fn set_database_path(path: &str) {
-    let _ = DATABASE_PATH.set(path.to_string());
+    if DATABASE_PATH.set(path.to_string()).is_err() {
+        tracing::warn!("DATABASE_PATH already initialized; ignoring duplicate set_database_path call");
+    }
 }
 
 /// In-memory resource store.
@@ -217,7 +219,20 @@ impl ResourceStore {
     fn read_resource(&self, uri: &str) -> Result<ResourceReadResult, String> {
         // Try file resource first
         if let Some(path) = self.file_resources.get(uri) {
-            let content = std::fs::read_to_string(path)
+            use std::io::Read;
+            const MAX_RESOURCE_SIZE: u64 = 10 * 1024 * 1024;
+            let mut file = std::fs::File::open(path)
+                .map_err(|e| format!("Failed to open file: {}", e))?;
+            let metadata = file.metadata()
+                .map_err(|e| format!("Failed to stat file: {}", e))?;
+            if metadata.len() > MAX_RESOURCE_SIZE {
+                return Err(format!(
+                    "File too large: {} bytes (max {} bytes)",
+                    metadata.len(), MAX_RESOURCE_SIZE
+                ));
+            }
+            let mut content = String::new();
+            file.read_to_string(&mut content)
                 .map_err(|e| format!("Failed to read file: {}", e))?;
             let mime = guess_mime(path.extension().and_then(|e| e.to_str()).unwrap_or(""));
             return Ok(ResourceReadResult {

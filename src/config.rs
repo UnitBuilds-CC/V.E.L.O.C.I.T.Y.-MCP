@@ -170,7 +170,13 @@ impl ServerConfig {
     /// Load configuration with environment variable overrides.
     pub fn load_with_env<P: AsRef<Path>>(path: Option<P>) -> Self {
         let config = if let Some(path) = path {
-            Self::from_file(path).unwrap_or_default()
+            match Self::from_file(path) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to load config file, using defaults");
+                    Self::default()
+                }
+            }
         } else {
             Self::default()
         };

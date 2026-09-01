@@ -923,6 +923,7 @@ mod http_auth_tests {
 // ─── Batch Request Handler ─────────────────────────────────────────────────────
 
 #[test]
+#[cfg(feature = "http")]
 fn test_batch_request_processing() {
     use velocity_mcp::middleware::BatchRequest;
     
@@ -1104,6 +1105,7 @@ fn test_chaos_rate_limiting() {
 
 /// Test that resource limits prevent unbounded growth
 #[test]
+#[cfg(feature = "http")]
 fn test_chaos_resource_limits() {
     // This test verifies that constants are defined
     // Actual limit enforcement is tested in the HTTP transport tests

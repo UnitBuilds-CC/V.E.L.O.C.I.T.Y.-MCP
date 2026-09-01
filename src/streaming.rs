@@ -134,6 +134,11 @@ where
     F: Fn(u64, Option<u64>) + Send + Sync + 'static,
 {
     if let Ok(mut callbacks) = get_progress_callbacks().lock() {
+        const MAX_CALLBACKS: usize = 1024;
+        if callbacks.len() >= MAX_CALLBACKS && !callbacks.contains_key(tool_name) {
+            tracing::warn!(tool = tool_name, "Progress callback registry full ({}), rejecting", MAX_CALLBACKS);
+            return;
+        }
         callbacks.insert(tool_name.to_string(), Box::new(callback));
     }
 }
@@ -155,6 +160,11 @@ pub fn init_streaming_state(token: &ProgressToken, total: Option<u64>) {
     };
     
     if let Ok(mut states) = get_streaming_states().lock() {
+        const MAX_STATES: usize = 1024;
+        if states.len() >= MAX_STATES && !states.contains_key(&token_str) {
+            tracing::warn!(token = %token_str, "Streaming state registry full ({}), rejecting", MAX_STATES);
+            return;
+        }
         states.insert(token_str, StreamingState {
             token: token.clone(),
             progress: 0,
@@ -204,9 +214,7 @@ pub fn complete_streaming(token: &ProgressToken) {
     };
     
     if let Ok(mut states) = get_streaming_states().lock() {
-        if let Some(state) = states.get_mut(&token_str) {
-            state.is_complete = true;
-        }
+        states.remove(&token_str);
     }
 }
 
@@ -226,10 +234,10 @@ pub fn get_streaming_state(token: &ProgressToken) -> Option<StreamingState> {
 
 /// Handle notifications/progress from client (client reporting progress to server).
 pub fn handle_progress_notification(params: &Value) {
-    let _token = params.get("progressToken");
-    let _progress = params.get("progress").and_then(|p| p.as_u64());
-    let _total = params.get("total").and_then(|t| t.as_u64());
-    // For now, just log. In a full implementation, this would update internal state.
+    let token = params.get("progressToken").and_then(|t| t.as_str());
+    let progress = params.get("progress").and_then(|p| p.as_u64());
+    let total = params.get("total").and_then(|t| t.as_u64());
+    tracing::debug!(?token, ?progress, ?total, "Progress notification received");
 }
 
 /// Check if a tool supports progress reporting.
@@ -292,7 +300,7 @@ pub fn stream_chunks_to_sse(
     token: ProgressToken,
     chunks: Vec<StreamingChunk>,
 ) -> mpsc::Receiver<String> {
-    let (tx, rx) = mpsc::channel(chunks.len().max(1));
+    let (tx, rx) = mpsc::channel(64);
     
     tokio::spawn(async move {
         for chunk in chunks {
@@ -315,7 +323,7 @@ pub fn stream_chunks_with_backpressure(
     chunks: Vec<StreamingChunk>,
     delay_ms: u64,
 ) -> mpsc::Receiver<String> {
-    let (tx, rx) = mpsc::channel(chunks.len().max(1));
+    let (tx, rx) = mpsc::channel(64);
     
     tokio::spawn(async move {
         for chunk in chunks {
@@ -443,10 +451,9 @@ mod tests {
         let state = get_streaming_state(&token).unwrap();
         assert_eq!(state.chunks_sent, 2);
         
-        // Complete streaming
+        // Complete streaming (removes entry to prevent memory leak)
         complete_streaming(&token);
-        let state = get_streaming_state(&token).unwrap();
-        assert!(state.is_complete);
+        assert!(get_streaming_state(&token).is_none());
     }
 
     #[test]

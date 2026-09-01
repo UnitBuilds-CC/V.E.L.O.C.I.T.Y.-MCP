@@ -7,6 +7,14 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
+pub mod shmem;
+pub mod nda_codec;
+pub mod shmem_transport;
+pub mod json_shmem_transport;
+
+pub use shmem_transport::ShmemTransport;
+pub use json_shmem_transport::JsonShmemTransport;
+
 /// Transport trait for MCP communication
 #[async_trait::async_trait]
 pub trait Transport: Send + Sync {

@@ -8,6 +8,23 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tracing::{info, warn, error, debug};
 
+fn collapse_whitespace(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev_ws = false;
+    for ch in s.chars() {
+        if ch.is_ascii_whitespace() {
+            if !prev_ws {
+                out.push(' ');
+            }
+            prev_ws = true;
+        } else {
+            out.push(ch);
+            prev_ws = false;
+        }
+    }
+    out
+}
+
 /// An MCP tool registration with name, description, and JSON input schema.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Tool {
@@ -27,6 +44,10 @@ const _CSHARP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Global cache for dynamically discovered tools from the C# engine.
 static CACHED_TOOLS: OnceLock<Vec<Tool>> = OnceLock::new();
+
+/// Cache for the full combined tools list (builtin + C# + NDA + plugin + resource).
+/// Stores (generation, tools) to avoid rebuilding on every tools/list call.
+static TOOLS_CACHE: Mutex<Option<(u64, Vec<Tool>)>> = Mutex::new(None);
 
 /// Bumped whenever the tool registry contents can change. Protocol handlers
 /// key serialized tools/list caches on this so they rebuild only when the
@@ -129,8 +150,18 @@ fn get_nda_registry() -> &'static Mutex<HashMap<String, Vec<u8>>> {
 /// the built-in version takes precedence.
 /// Also filters out deprecated tool names that have been superseded by built-ins.
 pub fn get_tools() -> Vec<Tool> {
+    // Check cache first
+    let current_gen = REGISTRY_GENERATION.load(Ordering::Acquire);
+    if let Ok(cache) = TOOLS_CACHE.lock() {
+        if let Some((cached_gen, ref cached_tools)) = *cache {
+            if cached_gen == current_gen {
+                return cached_tools.clone();
+            }
+        }
+    }
+    
     let mut tools = get_builtin_tools();
-    let mut known_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+    let mut known_names: std::collections::HashSet<String> = tools.iter().map(|t| t.name.clone()).collect();
     
     // Deprecated tool names that should be filtered out from C# engine
     let deprecated_names = ["convert_to_nda"]; // Superseded by convert_to_nda_document
@@ -140,7 +171,7 @@ pub fn get_tools() -> Vec<Tool> {
         for tool in dynamic_tools {
             if !known_names.contains(&tool.name) && !deprecated_names.contains(&tool.name.as_str()) {
                 tools.push(tool.clone());
-                known_names.push(tool.name.clone());
+                known_names.insert(tool.name.clone());
             }
         }
     } else {
@@ -152,7 +183,7 @@ pub fn get_tools() -> Vec<Tool> {
                 for tool in dynamic_tools {
                     if !known_names.contains(&tool.name) && !deprecated_names.contains(&tool.name.as_str()) {
                         tools.push(tool.clone());
-                        known_names.push(tool.name.clone());
+                        known_names.insert(tool.name.clone());
                     }
                 }
             }
@@ -179,7 +210,7 @@ pub fn get_tools() -> Vec<Tool> {
                         "description": "Arguments are passed through to the NDA binary executor."
                     }),
                 });
-                known_names.push(tool_name.clone());
+                known_names.insert(tool_name.clone());
             }
         }
     }
@@ -189,7 +220,7 @@ pub fn get_tools() -> Vec<Tool> {
         for tool in registry.iter() {
             if !known_names.contains(&tool.name) {
                 tools.push(tool.clone());
-                known_names.push(tool.name.clone());
+                known_names.insert(tool.name.clone());
             }
         }
     }
@@ -200,9 +231,14 @@ pub fn get_tools() -> Vec<Tool> {
         for tool in plugin_tools {
             if !known_names.contains(&tool.name) {
                 tools.push(tool.clone());
-                known_names.push(tool.name.clone());
+                known_names.insert(tool.name.clone());
             }
         }
+    }
+    
+    // Cache the result for future calls
+    if let Ok(mut cache) = TOOLS_CACHE.lock() {
+        *cache = Some((current_gen, tools.clone()));
     }
     
     tools
@@ -236,7 +272,7 @@ fn get_builtin_tools() -> Vec<Tool> {
         },
         Tool {
             name: "shell_exec".to_string(),
-            description: "Execute a shell command with timeout enforcement and security validation. Blocks dangerous patterns (rm -rf /, format, etc). Returns exit code, stdout, and stderr. Use for running builds, tests, git commands, or system utilities. Commands run with the server's permissions.".to_string(),
+            description: "Execute a shell command with timeout enforcement and security validation. Blocks dangerous system-level patterns (rm -rf /, format, diskpart, encoded PowerShell, etc). All invocations are audit-logged. Returns exit code, stdout, and stderr. Use for running builds, tests, git commands, or system utilities. Commands run with the server's permissions.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -480,8 +516,8 @@ fn discover_csharp_tools() -> Result<Vec<Tool>, Box<dyn Error>> {
     });
     
     let response_str = reader_thread.join().map_err(|_| "Failed to read response")?;
-    let _ = child.kill();
-    let _ = child.wait();
+    if let Err(e) = child.kill() { tracing::debug!(error = %e, "child.kill() failed (process may have exited)"); }
+    if let Err(e) = child.wait() { tracing::debug!(error = %e, "child.wait() failed after kill"); }
     
     if response_str.trim().is_empty() {
         return Err("Empty response from C# engine".into());
@@ -591,9 +627,11 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
             let path = arguments["path"].as_str().ok_or("path is required")?;
             validate_file_path(path)?;
             
-            // Check file size before reading
-            let metadata = std::fs::metadata(path)?;
+            // Open file first, then check size on the handle to prevent TOCTOU race
+            use std::io::Read;
+            let mut file = std::fs::File::open(path)?;
             const MAX_FILE_READ_SIZE: usize = 10 * 1024 * 1024; // 10MB
+            let metadata = file.metadata()?;
             if metadata.len() > MAX_FILE_READ_SIZE as u64 {
                 return Err(format!(
                     "File too large: {} bytes ({:.2} MB)\n\
@@ -610,7 +648,8 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
                 ).into());
             }
             
-            let content = std::fs::read_to_string(path)?;
+            let mut content = String::new();
+            file.read_to_string(&mut content)?;
             Ok(content)
         }
         "file_write" => {
@@ -645,57 +684,71 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
         "directory_tree" => {
             let path = arguments["path"].as_str().ok_or("path is required")?;
             validate_file_path(path)?;
-            
+            let max_depth = arguments["maxDepth"].as_u64().unwrap_or(10).min(20) as usize;
+
             let exclude_patterns: Vec<String> = arguments["excludePatterns"]
                 .as_array()
                 .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
                 .unwrap_or_default();
-            
+
             fn build_tree(
                 path: &std::path::Path,
                 prefix: &str,
                 exclude_patterns: &[String],
+                depth: usize,
+                max_depth: usize,
+                remaining: &mut usize,
             ) -> Result<String, Box<dyn Error>> {
                 let mut result = String::new();
+                if depth >= max_depth {
+                    result.push_str(&format!("{}... (max depth {})\n", prefix, max_depth));
+                    return Ok(result);
+                }
                 let entries: Vec<_> = std::fs::read_dir(path)?
                     .filter_map(|e| e.ok())
                     .collect();
-                
+
                 for (i, entry) in entries.iter().enumerate() {
+                    if *remaining == 0 {
+                        result.push_str(&format!("{}... (entry limit reached)\n", prefix));
+                        break;
+                    }
+                    *remaining -= 1;
+
                     let name = entry.file_name().to_string_lossy().into_owned();
-                    
-                    // Check exclusion patterns
+
                     let excluded = exclude_patterns.iter().any(|pattern| {
                         glob::Pattern::new(pattern)
                             .map(|p| p.matches(&name))
                             .unwrap_or(false)
                     });
-                    
+
                     if excluded {
                         continue;
                     }
-                    
+
                     let is_last = i == entries.len() - 1;
                     let connector = if is_last { "└── " } else { "├── " };
                     result.push_str(&format!("{}{}{}\n", prefix, connector, name));
-                    
+
                     if entry.file_type()?.is_dir() {
                         let extension = if is_last { "    " } else { "│   " };
                         let child_prefix = format!("{}{}", prefix, extension);
-                        result.push_str(&build_tree(&entry.path(), &child_prefix, exclude_patterns)?);
+                        result.push_str(&build_tree(&entry.path(), &child_prefix, exclude_patterns, depth + 1, max_depth, remaining)?);
                     }
                 }
-                
+
                 Ok(result)
             }
-            
+
             let path_buf = std::path::PathBuf::from(path);
             let root_name = path_buf.file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or(path);
-            
+
             let mut tree = format!("{}\n", root_name);
-            tree.push_str(&build_tree(&path_buf, "", &exclude_patterns)?);
+            let mut remaining = 10_000usize;
+            tree.push_str(&build_tree(&path_buf, "", &exclude_patterns, 0, max_depth, &mut remaining)?);
             
             Ok(tree)
         }
@@ -721,7 +774,7 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
             validate_file_path(source)?;
             validate_file_path(destination)?;
             
-            // Check if destination already exists
+            // Check if destination already exists (best-effort; small TOCTOU race window)
             if std::path::Path::new(destination).exists() {
                 return Err(format!("Destination already exists: {}", destination).into());
             }
@@ -741,6 +794,10 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
             let edits = arguments["edits"].as_array().ok_or("edits is required")?;
             let dry_run = arguments["dryRun"].as_bool().unwrap_or(false);
             
+            if edits.len() > 1000 {
+                return Err(format!("Too many edits: {} (maximum is 1000)", edits.len()).into());
+            }
+            
             validate_file_path(path)?;
             
             let mut content = std::fs::read_to_string(path)?;
@@ -749,6 +806,10 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
             for edit in edits {
                 let old_text = edit["oldText"].as_str().ok_or("each edit must have oldText")?;
                 let new_text = edit["newText"].as_str().ok_or("each edit must have newText")?;
+                
+                if old_text.len() > 1_000_000 || new_text.len() > 1_000_000 {
+                    return Err("Each edit text (oldText/newText) must be under 1MB".into());
+                }
                 
                 if content.contains(old_text) {
                     if dry_run {
@@ -797,19 +858,84 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
         }
         "bench_echo" => {
             let size = arguments["size"].as_u64().unwrap_or(64) as usize;
+            const MAX_BENCH_SIZE: usize = 16 * 1024 * 1024;
+            if size > MAX_BENCH_SIZE {
+                return Err(format!("size {} exceeds maximum {}", size, MAX_BENCH_SIZE).into());
+            }
             Ok("x".repeat(size))
         }
         "shell_exec" => {
             let command = arguments["command"].as_str().ok_or("command is required")?;
             let working_dir = arguments["workingDir"].as_str();
-            let timeout_secs = arguments["timeout"].as_u64().unwrap_or(30);
+            let timeout_secs = arguments["timeout"].as_u64().unwrap_or(30).min(300);
+            
+            // Audit log all shell executions
+            tracing::info!(command = %command, working_dir = ?working_dir, "shell_exec invoked");
             
             // Validate command doesn't contain dangerous patterns
-            let dangerous_patterns = ["rm -rf /", "del /f /s /q", "format ", "mkfs ", "dd if="];
-            for pattern in &dangerous_patterns {
-                if command.to_lowercase().contains(pattern) {
-                    return Err(format!("Command contains dangerous pattern: {}", pattern).into());
+            // Unix destructive commands
+            let dangerous_unix = [
+                "rm -rf /", "rm -rf /*", "rm -rf ~", "rm -rf ~/*", 
+                "rm -rf .", "rm -rf ..",
+                "mkfs.", "mkfs ", "dd if=", "dd of=/dev/",
+                ":(){ :|:& };:",  // fork bomb
+                "> /dev/sda", "> /dev/nvme",
+                "chmod -R 777 /", "chown -R",
+                "wget | sh", "curl | sh", "wget|sh", "curl|sh",
+                "wget | bash", "curl | bash",
+            ];
+            
+            // Windows destructive commands
+            let dangerous_windows = [
+                "del /f /s /q", "del /s /q c:\\", "del /s /q %systemdrive%",
+                "format ", "format c:", "format d:",
+                "rd /s /q", "rmdir /s /q",
+                "diskpart", "bootrec",
+                "bcdedit", "reg delete",
+                "net user", "net localgroup",
+                "powershell -enc", "powershell -encodedcommand",
+            ];
+            
+            let cmd_lower = command.to_lowercase();
+            let cmd_normalized = collapse_whitespace(&cmd_lower);
+            
+            // Check Unix patterns on non-Windows, all patterns on Windows (WSL/cross-platform)
+            for pattern in &dangerous_unix {
+                if cmd_normalized.contains(pattern) {
+                    tracing::warn!(pattern = %pattern, command = %command, "Blocked dangerous Unix command pattern");
+                    return Err(format!(
+                        "Security error: Command contains dangerous pattern: '{}'\n\
+                        This pattern could cause irreversible system damage.\n\
+                        Suggestions:\n\
+                        - Use more specific file paths instead of broad patterns\n\
+                        - Break the operation into safer, targeted commands\n\
+                        - Use the file_remove tool for specific file deletion",
+                        pattern
+                    ).into());
                 }
+            }
+            
+            for pattern in &dangerous_windows {
+                if cmd_normalized.contains(pattern) {
+                    tracing::warn!(pattern = %pattern, command = %command, "Blocked dangerous Windows command pattern");
+                    return Err(format!(
+                        "Security error: Command contains dangerous pattern: '{}'\n\
+                        This pattern could cause irreversible system damage.\n\
+                        Suggestions:\n\
+                        - Use more specific file paths instead of broad patterns\n\
+                        - Use the file_remove tool for specific file deletion\n\
+                        - Avoid system-level commands that affect the entire system",
+                        pattern
+                    ).into());
+                }
+            }
+            
+            // Detect shell metacharacters that enable command chaining/injection
+            // These are logged but allowed (with warning) for legitimate use cases
+            let shell_meta = [';', '|', '&', '`', '$', '\n'];
+            let has_metachar = shell_meta.iter().any(|c| command.contains(*c));
+            if has_metachar {
+                tracing::warn!(command = %command, "shell_exec contains shell metacharacters");
             }
             
             // Execute with timeout
@@ -844,7 +970,7 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
                             }
                             None => {
                                 if start.elapsed().as_secs() > timeout_secs {
-                                    let _ = child.kill();
+                                    if let Err(e) = child.kill() { tracing::debug!(error = %e, "child.kill() failed (process may have exited)"); }
                                     return Err(format!(
                                         "Command timed out after {} seconds\n\
                                         The command took too long to execute and was terminated.\n\
@@ -890,7 +1016,7 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
                             }
                             None => {
                                 if start.elapsed().as_secs() > timeout_secs {
-                                    let _ = child.kill();
+                                    if let Err(e) = child.kill() { tracing::debug!(error = %e, "child.kill() failed (process may have exited)"); }
                                     return Err(format!(
                                         "Command timed out after {} seconds\n\
                                         The command took too long to execute and was terminated.\n\
@@ -936,7 +1062,7 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
                             }
                             None => {
                                 if start.elapsed().as_secs() > timeout_secs {
-                                    let _ = child.kill();
+                                    if let Err(e) = child.kill() { tracing::debug!(error = %e, "child.kill() failed (process may have exited)"); }
                                     return Err(format!(
                                         "Command timed out after {} seconds\n\
                                         The command took too long to execute and was terminated.\n\
@@ -981,7 +1107,7 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
                             }
                             None => {
                                 if start.elapsed().as_secs() > timeout_secs {
-                                    let _ = child.kill();
+                                    if let Err(e) = child.kill() { tracing::debug!(error = %e, "child.kill() failed (process may have exited)"); }
                                     return Err(format!(
                                         "Command timed out after {} seconds\n\
                                         The command took too long to execute and was terminated.\n\
@@ -1009,9 +1135,12 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
         }
         "http_request" => {
             let url = arguments["url"].as_str().ok_or("url is required")?;
+            #[allow(unused)]
             let method = arguments["method"].as_str().unwrap_or("GET");
+            #[allow(unused)]
             let body = arguments["body"].as_str();
-            let timeout_secs = arguments["timeout"].as_u64().unwrap_or(30);
+            #[allow(unused)]
+            let timeout_secs = arguments["timeout"].as_u64().unwrap_or(30).min(300);
             
             // Validate URL
             if !url.starts_with("http://") && !url.starts_with("https://") {
@@ -1026,11 +1155,29 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
                 ).into());
             }
             
-            // Basic SSRF prevention - block private IPs and localhost
+            // SSRF prevention - extract host and check against private IP ranges
             let url_lower = url.to_lowercase();
-            let blocked_patterns = ["localhost", "127.0.0.1", "0.0.0.0", "10.", "172.16.", "192.168.", "169.254."];
+            let host = url_lower
+                .find("://")
+                .map(|i| &url_lower[i + 3..])
+                .unwrap_or(&url_lower)
+                .split('/')
+                .next()
+                .unwrap_or(&url_lower)
+                .split(':')
+                .next()
+                .unwrap_or(&url_lower);
+            let blocked_patterns = [
+                "localhost", "127.0.0.1", "127.", "0.0.0.0",
+                "10.", "172.16.", "172.17.", "172.18.", "172.19.",
+                "172.20.", "172.21.", "172.22.", "172.23.",
+                "172.24.", "172.25.", "172.26.", "172.27.",
+                "172.28.", "172.29.", "172.30.", "172.31.",
+                "192.168.", "169.254.",
+                "::1", "[::1]", "[::]", "fe80:", "fc00:", "fd00:",
+            ];
             for pattern in &blocked_patterns {
-                if url_lower.contains(pattern) {
+                if host.contains(pattern) {
                     return Err(format!(
                         "Security error: URL contains blocked host pattern '{}'\n\
                         For security reasons, requests to private networks and localhost are blocked.\n\
@@ -1093,7 +1240,9 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
                             }
                             
                             let mut response_body = String::new();
-                            response.into_reader().read_to_string(&mut response_body)?;
+                            const MAX_RESPONSE_SIZE: u64 = 10 * 1024 * 1024;
+                            let mut limited = response.into_reader().take(MAX_RESPONSE_SIZE);
+                            limited.read_to_string(&mut response_body)?;
                             
                             return Ok(format!("HTTP {} {}\n{}", status, status_text, response_body));
                         }
@@ -1275,6 +1424,25 @@ fn validate_file_path(path: &str) -> Result<(), Box<dyn Error>> {
         ).into());
     }
 
+    // Detect symlinks in any path component to prevent symlink-based traversal
+    // (e.g., /tmp/link -> /etc/passwd). Walk ancestors checking each component.
+    let mut check = p.to_path_buf();
+    loop {
+        if let Ok(meta) = std::fs::symlink_metadata(&check) {
+            if meta.file_type().is_symlink() {
+                return Err(format!(
+                    "Security error: Path contains symlink component: {}\n\
+                    Symlinks are not allowed for security reasons.\n\
+                    Suggestion: Use the real path instead of a symbolic link.",
+                    check.display()
+                ).into());
+            }
+        }
+        if !check.pop() {
+            break;
+        }
+    }
+
     Ok(())
 }
 
@@ -1315,21 +1483,19 @@ fn execute_csharp_mcp_tool(tool_name: &str, arguments: &Value, exe_path: &str) -
     }
     // stdin is dropped here, closing the pipe
 
-    // Read stdout in a thread with timeout
+    // Read stdout in a thread, communicate result via channel for timeout
     let mut stdout = child.stdout.take().ok_or("Failed to open stdout")?;
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
     let reader_thread = std::thread::spawn(move || {
         let mut response_str = String::new();
         let mut reader = BufReader::new(&mut stdout);
-        // Read lines until we get a complete JSON response
         loop {
             let mut line = String::new();
             match reader.read_line(&mut line) {
-                Ok(0) => break, // EOF
+                Ok(0) => break,
                 Ok(_) => {
                     response_str.push_str(&line);
-                    // Check if we have a complete JSON object
                     if response_str.trim().starts_with('{') && response_str.trim().ends_with('}') {
-                        // Try to parse it
                         if serde_json::from_str::<Value>(response_str.trim()).is_ok() {
                             break;
                         }
@@ -1338,22 +1504,31 @@ fn execute_csharp_mcp_tool(tool_name: &str, arguments: &Value, exe_path: &str) -
                 Err(_) => break,
             }
         }
-        response_str
+        if let Err(e) = tx.send(response_str) {
+            tracing::debug!(error = %e, "C# reader thread: receiver dropped before response could be sent");
+        }
     });
 
     // Wait for reader thread with timeout
-    let response_str = match reader_thread.join() {
+    let response_str = match rx.recv_timeout(std::time::Duration::from_secs(30)) {
         Ok(s) => s,
-        Err(_) => {
-            let _ = child.kill();
-            let _ = child.wait();
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            error!(tool = tool_name, "C# process timed out (30s)");
+            if let Err(e) = child.kill() { tracing::debug!(error = %e, "child.kill() failed (process may have exited)"); }
+            if let Err(e) = child.wait() { tracing::debug!(error = %e, "child.wait() failed after kill"); }
+            return Err("C# process timed out after 30 seconds".into());
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            if let Err(e) = child.kill() { tracing::debug!(error = %e, "child.kill() failed (process may have exited)"); }
+            if let Err(e) = child.wait() { tracing::debug!(error = %e, "child.wait() failed after kill"); }
             return Err("Failed to read response from C# process".into());
         }
     };
+    if let Err(e) = reader_thread.join() { tracing::debug!(error = ?e, "reader_thread join failed"); }
 
     // Kill the process (C# MCP server doesn't exit on its own)
-    let _ = child.kill();
-    let _ = child.wait();
+    if let Err(e) = child.kill() { tracing::debug!(error = %e, "child.kill() failed (process may have exited)"); }
+    if let Err(e) = child.wait() { tracing::debug!(error = %e, "child.wait() failed after kill"); }
 
     if response_str.trim().is_empty() {
         error!(tool = tool_name, "C# process returned empty response");
