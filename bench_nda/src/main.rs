@@ -1727,6 +1727,77 @@ fn bench_nda_http_call(client: &mut NdaHttpClient, iterations: usize, tool: &str
     BenchResult { first_call_us, second_call_us, warm_latencies_us: warm_latencies }
 }
 
+/// Measures the SHA-256 Merkle hashing cost in isolation at various payload sizes.
+/// This is the overhead baked into every NDA frame (build_nda_frame).
+fn bench_merkle_hash_cost(iterations: usize) -> Vec<(String, usize, f64)> {
+    let sizes: [(usize, &str); 7] = [
+        (32, "32 B"),
+        (64, "64 B"),
+        (128, "128 B"),
+        (256, "256 B"),
+        (1024, "1 KB"),
+        (4096, "4 KB"),
+        (16384, "16 KB"),
+    ];
+
+    let mut results = Vec::new();
+    for (size, label) in &sizes {
+        let payload = vec![0xABu8; *size];
+        let start = Instant::now();
+        for _ in 0..iterations {
+            let mut hasher = Sha256::new();
+            hasher.update(&payload);
+            let _ = hasher.finalize();
+        }
+        let elapsed_us = start.elapsed().as_secs_f64() * 1_000_000.0;
+        let per_op_ns = (elapsed_us * 1000.0) / iterations as f64;
+        results.push((label.to_string(), *size, per_op_ns));
+    }
+    results
+}
+
+/// Measures the full build_nda_frame cost (TLV encode + SHA-256 + vec assembly)
+/// vs frame assembly without hashing, at various payload sizes.
+fn bench_merkle_frame_overhead(iterations: usize) -> Vec<(String, f64, f64, f64)> {
+    let sizes: [(usize, &str); 5] = [
+        (0, "ping (null)"),
+        (64, "64 B args"),
+        (256, "256 B args"),
+        (1024, "1 KB args"),
+        (4096, "4 KB args"),
+    ];
+
+    let mut results = Vec::new();
+    for (size, label) in &sizes {
+        let payload = vec![0xABu8; *size];
+
+        // With Merkle (full build_nda_frame)
+        let start = Instant::now();
+        for _ in 0..iterations {
+            let _ = build_nda_frame(&payload);
+        }
+        let with_merkle_us = start.elapsed().as_secs_f64() * 1_000_000.0;
+
+        // Without Merkle (just magic + payload, no SHA-256)
+        let start = Instant::now();
+        for _ in 0..iterations {
+            let mut frame = Vec::with_capacity(FRAME_HEADER_SIZE + payload.len());
+            frame.extend_from_slice(NDA_MAGIC);
+            frame.extend_from_slice(&[0u8; 32]); // zeroed hash slot
+            frame.extend_from_slice(&payload);
+            let _ = frame;
+        }
+        let without_merkle_us = start.elapsed().as_secs_f64() * 1_000_000.0;
+
+        let merkle_cost_us = with_merkle_us - without_merkle_us;
+        let per_op_with = (with_merkle_us * 1000.0) / iterations as f64;
+        let per_op_merkle = (merkle_cost_us * 1000.0) / iterations as f64;
+
+        results.push((label.to_string(), per_op_with, per_op_merkle, per_op_with - per_op_merkle));
+    }
+    results
+}
+
 // ─── Output Formatting ────────────────────────────────────────────────────
 
 fn print_comparison(name: &str, nda: &BenchResult, stdio: &BenchResult, shmem_json: Option<&BenchResult>, nda_stdio: Option<&BenchResult>, http: Option<&BenchResult>, node_stdio: Option<&BenchResult>, node_http: Option<&BenchResult>, nda_http: Option<&BenchResult>) {
@@ -2220,7 +2291,19 @@ fn main() {
     let _ = nda_http_child.kill();
     let _ = nda_http_child.wait();
 
-    // ─── Phase 10: tools/list payload scaling ─────────────────────────────
+    // ─── Phase 10: Merkle hashing cost isolation ───────────────────────────
+    //
+    // Measures the SHA-256 Merkle hashing overhead that is baked into every
+    // NDA frame. This is the cost of integrity verification, independent of
+    // transport.
+
+    let merkle_iters = iterations.max(10000);
+    println!();
+    println!("Running Merkle hashing cost benchmarks... ({} iterations)", merkle_iters);
+    let merkle_hash_results = bench_merkle_hash_cost(merkle_iters);
+    let merkle_frame_results = bench_merkle_frame_overhead(merkle_iters);
+
+    // ─── Phase 11: tools/list payload scaling ─────────────────────────────
     //
     // Inflates the registry via VELOCITY_BENCH_EXTRA_TOOLS and measures how
     // tools/list latency scales with payload size, NDA/shmem vs JSON/shmem.
@@ -2394,6 +2477,84 @@ fn main() {
                  row.js.avg_ms() / row.nda.avg_ms());
     }
 
+    println!();
+
+    // ─── Merkle Hashing Cost ─────────────────────────────────────────────
+
+    println!("─── Merkle Hashing (SHA-256) Cost ─────────────────────────────────────");
+    println!();
+    println!("  Every NDA frame includes a SHA-256 Merkle root over the payload.");
+    println!("  This measures the hashing overhead in isolation:");
+    println!();
+    println!("  {:>10}  {:>12}  {:>12}", "Payload", "SHA-256 (ns)", "Per frame (µs)");
+    println!("  {}", "─".repeat(42));
+    for (label, _size, ns) in &merkle_hash_results {
+        println!("  {:>10}  {:>10.1} ns  {:>10.3} µs", label, ns, ns / 1000.0);
+    }
+
+    println!();
+    println!("  Frame assembly: with Merkle vs without (client-side only):");
+    println!();
+    println!("  {:>14}  {:>12}  {:>12}  {:>12}  {:>8}", "Payload", "With hash", "Hash cost", "No hash", "Hash %");
+    println!("  {}", "─".repeat(66));
+    for (label, with_total, hash_cost, without_hash) in &merkle_frame_results {
+        let pct = if *with_total > 0.0 { (hash_cost / with_total) * 100.0 } else { 0.0 };
+        println!("  {:>14}  {:>9.1} ns  {:>9.1} ns  {:>9.1} ns  {:>6.1}%",
+                 label, with_total, hash_cost, without_hash, pct);
+    }
+
+    println!();
+    println!("  Merkle cost as fraction of total NDA pipeline round-trip:");
+    println!();
+
+    // Compare Merkle hash cost against the total NDA pipeline latencies.
+    // Use the ping (smallest payload) and tools/call 64B (typical small call)
+    // as representative workloads.
+    let merkle_ping_ns = merkle_hash_results.iter().find(|(_, s, _)| *s == 64).map(|(_, _, ns)| *ns).unwrap_or(0.0);
+    let merkle_256_ns = merkle_hash_results.iter().find(|(_, s, _)| *s == 256).map(|(_, _, ns)| *ns).unwrap_or(0.0);
+    let merkle_4k_ns = merkle_hash_results.iter().find(|(_, s, _)| *s == 4096).map(|(_, _, ns)| *ns).unwrap_or(0.0);
+
+    // Each NDA round-trip hashes twice: once for request, once for response validation
+    let merkle_rt_ping = merkle_ping_ns * 2.0;
+    let merkle_rt_256 = merkle_256_ns * 2.0;
+    let merkle_rt_4k = merkle_4k_ns * 2.0;
+
+    println!("  (Each round-trip hashes request + validates response = 2x SHA-256)");
+    println!();
+    println!("  {:>14}  {:>12} {:>12} {:>12} {:>12}  {:>8} {:>8} {:>8}",
+             "Pipeline", "Total (ping)", "Merkle (ping)", "Merkle %", "",
+             "Total(256B)", "Merkle(256)", "Merkle %");
+    println!("  {}", "─".repeat(100));
+
+    let nda_shmem_ping_us = nda_ping.avg_ms() * 1000.0;
+    let nda_stdio_ping_us = ns_ping.avg_ms() * 1000.0;
+    let nda_http_ping_us = nda_http_ping.avg_ms() * 1000.0;
+    let nda_shmem_256_us = nda_echo_256.avg_ms() * 1000.0;
+    let nda_stdio_256_us = ns_echo_256.avg_ms() * 1000.0;
+    let nda_http_256_us = nda_http_echo_256.avg_ms() * 1000.0;
+
+    let merkle_ping_us = merkle_rt_ping / 1000.0;
+    let merkle_256_us = merkle_rt_256 / 1000.0;
+
+    let pct = |total: f64, merkle: f64| -> f64 {
+        if total > 0.0 { (merkle / total) * 100.0 } else { 0.0 }
+    };
+
+    println!("  {:>14}  {:>9.3} µs  {:>9.3} µs  {:>9.1}%    {:>9.3} µs  {:>9.3} µs  {:>6.1}%",
+             "NDA/shmem", nda_shmem_ping_us, merkle_ping_us, pct(nda_shmem_ping_us, merkle_ping_us),
+             nda_shmem_256_us, merkle_256_us, pct(nda_shmem_256_us, merkle_256_us));
+    println!("  {:>14}  {:>9.3} µs  {:>9.3} µs  {:>9.1}%    {:>9.3} µs  {:>9.3} µs  {:>6.1}%",
+             "NDA/stdio", nda_stdio_ping_us, merkle_ping_us, pct(nda_stdio_ping_us, merkle_ping_us),
+             nda_stdio_256_us, merkle_256_us, pct(nda_stdio_256_us, merkle_256_us));
+    println!("  {:>14}  {:>9.3} µs  {:>9.3} µs  {:>9.1}%    {:>9.3} µs  {:>9.3} µs  {:>6.1}%",
+             "NDA/HTTP", nda_http_ping_us, merkle_ping_us, pct(nda_http_ping_us, merkle_ping_us),
+             nda_http_256_us, merkle_256_us, pct(nda_http_256_us, merkle_256_us));
+
+    println!();
+    println!("  {:>14}  {:>9.3} µs  {:>9.1}%",
+             "4KB payload", nda_echo_4096.avg_ms() * 1000.0,
+             pct(nda_echo_4096.avg_ms() * 1000.0, merkle_rt_4k / 1000.0));
+    println!("  (NDA/shmem tools/call with 4KB bench_echo response)");
     println!();
 
     // Overall summary
