@@ -23,6 +23,7 @@ const OUTPUT_BUFFER_OFFSET: usize = 4096;
 const TOTAL_BUFFER_SIZE: usize = 65536;
 
 const STATE_REQ_READY: u8 = 1;
+const STATE_RES_READY: u8 = 3;
 
 // ─── NDA protocol constants (matches src/protocol/nda_native.rs) ──────────
 
@@ -62,6 +63,14 @@ extern "system" {
 
 /// Fail loudly instead of hanging forever if the server stops responding.
 const WAIT_TIMEOUT_MS: u32 = 10_000;
+
+#[cfg(target_os = "windows")]
+fn spin_budget_us() -> u64 {
+    std::env::var("VELOCITY_SPIN_US")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(200)
+}
 
 #[cfg(target_os = "windows")]
 fn to_wstring(s: &str) -> Vec<u16> {
@@ -120,6 +129,31 @@ impl NdaShmemClient {
         }
     }
 
+    fn wait_for_response(&self) {
+        let budget = spin_budget_us();
+        if budget > 0 {
+            let start = std::time::Instant::now();
+            let limit = std::time::Duration::from_micros(budget);
+            loop {
+                let state = unsafe {
+                    let ptr = self.mmap.as_ptr().add(STATE_OFFSET);
+                    *ptr
+                };
+                if state == STATE_RES_READY {
+                    return;
+                }
+                if start.elapsed() >= limit {
+                    break;
+                }
+                std::hint::spin_loop();
+            }
+        }
+        unsafe {
+            let rc = WaitForSingleObject(self.h_res_event, WAIT_TIMEOUT_MS);
+            assert_eq!(rc, 0, "Timed out waiting for server response ({} ms)", WAIT_TIMEOUT_MS);
+        }
+    }
+
     fn send_request(&mut self, frame: &[u8]) -> Vec<u8> {
         self.mmap[INPUT_LEN_OFFSET..INPUT_LEN_OFFSET + 4]
             .copy_from_slice(&(frame.len() as u32).to_le_bytes());
@@ -132,9 +166,8 @@ impl NdaShmemClient {
 
         unsafe {
             SetEvent(self.h_req_event);
-            let rc = WaitForSingleObject(self.h_res_event, WAIT_TIMEOUT_MS);
-            assert_eq!(rc, 0, "Timed out waiting for server response ({} ms)", WAIT_TIMEOUT_MS);
         }
+        self.wait_for_response();
 
         std::sync::atomic::fence(Ordering::SeqCst);
         let out_len = u32::from_le_bytes([
@@ -166,9 +199,8 @@ impl NdaShmemClient {
 
         unsafe {
             SetEvent(self.h_req_event);
-            let rc = WaitForSingleObject(self.h_res_event, WAIT_TIMEOUT_MS);
-            assert_eq!(rc, 0, "Timed out waiting for server response ({} ms)", WAIT_TIMEOUT_MS);
         }
+        self.wait_for_response();
         let t2 = Instant::now();
 
         std::sync::atomic::fence(Ordering::SeqCst);
@@ -557,6 +589,29 @@ fn run_microbenchmarks(self_exe: &str) {
         println!("  Micro: flush_async (FlushViewOfFile, dirty page):  {:.2} us", flush_us);
     }
     let _ = std::fs::remove_file(path);
+
+    // 4. SHA-256 throughput on an 8KB payload — the size of a 16-tool
+    // tools/list frame. sha2 auto-dispatches to SHA-NI on x86_64 when the
+    // CPU has the extensions; software fallback is ~0.3-0.5 GB/s, SHA-NI
+    // is several GB/s, so this number identifies the active backend.
+    {
+        let payload = vec![0xABu8; 8 * 1024];
+        let mut h = Sha256::new();
+        h.update(&payload);
+        let _ = h.finalize(); // warm-up
+        const HASH_ITERS: u32 = 20_000;
+        let start = Instant::now();
+        let mut digest = [0u8; 32];
+        for _ in 0..HASH_ITERS {
+            let mut h = Sha256::new();
+            h.update(&payload);
+            digest = h.finalize().into();
+        }
+        std::hint::black_box(&digest);
+        let ns = start.elapsed().as_nanos() as f64 / HASH_ITERS as f64;
+        let gbs = (8.0 * 1024.0) / ns;
+        println!("  Micro: SHA-256 of 8KB payload (Merkle size):     {:.2} us  ({:.2} GB/s)", ns / 1000.0, gbs);
+    }
 }
 
 /// Peer mode for the cross-process event ping-pong microbenchmark:

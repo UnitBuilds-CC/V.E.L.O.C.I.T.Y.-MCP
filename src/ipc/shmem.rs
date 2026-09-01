@@ -59,6 +59,14 @@ pub fn disable_high_resolution_timer() {}
 const INFINITE: u32 = 0xFFFFFFFF;
 
 #[cfg(target_os = "windows")]
+fn spin_budget_us() -> u64 {
+    std::env::var("VELOCITY_SPIN_US")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(200)
+}
+
+#[cfg(target_os = "windows")]
 fn to_wstring(s: &str) -> Vec<u16> {
     use std::os::windows::ffi::OsStrExt;
     std::ffi::OsStr::new(s)
@@ -142,10 +150,26 @@ impl SharedMemoryBuffer {
         Ok(buffer)
     }
 
-    /// Block until a request is available. Zero-poll on Windows via Win32 events,
-    /// falls back to 100μs sleep on other platforms.
+    /// Block until a request is available. Hybrid spin-wait on Windows:
+    /// spin-polls the state byte for STATE_REQ_READY (avoids ~2.7µs event
+    /// wake cost), falls back to WaitForSingleObject when budget expires.
+    /// Set VELOCITY_SPIN_US=0 to disable spin and use events only.
     #[cfg(target_os = "windows")]
     pub fn wait_for_request(&self) {
+        let budget = spin_budget_us();
+        if budget > 0 {
+            let start = std::time::Instant::now();
+            let limit = std::time::Duration::from_micros(budget);
+            loop {
+                if self.get_state() == STATE_REQ_READY {
+                    return;
+                }
+                if start.elapsed() >= limit {
+                    break;
+                }
+                std::hint::spin_loop();
+            }
+        }
         // SAFETY: h_req_event is a valid event handle from CreateEventW.
         unsafe { WaitForSingleObject(self.h_req_event, INFINITE); }
     }
@@ -175,9 +199,24 @@ impl SharedMemoryBuffer {
     #[cfg(not(target_os = "windows"))]
     pub fn signal_request(&self) {}
 
-    /// Block until a response is available (used by host).
+    /// Block until a response is available (used by host). Hybrid spin-wait:
+    /// polls state byte for STATE_RES_READY before falling back to event.
     #[cfg(target_os = "windows")]
     pub fn wait_for_response(&self) {
+        let budget = spin_budget_us();
+        if budget > 0 {
+            let start = std::time::Instant::now();
+            let limit = std::time::Duration::from_micros(budget);
+            loop {
+                if self.get_state() == STATE_RES_READY {
+                    return;
+                }
+                if start.elapsed() >= limit {
+                    break;
+                }
+                std::hint::spin_loop();
+            }
+        }
         // SAFETY: h_res_event is a valid event handle from CreateEventW.
         unsafe { WaitForSingleObject(self.h_res_event, INFINITE); }
     }
