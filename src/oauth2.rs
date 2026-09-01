@@ -197,9 +197,18 @@ fn get_state_store() -> &'static Mutex<HashMap<String, String>> {
     STATE_STORE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+const MAX_STORE_ENTRIES: usize = 1024;
+
 /// Register a connector configuration.
 pub fn register_connector(config: ConnectorConfig) {
     if let Ok(mut registry) = get_connector_registry().lock() {
+        if registry.len() >= MAX_STORE_ENTRIES && !registry.contains_key(&config.id) {
+            let first_key = registry.keys().next().cloned();
+            if let Some(key) = first_key {
+                registry.remove(&key);
+                tracing::warn!(connector_id = %key, "Connector registry full, evicted oldest entry");
+            }
+        }
         registry.insert(config.id.clone(), config);
     }
 }
@@ -207,6 +216,13 @@ pub fn register_connector(config: ConnectorConfig) {
 /// Store an OAuth2 token for a connector.
 pub fn store_token(connector_id: &str, token: OAuth2Token) {
     if let Ok(mut store) = get_token_store().lock() {
+        if store.len() >= MAX_STORE_ENTRIES && !store.contains_key(connector_id) {
+            let first_key = store.keys().next().cloned();
+            if let Some(key) = first_key {
+                store.remove(&key);
+                tracing::warn!(connector_id = %key, "Token store full, evicted oldest entry");
+            }
+        }
         store.insert(connector_id.to_string(), token);
     }
 }

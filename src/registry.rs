@@ -491,8 +491,9 @@ fn discover_csharp_tools() -> Result<Vec<Tool>, Box<dyn Error>> {
         stdin.flush()?;
     }
     
-    // Read response
+    // Read response via channel so we can timeout if the C# process hangs
     let mut stdout = child.stdout.take().ok_or("Failed to open stdout")?;
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
     let reader_thread = std::thread::spawn(move || {
         let mut response_str = String::new();
         let mut reader = BufReader::new(&mut stdout);
@@ -512,10 +513,26 @@ fn discover_csharp_tools() -> Result<Vec<Tool>, Box<dyn Error>> {
                 Err(_) => break,
             }
         }
-        response_str
+        if let Err(e) = tx.send(response_str) {
+            tracing::debug!(error = %e, "C# reader thread (discover): receiver dropped");
+        }
     });
-    
-    let response_str = reader_thread.join().map_err(|_| "Failed to read response")?;
+
+    let response_str = match rx.recv_timeout(std::time::Duration::from_secs(30)) {
+        Ok(s) => s,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            error!("C# tool discovery timed out (30s)");
+            if let Err(e) = child.kill() { tracing::debug!(error = %e, "child.kill() failed (process may have exited)"); }
+            if let Err(e) = child.wait() { tracing::debug!(error = %e, "child.wait() failed after kill"); }
+            return Err("C# tool discovery timed out after 30 seconds".into());
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            if let Err(e) = child.kill() { tracing::debug!(error = %e, "child.kill() failed (process may have exited)"); }
+            if let Err(e) = child.wait() { tracing::debug!(error = %e, "child.wait() failed after kill"); }
+            return Err("Failed to read response from C# engine during tool discovery".into());
+        }
+    };
+    if let Err(e) = reader_thread.join() { tracing::debug!(error = ?e, "reader_thread join failed (discover)"); }
     if let Err(e) = child.kill() { tracing::debug!(error = %e, "child.kill() failed (process may have exited)"); }
     if let Err(e) = child.wait() { tracing::debug!(error = %e, "child.wait() failed after kill"); }
     

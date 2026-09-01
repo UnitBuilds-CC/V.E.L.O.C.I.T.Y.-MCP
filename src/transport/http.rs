@@ -43,7 +43,7 @@ const MAX_SESSIONS: usize = 10000;
 /// Maximum number of SSE broadcast subscribers (prevents unbounded growth)
 const MAX_BROADCAST_SUBSCRIBERS: usize = 1000;
 
-fn sanitize_session_id(raw: &str) -> Result<String, String> {
+pub(crate) fn sanitize_session_id(raw: &str) -> Result<String, String> {
     if raw.len() > 128 || raw.is_empty() {
         return Err("Session ID must be 1-128 characters".into());
     }
@@ -468,12 +468,16 @@ async fn handle_streamable(
             }
             None => {
                 // Notification, no response needed
-                let _ = tx.send("event: notification\ndata: {\"status\": \"processed\"}\n\n".to_string()).await;
+                if tx.send("event: notification\ndata: {\"status\": \"processed\"}\n\n".to_string()).await.is_err() {
+                    tracing::debug!("SSE client disconnected before notification event");
+                }
             }
         }
 
         // Send completion event
-        let _ = tx.send("event: complete\ndata: {}\n\n".to_string()).await;
+        if tx.send("event: complete\ndata: {}\n\n".to_string()).await.is_err() {
+            tracing::debug!("SSE client disconnected before complete event");
+        }
     });
 
     let stream = ReceiverStream::new(rx).map(|msg| {

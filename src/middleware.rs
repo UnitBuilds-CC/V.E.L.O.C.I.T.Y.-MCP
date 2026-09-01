@@ -184,7 +184,7 @@ pub async fn handle_batch_request(
 ) -> Response {
     let session_id = headers.get("X-Session-ID")
         .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
+        .and_then(|s| crate::transport::http::sanitize_session_id(s).ok())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     crate::audit::set_session_context(session_id);
 

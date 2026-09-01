@@ -565,7 +565,8 @@ fn apply_job_object_limits(child: &mut std::process::Child, max_memory: usize) {
     unsafe {
         let job = CreateJobObjectW(std::ptr::null_mut(), std::ptr::null());
         if job.is_null() {
-            return; // Failed to create job object; continue without limits
+            tracing::warn!("Failed to create Job Object for sandbox; continuing without memory limits");
+            return;
         }
 
         // JOBOBJECT_BASIC_LIMIT_INFORMATION structure (simplified)
