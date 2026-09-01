@@ -447,6 +447,7 @@ pub fn run_stdio_loop(shutdown: &AtomicBool) -> Result<(), Box<dyn Error>> {
 
     let session_id = format!("stdio-{}", std::process::id());
     crate::audit::set_session_context(session_id);
+    crate::audit::set_transport_context("stdio".to_string());
 
     let stdin = io::stdin();
     let mut stdin_lock = stdin.lock();

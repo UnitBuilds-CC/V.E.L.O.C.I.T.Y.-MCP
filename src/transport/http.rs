@@ -313,6 +313,7 @@ async fn handle_json_rpc(
         .map(|s| sanitize_session_id(s).unwrap_or_else(|_| Uuid::new_v4().to_string()))
         .unwrap_or_else(|| Uuid::new_v4().to_string());
     crate::audit::set_session_context(session_id);
+    crate::audit::set_transport_context("http".to_string());
 
     if state.shutdown.load(Ordering::Relaxed) {
         let latency_us = start_time.elapsed().as_micros() as u64;
@@ -363,6 +364,7 @@ async fn handle_nda_rpc(
         .map(|s| sanitize_session_id(s).unwrap_or_else(|_| Uuid::new_v4().to_string()))
         .unwrap_or_else(|| Uuid::new_v4().to_string());
     crate::audit::set_session_context(session_id);
+    crate::audit::set_transport_context("nda_http".to_string());
 
     if state.shutdown.load(Ordering::Relaxed) {
         let latency_us = start_time.elapsed().as_micros() as u64;
@@ -438,6 +440,7 @@ async fn handle_streamable(
     let state_clone = state.clone();
     tokio::spawn(async move {
         crate::audit::set_session_context(session_id_clone.clone());
+        crate::audit::set_transport_context("sse".to_string());
 
         // Send session ID as first event
         if tx.send(format!("event: session\ndata: {}\n\n", session_id_clone)).await.is_err() {
@@ -856,7 +859,7 @@ async fn admin_audit_summary() -> Json<Value> {
 
 /// Format audit entries as CSV.
 fn format_audit_csv(entries: &[crate::audit::AuditEntry]) -> String {
-    let mut csv = String::from("sequence,timestamp_ms,tool_name,duration_ms,outcome,merkle_root,session_id\n");
+    let mut csv = String::from("sequence,timestamp_ms,tool_name,duration_us,outcome,transport,payload_size,response_size,merkle_root,session_id\n");
     for entry in entries {
         let outcome_str = match &entry.outcome {
             crate::audit::AuditOutcome::Success => "success".to_string(),
@@ -865,12 +868,15 @@ fn format_audit_csv(entries: &[crate::audit::AuditEntry]) -> String {
             crate::audit::AuditOutcome::Rejected(msg) => format!("rejected:{}", msg.replace(',', ";")),
         };
         csv.push_str(&format!(
-            "{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{}\n",
             entry.sequence,
             entry.timestamp_ms,
             entry.tool_name,
-            entry.duration_ms,
+            entry.duration_us,
             outcome_str,
+            entry.transport.as_deref().unwrap_or(""),
+            entry.payload_size.map(|s| s.to_string()).unwrap_or_default(),
+            entry.response_size.map(|s| s.to_string()).unwrap_or_default(),
             entry.merkle_root.as_deref().unwrap_or(""),
             entry.session_id.as_deref().unwrap_or(""),
         ));
@@ -902,8 +908,8 @@ async fn websocket_handler(
 }
 
 /// Handle WebSocket connection.
-async fn handle_websocket(mut socket: axum::extract::ws::WebSocket, state: Arc<ServerState>) {
-    use axum::extract::ws::{Message, WebSocket};
+async fn handle_websocket(socket: axum::extract::ws::WebSocket, state: Arc<ServerState>) {
+    use axum::extract::ws::Message;
     use futures::{SinkExt, StreamExt};
 
     let (mut sender, mut receiver) = socket.split();
@@ -915,6 +921,7 @@ async fn handle_websocket(mut socket: axum::extract::ws::WebSocket, state: Arc<S
     let session_for_task = ws_session_id.clone();
     let recv_task = tokio::spawn(async move {
         crate::audit::set_session_context(session_for_task);
+        crate::audit::set_transport_context("websocket".to_string());
 
         while let Some(msg) = StreamExt::next(&mut receiver).await {
             match msg {

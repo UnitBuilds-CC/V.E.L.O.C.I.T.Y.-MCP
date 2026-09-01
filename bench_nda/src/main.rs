@@ -483,6 +483,20 @@ impl HttpClient {
     }
 }
 
+fn export_audit_json(port: u16, label: &str) {
+    let url = format!("http://127.0.0.1:{}/v1/audit/export/json", port);
+    match ureq::get(&url).call() {
+        Ok(resp) => {
+            let body = resp.into_string().unwrap_or_default();
+            let path = format!("bench_nda/audit_{}.json", label);
+            std::fs::write(&path, &body).ok();
+            let count: usize = body.matches("\"tool_name\"").count();
+            println!("Audit export ({}): {} entries → {}", label, count, path);
+        }
+        Err(e) => println!("Audit export failed ({}): {}", label, e),
+    }
+}
+
 // ─── NDA/HTTP Client ─────────────────────────────────────────────────────────
 
 struct NdaHttpClient {
@@ -1730,7 +1744,7 @@ fn bench_nda_http_call(client: &mut NdaHttpClient, iterations: usize, tool: &str
 /// Measures the SHA-256 Merkle hashing cost in isolation at various payload sizes.
 /// This is the overhead baked into every NDA frame (build_nda_frame).
 fn bench_merkle_hash_cost(iterations: usize) -> Vec<(String, usize, f64)> {
-    let sizes: [(usize, &str); 8] = [
+    let sizes: [(usize, &str); 9] = [
         (32, "32 B"),
         (64, "64 B"),
         (128, "128 B"),
@@ -1739,6 +1753,7 @@ fn bench_merkle_hash_cost(iterations: usize) -> Vec<(String, usize, f64)> {
         (4096, "4 KB"),
         (16384, "16 KB"),
         (65536, "64 KB"),
+        (2097152, "2 MB"),
     ];
 
     let mut results = Vec::new();
@@ -1760,7 +1775,7 @@ fn bench_merkle_hash_cost(iterations: usize) -> Vec<(String, usize, f64)> {
 /// Measures the full build_nda_frame cost (TLV encode + SHA-256 + vec assembly)
 /// vs frame assembly without hashing, at various payload sizes.
 fn bench_merkle_frame_overhead(iterations: usize) -> Vec<(String, f64, f64, f64)> {
-    let sizes: [(usize, &str); 7] = [
+    let sizes: [(usize, &str); 8] = [
         (0, "ping (null)"),
         (64, "64 B args"),
         (256, "256 B args"),
@@ -1768,6 +1783,7 @@ fn bench_merkle_frame_overhead(iterations: usize) -> Vec<(String, f64, f64, f64)
         (4096, "4 KB args"),
         (16384, "16 KB args"),
         (65536, "64 KB args"),
+        (2097152, "2 MB args"),
     ];
 
     let mut results = Vec::new();
@@ -2160,6 +2176,8 @@ fn main() {
         &serde_json::json!({"name": "bench_echo", "arguments": {"size": 16384}})));
     let ns_echo_65536 = median_round(ROUNDS, || bench_nda_stdio(&mut nda_stdio, iterations, "tools/call",
         &serde_json::json!({"name": "bench_echo", "arguments": {"size": 65536}})));
+    let ns_echo_2097152 = median_round(ROUNDS, || bench_nda_stdio(&mut nda_stdio, iterations, "tools/call",
+        &serde_json::json!({"name": "bench_echo", "arguments": {"size": 2097152}})));
 
     drop(nda_stdio);
 
@@ -2195,6 +2213,7 @@ fn main() {
     let http_echo_4096 = median_round(ROUNDS, || bench_http(&mut http_client, iterations, "tools/call",
         &serde_json::json!({"name": "bench_echo", "arguments": {"size": 4096}})));
 
+    export_audit_json(http_port, "json_http");
     drop(http_client);
     let _ = http_child.kill();
     let _ = http_child.wait();
@@ -2296,7 +2315,9 @@ fn main() {
     let nda_http_echo_4096 = median_round(ROUNDS, || bench_nda_http_call(&mut nda_http_client, iterations, "bench_echo", &serde_json::json!({"size": 4096})));
     let nda_http_echo_16384 = median_round(ROUNDS, || bench_nda_http_call(&mut nda_http_client, iterations, "bench_echo", &serde_json::json!({"size": 16384})));
     let nda_http_echo_65536 = median_round(ROUNDS, || bench_nda_http_call(&mut nda_http_client, iterations, "bench_echo", &serde_json::json!({"size": 65536})));
+    let nda_http_echo_2097152 = median_round(ROUNDS, || bench_nda_http_call(&mut nda_http_client, iterations, "bench_echo", &serde_json::json!({"size": 2097152})));
 
+    export_audit_json(nda_http_port, "nda_http");
     drop(nda_http_client);
     let _ = nda_http_child.kill();
     let _ = nda_http_child.wait();
@@ -2561,6 +2582,7 @@ fn main() {
         ("4 KB", &ns_echo_4096, 4096),
         ("16 KB", &ns_echo_16384, 16384),
         ("64 KB", &ns_echo_65536, 65536),
+        ("2 MB", &ns_echo_2097152, 2097152),
     ]);
     print_pipeline("NDA/HTTP", &[
         ("ping (null)", &nda_http_ping, 0),
@@ -2570,8 +2592,9 @@ fn main() {
         ("4 KB", &nda_http_echo_4096, 4096),
         ("16 KB", &nda_http_echo_16384, 16384),
         ("64 KB", &nda_http_echo_65536, 65536),
+        ("2 MB", &nda_http_echo_2097152, 2097152),
     ]);
-    println!("  (NDA/shmem 64 KB omitted: exceeds 60 KB shmem output buffer)");
+    println!("  (NDA/shmem 64 KB+ omitted: exceeds 60 KB shmem output buffer)");
 
     // Overall summary
     let avg_first = |results: &[&BenchResult]| -> f64 {

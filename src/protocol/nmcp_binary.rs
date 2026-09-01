@@ -557,6 +557,7 @@ fn handle_json_shmem(buffer: &mut SharedMemoryBuffer, input_str: &str) -> Result
 pub fn run_shmem_loop(buffer_path: &str, shutdown: &AtomicBool) -> Result<(), Box<dyn Error>> {
     let session_id = format!("shmem-{}", std::process::id());
     crate::audit::set_session_context(session_id);
+    crate::audit::set_transport_context("nda_shmem".to_string());
 
     info!(path = buffer_path, "Initializing Shared Memory Buffer");
 

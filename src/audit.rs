@@ -30,10 +30,19 @@ pub struct AuditEntry {
     pub timestamp_ms: u64,
     /// Tool name that was called.
     pub tool_name: String,
-    /// Duration in milliseconds.
-    pub duration_ms: u64,
+    /// Duration in microseconds (µs) for sub-millisecond precision.
+    pub duration_us: u64,
     /// Outcome of the call.
     pub outcome: AuditOutcome,
+    /// Transport layer: "http", "stdio", "shmem", "nda_http", "nda_stdio", "nda_shmem", "websocket", "sse".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
+    /// Request payload size in bytes (if known).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload_size: Option<u64>,
+    /// Response size in bytes (if known).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_size: Option<u64>,
     /// Merkle root hash (hex-encoded) if from NDA transport, None otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub merkle_root: Option<String>,
@@ -94,19 +103,46 @@ impl AuditLog {
         merkle_root: Option<String>,
         session_id: Option<String>,
     ) {
+        self.record_full(
+            tool_name,
+            start,
+            outcome,
+            None,
+            None,
+            None,
+            merkle_root,
+            session_id,
+        );
+    }
+
+    /// Record a tool execution with complete metadata.
+    pub fn record_full(
+        &self,
+        tool_name: &str,
+        start: Instant,
+        outcome: AuditOutcome,
+        transport: Option<String>,
+        payload_size: Option<u64>,
+        response_size: Option<u64>,
+        merkle_root: Option<String>,
+        session_id: Option<String>,
+    ) {
         let seq = AUDIT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let timestamp_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        let duration_ms = start.elapsed().as_millis() as u64;
+        let duration_us = start.elapsed().as_micros() as u64;
 
         let entry = AuditEntry {
             sequence: seq,
             timestamp_ms,
             tool_name: tool_name.to_string(),
-            duration_ms,
+            duration_us,
             outcome,
+            transport,
+            payload_size,
+            response_size,
             merkle_root,
             session_id,
         };
@@ -177,7 +213,7 @@ impl AuditLog {
     /// Export audit log to CSV format.
     pub fn export_csv(&self) -> Result<String, String> {
         let entries = self.all();
-        let mut csv = String::from("sequence,timestamp_ms,tool_name,duration_ms,outcome,merkle_root,session_id\n");
+        let mut csv = String::from("sequence,timestamp_ms,tool_name,duration_us,outcome,transport,payload_size,response_size,merkle_root,session_id\n");
         
         for entry in entries {
             let outcome_str = match &entry.outcome {
@@ -186,16 +222,22 @@ impl AuditLog {
                 AuditOutcome::Timeout => "timeout".to_string(),
                 AuditOutcome::Rejected(reason) => format!("rejected:{}", reason.replace(',', ";")),
             };
+            let transport_str = entry.transport.unwrap_or_default();
+            let payload_str = entry.payload_size.map(|s| s.to_string()).unwrap_or_default();
+            let response_str = entry.response_size.map(|s| s.to_string()).unwrap_or_default();
             let merkle_str = entry.merkle_root.unwrap_or_default();
             let session_str = entry.session_id.unwrap_or_default();
             
             csv.push_str(&format!(
-                "{},{},{},{},{},{},{}\n",
+                "{},{},{},{},{},{},{},{},{},{}\n",
                 entry.sequence,
                 entry.timestamp_ms,
                 entry.tool_name,
-                entry.duration_ms,
+                entry.duration_us,
                 outcome_str,
+                transport_str,
+                payload_str,
+                response_str,
                 merkle_str,
                 session_str
             ));
@@ -232,6 +274,7 @@ use std::cell::RefCell;
 
 std::thread_local! {
     static CURRENT_SESSION_ID: RefCell<Option<String>> = const { RefCell::new(None) };
+    static CURRENT_TRANSPORT: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 /// Set the session context for the current thread.
@@ -255,6 +298,25 @@ pub fn clear_session_context() {
 /// Get the current session ID, if set.
 pub fn current_session_id() -> Option<String> {
     CURRENT_SESSION_ID.with(|cell| cell.borrow().clone())
+}
+
+/// Set the transport context for the current thread (e.g., "http", "stdio", "shmem").
+pub fn set_transport_context(transport: String) {
+    CURRENT_TRANSPORT.with(|cell| {
+        *cell.borrow_mut() = Some(transport);
+    });
+}
+
+/// Clear the transport context for the current thread.
+pub fn clear_transport_context() {
+    CURRENT_TRANSPORT.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
+}
+
+/// Get the current transport, if set.
+pub fn current_transport() -> Option<String> {
+    CURRENT_TRANSPORT.with(|cell| cell.borrow().clone())
 }
 
 // ─── Audit Registry (per-session buffers) ────────────────────────────────────
@@ -374,7 +436,7 @@ pub fn audit_registry() -> &'static AuditRegistry {
 
 /// Convenience: record a tool call, routed to the current session's audit buffer.
 ///
-/// Reads the session ID from thread-local context. Falls back to "default" if
+/// Reads the session ID and transport from thread-local context. Falls back to "default" if
 /// no session context is set.
 pub fn record_tool_call(
     tool_name: &str,
@@ -382,8 +444,18 @@ pub fn record_tool_call(
     outcome: AuditOutcome,
 ) {
     let session_id = current_session_id().unwrap_or_else(|| "default".to_string());
+    let transport = current_transport();
     let log = audit_registry().get_or_create(&session_id);
-    log.record_with_context(tool_name, start, outcome, None, Some(session_id));
+    log.record_full(
+        tool_name,
+        start,
+        outcome,
+        transport,
+        None,
+        None,
+        None,
+        Some(session_id),
+    );
 }
 
 /// Convenience: record a tool call with a Merkle root, routed to the current session.
@@ -394,8 +466,66 @@ pub fn record_tool_call_with_merkle(
     merkle_root: Option<String>,
 ) {
     let session_id = current_session_id().unwrap_or_else(|| "default".to_string());
+    let transport = current_transport();
     let log = audit_registry().get_or_create(&session_id);
-    log.record_with_context(tool_name, start, outcome, merkle_root, Some(session_id));
+    log.record_full(
+        tool_name,
+        start,
+        outcome,
+        transport,
+        None,
+        None,
+        merkle_root,
+        Some(session_id),
+    );
+}
+
+/// Convenience: record a tool call with payload/response sizes.
+pub fn record_tool_call_with_sizes(
+    tool_name: &str,
+    start: Instant,
+    outcome: AuditOutcome,
+    payload_size: Option<u64>,
+    response_size: Option<u64>,
+    merkle_root: Option<String>,
+) {
+    let session_id = current_session_id().unwrap_or_else(|| "default".to_string());
+    let transport = current_transport();
+    let log = audit_registry().get_or_create(&session_id);
+    log.record_full(
+        tool_name,
+        start,
+        outcome,
+        transport,
+        payload_size,
+        response_size,
+        merkle_root,
+        Some(session_id),
+    );
+}
+
+/// Convenience: record a tool call with full metadata (transport, sizes, merkle).
+pub fn record_tool_call_full(
+    tool_name: &str,
+    start: Instant,
+    outcome: AuditOutcome,
+    transport: Option<String>,
+    payload_size: Option<u64>,
+    response_size: Option<u64>,
+    merkle_root: Option<String>,
+) {
+    let session_id = current_session_id().unwrap_or_else(|| "default".to_string());
+    let log = audit_registry().get_or_create(&session_id);
+    log.record_full(
+        tool_name,
+        start,
+        outcome,
+        transport,
+        payload_size,
+        response_size,
+        merkle_root,
+        Some(session_id),
+    );
 }
 
 /// Convenience: flush all session audit logs to disk.
