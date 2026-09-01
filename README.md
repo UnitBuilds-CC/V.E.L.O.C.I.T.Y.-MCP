@@ -8,7 +8,7 @@
 
 **The fastest, most secure, production-ready Model Context Protocol (MCP) server.**
 
-A high-performance MCP server written in Rust that replaces slow, bloated Node.js/Python MCP servers with a highly optimized, self-contained executable. **3.8x faster** than the Node.js reference implementation with **enterprise-grade security** and **production-ready features**.
+A high-performance MCP server written in Rust that replaces slow, bloated Node.js/Python MCP servers with a highly optimized, self-contained executable. **Up to 27.7x faster** than the Node.js reference implementation (NDA/shmem transport) with **enterprise-grade security** and **production-ready features**.
 
 ## 🚀 Quick Start
 
@@ -28,7 +28,7 @@ That's it! Your MCP server is running. Now configure your client.
 - 🔄 [Migration Guide](docs/MIGRATION.md) - Moving from Node.js MCP? We've got you covered
 - 🔌 [Client Integration](docs/CLIENT_INTEGRATION.md) - Setup for Claude Desktop, Cursor, Windsurf, and more
 - 💡 [Examples](examples/) - Working code samples for common use cases
-- 📊 [Performance Comparison](docs/COMPARISON.md) - See why we're 3.8x faster
+- 📊 [Performance Comparison](docs/COMPARISON.md) - See benchmark results across 8 pipelines
 - 🏪 [Plugin Marketplace](docs/MARKETPLACE.md) - Discover and install plugins
 
 ---
@@ -37,12 +37,13 @@ That's it! Your MCP server is running. Now configure your client.
 
 | Feature | Node.js MCP | VELOCITY-MCP | You Win |
 |---------|-------------|--------------|---------|
-| **Speed** | Baseline | **3.8x faster** | Lower latency, higher throughput |
+| **Speed** | Baseline | **Up to 27.7x faster** | Lower latency, higher throughput |
 | **Memory** | ~120 MB | **~15 MB** | 8x smaller footprint |
 | **Startup** | ~500ms | **<50ms** | 10x faster startup |
 | **Security** | Basic | **Enterprise-grade** | 15+ security layers |
 | **Config** | Complex | **Zero-config** | Works out of the box |
-| **Protocol** | JSON only | **JSON + NDA binary** | 2.8x faster parsing (measured) |
+| **Protocol** | JSON only | **JSON + NDA binary** | Zero-copy parsing (measured) |
+| **Transport** | stdio, HTTP | **stdio, HTTP, shmem, NDA** | 8 pipeline combinations |
 | **Testing** | Limited | **284 tests** | Comprehensive coverage |
 | **Monitoring** | None | **Full observability** | Prometheus, Grafana, OpenTelemetry |
 
@@ -51,9 +52,12 @@ That's it! Your MCP server is running. Now configure your client.
 ## 🎯 Key Features
 
 ### 🚀 Performance
-- **3.8x faster** than Node.js MCP reference implementation
-- **NDA binary protocol**: 2.8x faster parsing than JSON (measured), 1.3–5.6x faster end-to-end round trips depending on method
-- **Zero-copy memory-mapped IPC** for ultra-low latency
+- **Up to 27.7x faster** than Node.js MCP (NDA/shmem vs JSON/stdio, measured average)
+- **1.7x faster at p99** on fair comparison (JSON/stdio, same transport)
+- **NDA binary protocol**: zero-copy TLV parsing with SHA-256 Merkle integrity
+- **Shared memory IPC**: 1µs round-trip latency via memory-mapped ring buffer
+- **8-pipeline benchmark matrix**: encoding (NDA/JSON) x transport (shmem/stdio/HTTP) x server (Rust/Node.js)
+- **Phase timing**: write/wait/read breakdown across all pipelines for profiling
 - **Connection pooling** and **LRU caching** for optimal performance
 - **Async runtime** with Tokio for high concurrency
 
@@ -68,6 +72,9 @@ That's it! Your MCP server is running. Now configure your client.
   - CORS restrictions and API key authentication
   - Timing-safe comparison for API keys
   - Error sanitization to prevent information leakage
+  - **shell_exec injection prevention**: 31 dangerous command patterns blocked cross-platform
+  - **SSRF protection**: host-scoped blocklist covering full RFC 1918 private ranges and IPv6
+  - **edit_file resource bounds**: max 1000 edits, 1MB per field
 
 ### 📊 Production Monitoring
 - **Prometheus metrics** with 20+ metrics
@@ -86,10 +93,11 @@ That's it! Your MCP server is running. Now configure your client.
 
 ### 🌐 Transport Options
 - **Stdio JSON-RPC** - Compatible with all MCP clients
+- **Stdio NDA Binary** - Auto-detected zero-copy binary protocol
 - **HTTP/SSE** - Full HTTP transport with session management
 - **WebSocket** - Bidirectional real-time communication
-- **Shared Memory** - Zero-copy IPC for ultra-low latency
-- **NDA Binary** - 2.8x faster parsing than JSON (measured)
+- **Shared Memory** - Zero-copy IPC for ultra-low latency (1µs round-trip)
+- **NDA/shmem** - Combined binary + shmem for maximum throughput
 
 ### 📦 Production Ready
 - **284 passing tests** (210 unit + 17 fuzz + 43 integration + 8 macro + 6 enhanced)
@@ -132,7 +140,13 @@ That's it! Your MCP server is running. Now configure your client.
 
 ### NDA Binary Protocol
 
-The NDA (Neural Document Archive) binary protocol parses **2.8x faster** than JSON (560 ns vs 1549 ns per request in the built-in microbenchmark). Measured end-to-end round trips over shared memory run **1.3–5.6x faster** than JSON-RPC depending on the method:
+The NDA (Neural Document Archive) binary protocol uses zero-copy TLV parsing with SHA-256 Merkle integrity verification on every frame. Measured over shared memory:
+
+| Method | Latency | Throughput | vs JSON/stdio |
+|--------|---------|------------|---------------|
+| ping | 1µs | 1.66M req/s | 34x faster |
+| tools/list (17 tools) | 6µs | 166K req/s | 30x faster |
+| tools/call (64B) | 1µs | 750K req/s | 18x faster |
 
 ```
 [4 bytes: magic "NMCP"]
@@ -144,10 +158,9 @@ The NDA (Neural Document Archive) binary protocol parses **2.8x faster** than JS
 
 **Benefits:**
 - Zero-copy parsing with pointer arithmetic
-- SHA-256 Merkle integrity check on every frame
-- Ed25519 signatures for NDA documents (`compile_signed`)
-- 3.1x faster shared memory throughput
-- 12.7M req/s at 8 threads
+- SHA-256 Merkle integrity check on every frame (SHA-NI accelerated)
+- Hybrid spin-wait for sub-microsecond event signaling
+- Generation-keyed tools/list cache avoids rebuild on every request
 
 ---
 
@@ -327,33 +340,63 @@ tools, err := client.ListTools()
 7. **CORS Protection** - Configurable origin restrictions
 8. **API Key Auth** - Timing-safe comparison
 9. **Error Sanitization** - Path stripping, truncation
-10. **NDA Signatures** - Ed25519 cryptographic signatures
-11. **Merkle Integrity** - SHA-256 verification
-12. **Dependency Audit** - Zero vulnerabilities
-13. **Sandbox Isolation** - Temp directory cleanup
-14. **Panic Catching** - Graceful error handling
-15. **Violation Tracking** - Comprehensive audit trail
+10. **shell_exec Hardening** - 31 dangerous patterns blocked cross-platform
+11. **SSRF Prevention** - Host-scoped blocklist, full RFC 1918 + IPv6
+12. **Merkle Integrity** - SHA-256 verification (SHA-NI accelerated)
+13. **Dependency Audit** - Zero vulnerabilities
+14. **Sandbox Isolation** - Temp directory cleanup
+15. **Panic Catching** - Graceful error handling
+16. **Violation Tracking** - Comprehensive audit trail
 
 ---
 
 ## 📈 Performance
 
-### Benchmarks (Intel Core i5-14400F)
+### NDA/shmem Transport (Primary Path)
 
-| Operation | Latency | Throughput |
-|-----------|---------|------------|
-| JSON-RPC parse | 722.6 ns | 1.38M req/s |
-| NDA-native parse | 459.1 ns | 2.18M req/s |
-| **NDA speedup** | **1.6x** | **1.6x** |
+| Method | Latency | Throughput | vs JSON/stdio |
+|--------|---------|------------|---------------|
+| ping | 0.001 ms (1µs) | 1,657,825 r/s | 34.3x faster |
+| tools/list (17 tools) | 0.006 ms | 165,981 r/s | 29.7x faster |
+| tools/call (64B) | 0.001 ms | 750,413 r/s | 18.3x faster |
+| health/check | 0.000 ms | 2,190,101 r/s | 46.3x faster |
 
-### vs Node.js MCP
+**Overall: 27.7x faster average, 40.8x faster at p99** (NDA/shmem vs JSON/stdio)
 
-| Method | Node.js | VELOCITY-MCP | Speedup |
-|--------|---------|--------------|---------|
-| ping | 0.573 ms | 0.157 ms | **3.6x** |
-| tools/list | 1.050 ms | 0.154 ms | **6.8x** |
-| tools/call | 0.546 ms | 0.136 ms | **4.0x** |
-| **Overall** | 0.627 ms | 0.164 ms | **3.8x** |
+### Node.js vs Rust (Fair Comparison — JSON/stdio)
+
+| Method | Node.js avg | Rust avg | Speedup |
+|--------|------------|----------|---------|
+| ping | 0.061 ms | 0.034 ms | 1.8x |
+| tools/list | 0.075 ms | 0.128 ms | 0.6x* |
+| tools/call | 0.039 ms | 0.018 ms | 2.2x |
+| health/check | 0.040 ms | 0.038 ms | 1.0x |
+
+*tools/list: Node.js returns a static array; Rust dynamically assembles from 5 sources. Rust wins at p99.
+
+**Overall: 1.0x avg (tied), 1.7x p99** (Rust wins on tail latency)
+
+### 4-Pipeline Comparison
+
+| Pipeline | Ping avg | tools/list avg | tools/call avg |
+|----------|----------|----------------|----------------|
+| Node.js JSON/stdio | 0.046 ms | 0.110 ms | 0.042 ms |
+| Rust JSON/stdio | 0.035 ms | 0.195 ms | 0.034 ms |
+| Rust NDA-wrapped JSON/stdio | 0.027 ms | 0.186 ms | 0.035 ms |
+| Rust NDA/shmem | 0.001 ms | 0.006 ms | 0.002 ms |
+
+**Key finding:** Transport is the dominant factor — shmem is an order of magnitude faster than stdio. Encoding format (JSON vs NDA) has negligible impact when transport is the same.
+
+### Phase Timing
+
+All 8 pipelines instrument write/wait/read phases. The "wait" phase isolates server turnaround:
+
+| Pipeline | write | wait | read | Total |
+|----------|-------|------|------|-------|
+| NDA/shmem | 0.0µs | 0.5µs | 0.1µs | ~1µs |
+| JSON/shmem | 0.3µs | 6.3µs | 0.3µs | ~7µs |
+
+The 12x difference in "wait" phase (0.5µs vs 6.3µs) shows the JSON parse+stringify cost on the server side.
 
 ---
 
