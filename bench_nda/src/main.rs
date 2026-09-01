@@ -1730,7 +1730,7 @@ fn bench_nda_http_call(client: &mut NdaHttpClient, iterations: usize, tool: &str
 /// Measures the SHA-256 Merkle hashing cost in isolation at various payload sizes.
 /// This is the overhead baked into every NDA frame (build_nda_frame).
 fn bench_merkle_hash_cost(iterations: usize) -> Vec<(String, usize, f64)> {
-    let sizes: [(usize, &str); 7] = [
+    let sizes: [(usize, &str); 8] = [
         (32, "32 B"),
         (64, "64 B"),
         (128, "128 B"),
@@ -1738,6 +1738,7 @@ fn bench_merkle_hash_cost(iterations: usize) -> Vec<(String, usize, f64)> {
         (1024, "1 KB"),
         (4096, "4 KB"),
         (16384, "16 KB"),
+        (65536, "64 KB"),
     ];
 
     let mut results = Vec::new();
@@ -1759,12 +1760,14 @@ fn bench_merkle_hash_cost(iterations: usize) -> Vec<(String, usize, f64)> {
 /// Measures the full build_nda_frame cost (TLV encode + SHA-256 + vec assembly)
 /// vs frame assembly without hashing, at various payload sizes.
 fn bench_merkle_frame_overhead(iterations: usize) -> Vec<(String, f64, f64, f64)> {
-    let sizes: [(usize, &str); 5] = [
+    let sizes: [(usize, &str); 7] = [
         (0, "ping (null)"),
         (64, "64 B args"),
         (256, "256 B args"),
         (1024, "1 KB args"),
         (4096, "4 KB args"),
+        (16384, "16 KB args"),
+        (65536, "64 KB args"),
     ];
 
     let mut results = Vec::new();
@@ -2026,6 +2029,7 @@ fn main() {
     let nda_echo_256 = median_round(ROUNDS, || bench_nda_tools_call(&mut nda, iterations, "bench_echo", &serde_json::json!({"size": 256})));
     let nda_echo_1024 = median_round(ROUNDS, || bench_nda_tools_call(&mut nda, iterations, "bench_echo", &serde_json::json!({"size": 1024})));
     let nda_echo_4096 = median_round(ROUNDS, || bench_nda_tools_call(&mut nda, iterations, "bench_echo", &serde_json::json!({"size": 4096})));
+    let nda_echo_16384 = median_round(ROUNDS, || bench_nda_tools_call(&mut nda, iterations, "bench_echo", &serde_json::json!({"size": 16384})));
 
     drop(nda);
     drop(nda_server);
@@ -2152,6 +2156,10 @@ fn main() {
         &serde_json::json!({"name": "bench_echo", "arguments": {"size": 1024}})));
     let ns_echo_4096 = median_round(ROUNDS, || bench_nda_stdio(&mut nda_stdio, iterations, "tools/call",
         &serde_json::json!({"name": "bench_echo", "arguments": {"size": 4096}})));
+    let ns_echo_16384 = median_round(ROUNDS, || bench_nda_stdio(&mut nda_stdio, iterations, "tools/call",
+        &serde_json::json!({"name": "bench_echo", "arguments": {"size": 16384}})));
+    let ns_echo_65536 = median_round(ROUNDS, || bench_nda_stdio(&mut nda_stdio, iterations, "tools/call",
+        &serde_json::json!({"name": "bench_echo", "arguments": {"size": 65536}})));
 
     drop(nda_stdio);
 
@@ -2286,6 +2294,8 @@ fn main() {
     let nda_http_echo_256 = median_round(ROUNDS, || bench_nda_http_call(&mut nda_http_client, iterations, "bench_echo", &serde_json::json!({"size": 256})));
     let nda_http_echo_1024 = median_round(ROUNDS, || bench_nda_http_call(&mut nda_http_client, iterations, "bench_echo", &serde_json::json!({"size": 1024})));
     let nda_http_echo_4096 = median_round(ROUNDS, || bench_nda_http_call(&mut nda_http_client, iterations, "bench_echo", &serde_json::json!({"size": 4096})));
+    let nda_http_echo_16384 = median_round(ROUNDS, || bench_nda_http_call(&mut nda_http_client, iterations, "bench_echo", &serde_json::json!({"size": 16384})));
+    let nda_http_echo_65536 = median_round(ROUNDS, || bench_nda_http_call(&mut nda_http_client, iterations, "bench_echo", &serde_json::json!({"size": 65536})));
 
     drop(nda_http_client);
     let _ = nda_http_child.kill();
@@ -2507,55 +2517,61 @@ fn main() {
     println!("  Merkle cost as fraction of total NDA pipeline round-trip:");
     println!();
 
-    // Compare Merkle hash cost against the total NDA pipeline latencies.
-    // Use the ping (smallest payload) and tools/call 64B (typical small call)
-    // as representative workloads.
-    let merkle_ping_ns = merkle_hash_results.iter().find(|(_, s, _)| *s == 64).map(|(_, _, ns)| *ns).unwrap_or(0.0);
-    let merkle_256_ns = merkle_hash_results.iter().find(|(_, s, _)| *s == 256).map(|(_, _, ns)| *ns).unwrap_or(0.0);
-    let merkle_4k_ns = merkle_hash_results.iter().find(|(_, s, _)| *s == 4096).map(|(_, _, ns)| *ns).unwrap_or(0.0);
-
+    // Compare Merkle hash cost against total NDA pipeline latencies
+    // across all payload sizes and all NDA-capable transports.
+    let merkle_ns = |size: usize| -> f64 {
+        merkle_hash_results.iter().find(|(_, s, _)| *s == size).map(|(_, _, ns)| *ns).unwrap_or(0.0)
+    };
     // Each NDA round-trip hashes twice: once for request, once for response validation
-    let merkle_rt_ping = merkle_ping_ns * 2.0;
-    let merkle_rt_256 = merkle_256_ns * 2.0;
-    let merkle_rt_4k = merkle_4k_ns * 2.0;
-
-    println!("  (Each round-trip hashes request + validates response = 2x SHA-256)");
-    println!();
-    println!("  {:>14}  {:>12} {:>12} {:>12} {:>12}  {:>8} {:>8} {:>8}",
-             "Pipeline", "Total (ping)", "Merkle (ping)", "Merkle %", "",
-             "Total(256B)", "Merkle(256)", "Merkle %");
-    println!("  {}", "─".repeat(100));
-
-    let nda_shmem_ping_us = nda_ping.avg_ms() * 1000.0;
-    let nda_stdio_ping_us = ns_ping.avg_ms() * 1000.0;
-    let nda_http_ping_us = nda_http_ping.avg_ms() * 1000.0;
-    let nda_shmem_256_us = nda_echo_256.avg_ms() * 1000.0;
-    let nda_stdio_256_us = ns_echo_256.avg_ms() * 1000.0;
-    let nda_http_256_us = nda_http_echo_256.avg_ms() * 1000.0;
-
-    let merkle_ping_us = merkle_rt_ping / 1000.0;
-    let merkle_256_us = merkle_rt_256 / 1000.0;
+    let merkle_rt = |size: usize| -> f64 { merkle_ns(size) * 2.0 };
 
     let pct = |total: f64, merkle: f64| -> f64 {
         if total > 0.0 { (merkle / total) * 100.0 } else { 0.0 }
     };
 
-    println!("  {:>14}  {:>9.3} µs  {:>9.3} µs  {:>9.1}%    {:>9.3} µs  {:>9.3} µs  {:>6.1}%",
-             "NDA/shmem", nda_shmem_ping_us, merkle_ping_us, pct(nda_shmem_ping_us, merkle_ping_us),
-             nda_shmem_256_us, merkle_256_us, pct(nda_shmem_256_us, merkle_256_us));
-    println!("  {:>14}  {:>9.3} µs  {:>9.3} µs  {:>9.1}%    {:>9.3} µs  {:>9.3} µs  {:>6.1}%",
-             "NDA/stdio", nda_stdio_ping_us, merkle_ping_us, pct(nda_stdio_ping_us, merkle_ping_us),
-             nda_stdio_256_us, merkle_256_us, pct(nda_stdio_256_us, merkle_256_us));
-    println!("  {:>14}  {:>9.3} µs  {:>9.3} µs  {:>9.1}%    {:>9.3} µs  {:>9.3} µs  {:>6.1}%",
-             "NDA/HTTP", nda_http_ping_us, merkle_ping_us, pct(nda_http_ping_us, merkle_ping_us),
-             nda_http_256_us, merkle_256_us, pct(nda_http_256_us, merkle_256_us));
+    println!("  (Each round-trip hashes request + validates response = 2x SHA-256)");
+    println!();
 
-    println!();
-    println!("  {:>14}  {:>9.3} µs  {:>9.1}%",
-             "4KB payload", nda_echo_4096.avg_ms() * 1000.0,
-             pct(nda_echo_4096.avg_ms() * 1000.0, merkle_rt_4k / 1000.0));
-    println!("  (NDA/shmem tools/call with 4KB bench_echo response)");
-    println!();
+    let print_pipeline = |name: &str, results: &[(&str, &BenchResult, usize)]| {
+        println!("  {}:", name);
+        println!("  {:>10}  {:>10}  {:>10}  {:>8}", "Payload", "Total RT", "Merkle", "Merkle %");
+        println!("  {}", "─".repeat(46));
+        for &(label, result, size) in results {
+            let total_us = result.avg_ms() * 1000.0;
+            let m_us = merkle_rt(size) / 1000.0;
+            println!("  {:>10}  {:>7.3} µs  {:>7.3} µs  {:>6.1}%",
+                     label, total_us, m_us, pct(total_us, m_us));
+        }
+        println!();
+    };
+
+    print_pipeline("NDA/shmem", &[
+        ("ping (null)", &nda_ping, 0),
+        ("64 B", &nda_tools_call, 64),
+        ("256 B", &nda_echo_256, 256),
+        ("1 KB", &nda_echo_1024, 1024),
+        ("4 KB", &nda_echo_4096, 4096),
+        ("16 KB", &nda_echo_16384, 16384),
+    ]);
+    print_pipeline("NDA/stdio", &[
+        ("ping (null)", &ns_ping, 0),
+        ("64 B", &ns_tools_call, 64),
+        ("256 B", &ns_echo_256, 256),
+        ("1 KB", &ns_echo_1024, 1024),
+        ("4 KB", &ns_echo_4096, 4096),
+        ("16 KB", &ns_echo_16384, 16384),
+        ("64 KB", &ns_echo_65536, 65536),
+    ]);
+    print_pipeline("NDA/HTTP", &[
+        ("ping (null)", &nda_http_ping, 0),
+        ("64 B", &nda_http_tools_call, 64),
+        ("256 B", &nda_http_echo_256, 256),
+        ("1 KB", &nda_http_echo_1024, 1024),
+        ("4 KB", &nda_http_echo_4096, 4096),
+        ("16 KB", &nda_http_echo_16384, 16384),
+        ("64 KB", &nda_http_echo_65536, 65536),
+    ]);
+    println!("  (NDA/shmem 64 KB omitted: exceeds 60 KB shmem output buffer)");
 
     // Overall summary
     let avg_first = |results: &[&BenchResult]| -> f64 {
