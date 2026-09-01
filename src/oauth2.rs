@@ -813,6 +813,8 @@ pub fn call_connector(connector_id: &str, request: &ConnectorRequest) -> Result<
         _ => return Err(format!("Unsupported HTTP method: {}", request.method)),
     };
 
+    req_builder = req_builder.timeout(std::time::Duration::from_secs(30));
+
     // Add auth header with automatic token refresh
     match config.auth_type.as_str() {
         "bearer" | "oauth2" => {

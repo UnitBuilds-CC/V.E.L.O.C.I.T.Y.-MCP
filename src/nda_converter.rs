@@ -52,6 +52,11 @@ fn convert_csv(file_path: &str) -> Result<Vec<u8>, String> {
     compiler.add_triple(&sheet_id, "TYPE", "SpreadsheetGrid");
     compiler.add_triple(&sheet_id, "FILENAME", filename);
 
+    let csv_meta = std::fs::metadata(file_path)
+        .map_err(|e| format!("Failed to stat CSV: {}", e))?;
+    if csv_meta.len() > 10 * 1024 * 1024 {
+        return Err("CSV file exceeds 10MB limit".to_string());
+    }
     let content = std::fs::read_to_string(file_path)
         .map_err(|e| format!("Failed to read CSV: {}", e))?;
     let rows: Vec<&str> = content.lines().collect();
@@ -174,7 +179,8 @@ fn parse_xlsx_data(data: &[u8]) -> Result<(Vec<String>, std::collections::HashMa
     // 1. Read shared strings
     if let Ok(mut ss_entry) = archive.by_name("xl/sharedStrings.xml") {
         let mut ss_xml = String::new();
-        ss_entry.read_to_string(&mut ss_xml)
+        let mut limited = std::io::Read::take(&mut ss_entry, 10 * 1024 * 1024);
+        limited.read_to_string(&mut ss_xml)
             .map_err(|e| format!("Failed to read sharedStrings.xml: {}", e))?;
         shared_strings = extract_xml_texts(&ss_xml, "t");
     }
@@ -182,7 +188,8 @@ fn parse_xlsx_data(data: &[u8]) -> Result<(Vec<String>, std::collections::HashMa
     // 2. Read sheet1 cells
     if let Ok(mut sheet_entry) = archive.by_name("xl/worksheets/sheet1.xml") {
         let mut sheet_xml = String::new();
-        sheet_entry.read_to_string(&mut sheet_xml)
+        let mut limited = std::io::Read::take(&mut sheet_entry, 10 * 1024 * 1024);
+        limited.read_to_string(&mut sheet_xml)
             .map_err(|e| format!("Failed to read sheet1.xml: {}", e))?;
         cells = parse_xlsx_cells(&sheet_xml, &shared_strings);
     }
@@ -379,7 +386,8 @@ fn parse_docx_paragraphs(data: &[u8]) -> Result<Vec<String>, String> {
 
     let mut doc_xml = String::new();
     if let Ok(mut entry) = archive.by_name("word/document.xml") {
-        entry.read_to_string(&mut doc_xml)
+        let mut limited = std::io::Read::take(&mut entry, 10 * 1024 * 1024);
+        limited.read_to_string(&mut doc_xml)
             .map_err(|e| format!("Failed to read document.xml: {}", e))?;
     } else {
         return Err("DOCX does not contain word/document.xml".to_string());

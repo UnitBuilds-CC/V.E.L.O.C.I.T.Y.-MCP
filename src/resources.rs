@@ -180,14 +180,26 @@ impl ResourceStore {
     }
 
     fn subscribe(&mut self, uri: &str, subscriber_id: &str) -> Result<(), String> {
+        const MAX_SUBSCRIBERS_PER_URI: usize = 1000;
+        const MAX_SUBSCRIBED_URIS: usize = 256;
+
         if !self.resources.iter().any(|r| r.uri == uri) {
             return Err(format!("Resource not found: {}", uri));
         }
-        
-        self.subscriptions
+
+        if self.subscriptions.len() >= MAX_SUBSCRIBED_URIS && !self.subscriptions.contains_key(uri) {
+            return Err(format!("Too many subscribed resources (max {})", MAX_SUBSCRIBED_URIS));
+        }
+
+        let subscribers = self.subscriptions
             .entry(uri.to_string())
-            .or_insert_with(HashSet::new)
-            .insert(subscriber_id.to_string());
+            .or_insert_with(HashSet::new);
+
+        if subscribers.len() >= MAX_SUBSCRIBERS_PER_URI {
+            return Err(format!("Too many subscribers for resource (max {})", MAX_SUBSCRIBERS_PER_URI));
+        }
+
+        subscribers.insert(subscriber_id.to_string());
         
         Ok(())
     }
@@ -203,6 +215,10 @@ impl ResourceStore {
     }
 
     fn notify_update(&mut self, uri: &str) {
+        if self.pending_updates.len() >= 10_000 {
+            tracing::warn!("Resource pending updates capped at 10000, dropping oldest");
+            self.pending_updates.drain(..5000);
+        }
         if let Some(resource) = self.resources.iter().find(|r| r.uri == uri) {
             let update = ResourceUpdate {
                 uri: uri.to_string(),

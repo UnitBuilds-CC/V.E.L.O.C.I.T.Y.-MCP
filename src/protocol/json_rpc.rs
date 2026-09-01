@@ -502,7 +502,13 @@ fn run_stdio_nda_mode(
         // Read next frame length
         let mut len_buf = [0u8; 4];
         match stdin_lock.read_exact(&mut len_buf) {
-            Ok(_) => frame_len = u32::from_be_bytes(len_buf),
+            Ok(_) => {
+                frame_len = u32::from_be_bytes(len_buf);
+                if frame_len > 10 * 1024 * 1024 {
+                    tracing::error!(frame_len, "NDA stdio frame exceeds 10MB limit, closing connection");
+                    break;
+                }
+            },
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
             Err(e) => return Err(Box::new(e)),
         }

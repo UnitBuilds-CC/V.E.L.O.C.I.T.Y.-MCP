@@ -255,15 +255,15 @@ pub fn execute_plugin_tool(tool: &PluginTool, arguments: &Value) -> Result<Strin
             Ok(Some(status)) => {
                 let mut stdout = Vec::new();
                 let mut stderr = Vec::new();
-                if let Some(mut out) = child.stdout {
+                if let Some(out) = child.stdout {
                     use std::io::Read;
-                    if let Err(e) = out.read_to_end(&mut stdout) {
+                    if let Err(e) = out.take(1_048_576).read_to_end(&mut stdout) {
                         tracing::warn!(error = %e, "Failed to read plugin stdout");
                     }
                 }
-                if let Some(mut err) = child.stderr {
+                if let Some(err) = child.stderr {
                     use std::io::Read;
-                    if let Err(e) = err.read_to_end(&mut stderr) {
+                    if let Err(e) = err.take(262_144).read_to_end(&mut stderr) {
                         tracing::warn!(error = %e, "Failed to read plugin stderr");
                     }
                 }

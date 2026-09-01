@@ -608,6 +608,10 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
         "read_nda" => {
             let nda_path = arguments["ndaPath"].as_str().ok_or("ndaPath is required")?;
             validate_file_path(nda_path)?;
+            let nda_meta = std::fs::metadata(nda_path)?;
+            if nda_meta.len() > 50 * 1024 * 1024 {
+                return Err("NDA file exceeds 50MB limit".into());
+            }
             let nda_bytes = std::fs::read(nda_path)?;
             let doc = crate::nda_document::NdaDocument::read(&nda_bytes)?;
             let filename = std::path::Path::new(nda_path).file_name()
@@ -629,6 +633,10 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
         "execute_nda" => {
             let nda_path = arguments["ndaPath"].as_str().ok_or("ndaPath is required")?;
             validate_file_path(nda_path)?;
+            let nda_meta = std::fs::metadata(nda_path)?;
+            if nda_meta.len() > 50 * 1024 * 1024 {
+                return Err("NDA file exceeds 50MB limit".into());
+            }
             let nda_bytes = std::fs::read(nda_path)?;
             let mut exec_args: Vec<String> = Vec::new();
             if let Some(args_arr) = arguments["arguments"].as_array() {
@@ -817,6 +825,10 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
             
             validate_file_path(path)?;
             
+            let file_meta = std::fs::metadata(path)?;
+            if file_meta.len() > 10 * 1024 * 1024 {
+                return Err("File exceeds 10MB limit for editing".into());
+            }
             let mut content = std::fs::read_to_string(path)?;
             let mut diff_output = String::new();
             
@@ -975,13 +987,13 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
                             Some(status) => {
                                 let mut stdout = Vec::new();
                                 let mut stderr = Vec::new();
-                                if let Some(mut out) = child.stdout {
+                                if let Some(out) = child.stdout {
                                     use std::io::Read;
-                                    out.read_to_end(&mut stdout)?;
+                                    out.take(1_048_576).read_to_end(&mut stdout)?;
                                 }
-                                if let Some(mut err) = child.stderr {
+                                if let Some(err) = child.stderr {
                                     use std::io::Read;
-                                    err.read_to_end(&mut stderr)?;
+                                    err.take(262_144).read_to_end(&mut stderr)?;
                                 }
                                 break Ok::<std::process::Output, Box<dyn Error>>(std::process::Output { status, stdout, stderr });
                             }
@@ -1021,13 +1033,13 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
                             Some(status) => {
                                 let mut stdout = Vec::new();
                                 let mut stderr = Vec::new();
-                                if let Some(mut out) = child.stdout {
+                                if let Some(out) = child.stdout {
                                     use std::io::Read;
-                                    out.read_to_end(&mut stdout)?;
+                                    out.take(1_048_576).read_to_end(&mut stdout)?;
                                 }
-                                if let Some(mut err) = child.stderr {
+                                if let Some(err) = child.stderr {
                                     use std::io::Read;
-                                    err.read_to_end(&mut stderr)?;
+                                    err.take(262_144).read_to_end(&mut stderr)?;
                                 }
                                 break Ok::<std::process::Output, Box<dyn Error>>(std::process::Output { status, stdout, stderr });
                             }
@@ -1067,13 +1079,13 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
                             Some(status) => {
                                 let mut stdout = Vec::new();
                                 let mut stderr = Vec::new();
-                                if let Some(mut out) = child.stdout {
+                                if let Some(out) = child.stdout {
                                     use std::io::Read;
-                                    out.read_to_end(&mut stdout)?;
+                                    out.take(1_048_576).read_to_end(&mut stdout)?;
                                 }
-                                if let Some(mut err) = child.stderr {
+                                if let Some(err) = child.stderr {
                                     use std::io::Read;
-                                    err.read_to_end(&mut stderr)?;
+                                    err.take(262_144).read_to_end(&mut stderr)?;
                                 }
                                 break Ok::<std::process::Output, Box<dyn Error>>(std::process::Output { status, stdout, stderr });
                             }
@@ -1112,13 +1124,13 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
                             Some(status) => {
                                 let mut stdout = Vec::new();
                                 let mut stderr = Vec::new();
-                                if let Some(mut out) = child.stdout {
+                                if let Some(out) = child.stdout {
                                     use std::io::Read;
-                                    out.read_to_end(&mut stdout)?;
+                                    out.take(1_048_576).read_to_end(&mut stdout)?;
                                 }
-                                if let Some(mut err) = child.stderr {
+                                if let Some(err) = child.stderr {
                                     use std::io::Read;
-                                    err.read_to_end(&mut stderr)?;
+                                    err.take(262_144).read_to_end(&mut stderr)?;
                                 }
                                 break Ok::<std::process::Output, Box<dyn Error>>(std::process::Output { status, stdout, stderr });
                             }
@@ -1389,7 +1401,15 @@ fn convert_and_register_nda_tool(json_request: &str, output_path: &str) -> Resul
     };
     
     // Register the tool in the NDA registry
+    const MAX_NDA_TOOLS: usize = 256;
     if let Ok(mut registry) = get_nda_registry().lock() {
+        if registry.len() >= MAX_NDA_TOOLS && !registry.contains_key(tool_name) {
+            let first_key = registry.keys().next().cloned();
+            if let Some(key) = first_key {
+                registry.remove(&key);
+                tracing::warn!(tool = %key, "NDA tool registry full ({}), evicted oldest entry", MAX_NDA_TOOLS);
+            }
+        }
         registry.insert(tool_name.to_string(), binary_data);
         bump_registry_generation();
         info!(tool = tool_name, "NDA tool registered successfully (immediately callable)");

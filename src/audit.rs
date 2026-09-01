@@ -347,7 +347,15 @@ impl AuditRegistry {
             }
         }
         // Slow path: write lock to insert
+        const MAX_AUDIT_SESSIONS: usize = 1024;
         let mut sessions = self.sessions.write().unwrap_or_else(|p| p.into_inner());
+        if sessions.len() >= MAX_AUDIT_SESSIONS && !sessions.contains_key(session_id) {
+            let first_key = sessions.keys().next().cloned();
+            if let Some(key) = first_key {
+                sessions.remove(&key);
+                tracing::warn!(session_id = %key, "Audit registry full ({}), evicted oldest session", MAX_AUDIT_SESSIONS);
+            }
+        }
         sessions.entry(session_id.to_string())
             .or_insert_with(|| Arc::new(AuditLog::new()))
             .clone()
