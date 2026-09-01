@@ -268,6 +268,13 @@ pub struct AuditRegistry {
 }
 
 impl AuditRegistry {
+    /// Create a new empty audit registry.
+    pub fn new() -> Self {
+        AuditRegistry {
+            sessions: std::sync::RwLock::new(HashMap::new()),
+        }
+    }
+
     /// Get or create the audit log for a session.
     pub fn get_or_create(&self, session_id: &str) -> Arc<AuditLog> {
         // Fast path: read lock

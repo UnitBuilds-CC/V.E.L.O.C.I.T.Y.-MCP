@@ -24,6 +24,7 @@ pub fn run_benchmarks() {
     bench_nda_native_shmem();
     bench_concurrent_dispatch();
     bench_e2e_tool_calls();
+    bench_audit_multi_tenant();
     
     // v3.0 feature benchmarks
     #[cfg(feature = "oauth2")]
@@ -556,4 +557,97 @@ fn bench_database_queries() {
     }
     let query_ms = start.elapsed().as_millis() as f64 / iterations as f64;
     println!("  Mean: {:.2} ms ({}/{})", query_ms, successes, iterations);
+}
+
+fn bench_audit_multi_tenant() {
+    println!("\n─── 9. Multi-Tenant Audit Isolation ────────────────────────────");
+
+    use crate::audit::{AuditLog, AuditRegistry, AuditOutcome, set_session_context, clear_session_context};
+
+    let iterations = 100_000;
+    let start = Instant::now();
+
+    // 1. Direct AuditLog recording (baseline)
+    let log = AuditLog::new();
+    for i in 0..iterations {
+        log.record(&format!("tool_{}", i % 50), start, AuditOutcome::Success);
+    }
+    let direct_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
+    println!("  Direct AuditLog::record:   {:.1} ns/op  ({:.2}M ops/s)", direct_ns, 1000.0 / direct_ns);
+
+    // 2. Registry-routed recording (single session, via thread-local context)
+    let registry = AuditRegistry::new();
+    set_session_context("bench-session".to_string());
+
+    let start = Instant::now();
+    for i in 0..iterations {
+        let session_id = crate::audit::current_session_id().unwrap_or_else(|| "default".to_string());
+        let log = registry.get_or_create(&session_id);
+        log.record_with_context(&format!("tool_{}", i % 50), start, AuditOutcome::Success, None, Some(session_id));
+    }
+    let routed_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
+    clear_session_context();
+    println!("  Registry-routed record:    {:.1} ns/op  ({:.2}M ops/s)", routed_ns, 1000.0 / routed_ns);
+    println!("  Routing overhead:          {:.1} ns  ({:.1}x vs direct)", routed_ns - direct_ns, routed_ns / direct_ns);
+
+    // 3. Concurrent multi-session throughput
+    println!("\n  Concurrent multi-session recording:");
+    let session_counts = [1, 4, 16, 64];
+    let ops_per_session = 10_000;
+
+    for &n_sessions in &session_counts {
+        let registry = Arc::new(AuditRegistry::new());
+        let start = Instant::now();
+
+        let handles: Vec<_> = (0..n_sessions).map(|s| {
+            let registry = Arc::clone(&registry);
+            thread::spawn(move || {
+                let session_id = format!("session-{}", s);
+                set_session_context(session_id.clone());
+                for i in 0..ops_per_session {
+                    let sid = crate::audit::current_session_id().unwrap_or_else(|| "default".to_string());
+                    let log = registry.get_or_create(&sid);
+                    log.record_with_context(&format!("tool_{}", i % 20), Instant::now(), AuditOutcome::Success, None, Some(sid));
+                }
+                clear_session_context();
+            })
+        }).collect();
+
+        for h in handles { h.join().unwrap(); }
+        let elapsed = start.elapsed();
+        let total_ops = n_sessions * ops_per_session;
+        let throughput = total_ops as f64 / elapsed.as_secs_f64();
+        println!("  {} session(s) x {} ops:  {:>10.0} ops/s  ({:.2} ms total)",
+            n_sessions, ops_per_session, throughput, elapsed.as_secs_f64() * 1000.0);
+    }
+
+    // 4. Aggregate cost across sessions
+    println!("\n  Aggregate across sessions:");
+    let registry = AuditRegistry::new();
+    let entries_per_session = 1000;
+    for s in 0..64 {
+        let log = registry.get_or_create(&format!("session-{}", s));
+        for i in 0..entries_per_session {
+            log.record(&format!("tool_{}", i % 20), start, AuditOutcome::Success);
+        }
+    }
+
+    let agg_start = Instant::now();
+    let agg_iterations = 100;
+    for _ in 0..agg_iterations {
+        let all = registry.aggregate_all();
+        black_box(all.len());
+    }
+    let agg_ns = agg_start.elapsed().as_nanos() as f64 / agg_iterations as f64;
+    println!("  64 sessions x {} entries:  {:.1} μs/aggregate  ({} total entries)",
+        entries_per_session, agg_ns / 1000.0, 64 * entries_per_session);
+
+    // 5. Flush to disk
+    let flush_path = "temp_bench_audit_flush";
+    let _ = std::fs::remove_dir_all(flush_path);
+    let flush_start = Instant::now();
+    let flushed = registry.flush_all(flush_path).expect("audit flush benchmark failed");
+    let flush_ms = flush_start.elapsed().as_millis() as f64;
+    println!("\n  Flush {} sessions ({} entries):  {:.1} ms", 64, flushed, flush_ms);
+    let _ = std::fs::remove_dir_all(flush_path);
 }
