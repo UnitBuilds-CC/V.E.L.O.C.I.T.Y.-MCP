@@ -3,6 +3,8 @@ name = "bench_nda"
 version = "0.1.0"
 edition = "2021"
 
+[workspace]
+
 [dependencies]
 memmap2 = "0.9"
 sha2 = "0.10"

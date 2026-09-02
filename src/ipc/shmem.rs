@@ -522,4 +522,106 @@ mod tests {
         assert_eq!(read_back, response);
         cleanup(&path);
     }
+
+    #[test]
+    fn test_read_input_raw_returns_bytes() {
+        let path = temp_buffer_path("raw_input");
+        cleanup(&path);
+        let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
+
+        let request = r#"{"jsonrpc":"2.0","method":"ping","id":1}"#;
+        buffer.write_input(request).unwrap();
+
+        let raw = buffer.read_input_raw().unwrap();
+        assert_eq!(raw, request.as_bytes());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn test_read_input_raw_overflow_rejected() {
+        let path = temp_buffer_path("raw_overflow");
+        cleanup(&path);
+        let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
+
+        buffer.set_input_len(OUTPUT_BUFFER_OFFSET as u32);
+        let result = buffer.read_input_raw();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("exceeds buffer limit"));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn test_write_and_read_output_raw() {
+        let path = temp_buffer_path("raw_output");
+        cleanup(&path);
+        let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
+
+        let data = b"binary data test 123";
+        buffer.write_output_raw(data).unwrap();
+
+        assert_eq!(buffer.get_output_len(), data.len() as u32);
+        let read_back = buffer.read_output().unwrap();
+        assert_eq!(read_back.as_bytes(), data);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn test_write_output_raw_overflow_rejected() {
+        let path = temp_buffer_path("raw_out_overflow");
+        cleanup(&path);
+        let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
+
+        let max_output = TOTAL_BUFFER_SIZE - OUTPUT_BUFFER_OFFSET;
+        let oversized = vec![0u8; max_output + 1];
+        let result = buffer.write_output_raw(&oversized);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("exceeds output buffer limit"));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn test_write_input_overflow_rejected() {
+        let path = temp_buffer_path("input_overflow");
+        cleanup(&path);
+        let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
+
+        let max_input = OUTPUT_BUFFER_OFFSET - INPUT_BUFFER_OFFSET;
+        let oversized = "x".repeat(max_input + 1);
+        let result = buffer.write_input(&oversized);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("exceeds input buffer limit"));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn test_request_seq_get_set() {
+        let path = temp_buffer_path("seq");
+        cleanup(&path);
+        let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
+
+        assert_eq!(buffer.get_request_seq(), 0);
+
+        buffer.set_request_seq(42);
+        assert_eq!(buffer.get_request_seq(), 42);
+
+        buffer.set_request_seq(u32::MAX);
+        assert_eq!(buffer.get_request_seq(), u32::MAX);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn test_flush_async_succeeds() {
+        let path = temp_buffer_path("flush_async");
+        cleanup(&path);
+        let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
+
+        buffer.write_output("test").unwrap();
+        buffer.flush_async().unwrap();
+        cleanup(&path);
+    }
+
+    #[test]
+    fn test_sync_fence_does_not_panic() {
+        SharedMemoryBuffer::sync_fence();
+    }
 }

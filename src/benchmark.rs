@@ -68,7 +68,7 @@ fn bench_nda_native_parsing() {
         nda_native::METHOD_TOOLS_CALL,
         &json!(101),
         &json!({"name": "read_nda", "arguments": {"ndaPath": "C:/invoices/inv-001.nda"}}),
-    );
+    ).unwrap();
     let iterations = 1_000_000;
 
     println!("  Zero-alloc parse + Merkle verify ({} iterations)...", iterations);
@@ -114,7 +114,7 @@ fn bench_protocol_overhead() {
         nda_native::METHOD_TOOLS_CALL,
         &json!(1),
         &json!({"name": "hello_world", "arguments": {"message": "Hello, World!", "count": 42, "flag": true}}),
-    );
+    ).unwrap();
 
     let iterations = 500_000;
 
@@ -186,13 +186,13 @@ fn bench_tlv_encoding() {
     let mut encoded_size = 0;
     for _ in 0..iterations {
         let mut buf = Vec::new();
-        nda_native::encode_json_value(black_box(&value), &mut buf);
+        nda_native::encode_json_value(black_box(&value), &mut buf).unwrap();
         encoded_size = buf.len();
     }
     let encode_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
 
     let mut buf = Vec::new();
-    nda_native::encode_json_value(&value, &mut buf);
+    nda_native::encode_json_value(&value, &mut buf).unwrap();
 
     let start = Instant::now();
     let mut checksum: u32 = 0;
@@ -230,7 +230,7 @@ fn bench_flat_encoding() {
     let iterations = 500_000;
 
     let mut tlv_buf = Vec::new();
-    nda_native::encode_json_value(&args, &mut tlv_buf);
+    nda_native::encode_json_value(&args, &mut tlv_buf).unwrap();
     let mut flat_buf = Vec::new();
     nda_native::encode_flat_value(&args, &mut flat_buf);
 
@@ -242,7 +242,7 @@ fn bench_flat_encoding() {
     let mut tlv_size = 0;
     for _ in 0..iterations {
         let mut buf = Vec::new();
-        nda_native::encode_json_value(black_box(&args), &mut buf);
+        nda_native::encode_json_value(black_box(&args), &mut buf).unwrap();
         tlv_size = buf.len();
     }
     let tlv_encode_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
@@ -286,7 +286,7 @@ fn bench_flat_encoding() {
     println!("  Flat decode:       {:.1} ns  ({:.1}x faster)", flat_decode_ns, tlv_decode_ns / flat_decode_ns);
 
     let flat_frame = nda_native::build_flat_request(nda_native::METHOD_TOOLS_CALL, &json!(1), "read_file", &args);
-    let tlv_frame = nda_native::build_nda_request(nda_native::METHOD_TOOLS_CALL, &json!(1), &json!({"name": "read_file", "arguments": &args}));
+    let tlv_frame = nda_native::build_nda_request(nda_native::METHOD_TOOLS_CALL, &json!(1), &json!({"name": "read_file", "arguments": &args})).unwrap();
     println!("  Full TLV frame:    {} bytes", tlv_frame.len());
     println!("  Full flat frame:   {} bytes  ({:.1}x smaller)", flat_frame.len(), tlv_frame.len() as f64 / flat_frame.len() as f64);
 }
@@ -324,7 +324,7 @@ fn bench_nda_native_shmem() {
         nda_native::METHOD_TOOLS_CALL,
         &json!(1),
         &json!({"name": "read_nda", "arguments": {"ndaPath": "C:/test.nda"}}),
-    );
+    ).unwrap();
     let iterations = 200_000;
 
     println!("  NDA write+read shmem ({} iterations)...", iterations);
@@ -381,7 +381,7 @@ fn bench_concurrent_dispatch() {
             nda_native::METHOD_TOOLS_CALL,
             &json!(1),
             &json!({"name": "read_nda", "arguments": {"ndaPath": "C:/test.nda"}}),
-        );
+        ).unwrap();
 
         let start = Instant::now();
         let handles: Vec<_> = (0..num_threads).map(|_| {

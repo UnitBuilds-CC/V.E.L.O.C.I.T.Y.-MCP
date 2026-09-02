@@ -174,11 +174,11 @@ impl NdaDocument {
             for (name, off) in [("subject", t.subject_offset), ("predicate", t.predicate_offset), ("object", t.object_offset)] {
                 if off != 0 {
                     let o = off as usize;
-                    if o + 2 > string_pool.len() {
+                    if o.saturating_add(2) > string_pool.len() {
                         return Err(format!("Triple {} {} offset {} exceeds string pool size {}", i, name, o, string_pool.len()));
                     }
                     let slen = u16::from_le_bytes([string_pool[o], string_pool[o + 1]]) as usize;
-                    if o + 2 + slen > string_pool.len() {
+                    if o.saturating_add(2).saturating_add(slen) > string_pool.len() {
                         return Err(format!("Triple {} {} string at offset {} extends beyond pool", i, name, o));
                     }
                 }
@@ -192,11 +192,11 @@ impl NdaDocument {
             }
             if c.content_offset != 0 {
                 let o = c.content_offset as usize;
-                if o + 2 > string_pool.len() {
+                if o.saturating_add(2) > string_pool.len() {
                     return Err(format!("Command {} content offset {} exceeds string pool size {}", i, o, string_pool.len()));
                 }
                 let slen = u16::from_le_bytes([string_pool[o], string_pool[o + 1]]) as usize;
-                if o + 2 + slen > string_pool.len() {
+                if o.saturating_add(2).saturating_add(slen) > string_pool.len() {
                     return Err(format!("Command {} content string at offset {} extends beyond pool", i, o));
                 }
             }
@@ -218,11 +218,11 @@ impl NdaDocument {
             return Ok(String::new());
         }
         let off = offset as usize;
-        if off + 2 > self.string_pool.len() {
+        if off.saturating_add(2) > self.string_pool.len() {
             return Err(format!("String offset {} exceeds string pool size {}", off, self.string_pool.len()));
         }
         let len = u16::from_le_bytes([self.string_pool[off], self.string_pool[off + 1]]) as usize;
-        if off + 2 + len > self.string_pool.len() {
+        if off.saturating_add(2).saturating_add(len) > self.string_pool.len() {
             return Err(format!("String at offset {} extends beyond string pool", off));
         }
         String::from_utf8(self.string_pool[off + 2..off + 2 + len].to_vec())

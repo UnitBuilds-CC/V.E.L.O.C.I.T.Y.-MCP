@@ -736,12 +736,11 @@ async fn audit_flush() -> Result<Json<Value>, StatusCode> {
     match crate::audit::audit_registry().flush_all(&path) {
         Ok(n) => Ok(Json(json!({
             "status": "ok",
-            "entries": n,
-            "path": path
+            "entries": n
         }))),
         Err(e) => Ok(Json(json!({
             "status": "error",
-            "error": e
+            "error": crate::sandbox::sanitize_error(&e)
         }))),
     }
 }
@@ -789,15 +788,16 @@ async fn session_audit_export_csv(
 
 /// Session-scoped audit flush — flush a single session to disk.
 async fn session_audit_flush(
-    axum::extract::Path(session_id): axum::extract::Path<String>,
+    axum::extract::Path(raw_session_id): axum::extract::Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
+    let session_id = sanitize_session_id(&raw_session_id).map_err(|_| StatusCode::BAD_REQUEST)?;
     let base_path = std::env::var("VELOCITY_AUDIT_LOG_PATH")
         .unwrap_or_else(|_| "audit_logs".to_string());
     match crate::audit::audit_registry().get(&session_id) {
         Some(log) => {
             let file_path = format!("{}/{}.json", base_path, session_id);
             if let Err(e) = std::fs::create_dir_all(&base_path) {
-                return Ok(Json(json!({ "status": "error", "error": format!("Failed to create directory: {}", e) })));
+                return Ok(Json(json!({ "status": "error", "error": crate::sandbox::sanitize_error(&format!("Failed to create directory: {}", e)) })));
             }
             let entries = log.all();
             match serde_json::to_string_pretty(&entries) {
@@ -805,11 +805,11 @@ async fn session_audit_flush(
                     Ok(_) => Ok(Json(json!({
                         "status": "ok",
                         "entries": entries.len(),
-                        "path": file_path
+                        "session": session_id
                     }))),
-                    Err(e) => Ok(Json(json!({ "status": "error", "error": format!("Failed to write: {}", e) }))),
+                    Err(e) => Ok(Json(json!({ "status": "error", "error": crate::sandbox::sanitize_error(&format!("Failed to write: {}", e)) }))),
                 },
-                Err(e) => Ok(Json(json!({ "status": "error", "error": format!("{}", e) }))),
+                Err(e) => Ok(Json(json!({ "status": "error", "error": crate::sandbox::sanitize_error(&e.to_string()) }))),
             }
         },
         None => Err(StatusCode::NOT_FOUND),
@@ -930,7 +930,15 @@ async fn handle_websocket(socket: axum::extract::ws::WebSocket, state: Arc<Serve
         while let Some(msg) = StreamExt::next(&mut receiver).await {
             match msg {
                 Ok(Message::Text(text)) => {
-                    // Parse JSON-RPC request
+                    if text.len() > 1_048_576 {
+                        let err_res = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "error": { "code": -32700, "message": "WebSocket message too large" },
+                            "id": null
+                        });
+                        let _ = sender.send(Message::Text(err_res.to_string())).await;
+                        continue;
+                    }
                     match serde_json::from_str::<Value>(&text) {
                         Ok(request) => {
                             // Process the request
@@ -955,7 +963,7 @@ async fn handle_websocket(socket: axum::extract::ws::WebSocket, state: Arc<Serve
                                 "jsonrpc": "2.0",
                                 "error": {
                                     "code": -32700,
-                                    "message": format!("Parse error: {}", e)
+                                    "message": crate::sandbox::sanitize_error(&format!("Parse error: {}", e))
                                 },
                                 "id": null
                             });
@@ -1028,7 +1036,7 @@ async fn marketplace_install_plugin(
             crate::registry::load_plugins("plugins");
             Ok(Json(installed))
         }
-        Err(e) => Err((StatusCode::BAD_REQUEST, e)),
+        Err(e) => Err((StatusCode::BAD_REQUEST, crate::sandbox::sanitize_error(&e))),
     }
 }
 
@@ -1044,7 +1052,7 @@ async fn marketplace_uninstall_plugin(
             crate::registry::load_plugins("plugins");
             Ok(StatusCode::OK)
         }
-        Err(e) => Err((StatusCode::BAD_REQUEST, e)),
+        Err(e) => Err((StatusCode::BAD_REQUEST, crate::sandbox::sanitize_error(&e))),
     }
 }
 
@@ -1077,7 +1085,7 @@ async fn marketplace_submit_review(
     
     match marketplace.submit_review(&plugin_id, &request.reviewer, request.rating, request.comment) {
         Ok(_) => Ok(StatusCode::CREATED),
-        Err(e) => Err((StatusCode::BAD_REQUEST, e)),
+        Err(e) => Err((StatusCode::BAD_REQUEST, crate::sandbox::sanitize_error(&e))),
     }
 }
 
@@ -1099,7 +1107,7 @@ async fn marketplace_update_plugin(
             crate::registry::load_plugins("plugins");
             Ok(Json(installed))
         }
-        Err(e) => Err((StatusCode::BAD_REQUEST, e)),
+        Err(e) => Err((StatusCode::BAD_REQUEST, crate::sandbox::sanitize_error(&e))),
     }
 }
 

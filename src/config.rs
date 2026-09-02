@@ -298,4 +298,157 @@ mod tests {
         let parsed: ServerConfig = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.mode, config.mode);
     }
+
+    #[test]
+    fn test_from_file_roundtrip() {
+        let config = ServerConfig::default();
+        let dir = std::env::temp_dir().join("velocity_config_test_from_file");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("test_config.toml");
+        config.save_to_file(&path).unwrap();
+
+        let loaded = ServerConfig::from_file(&path).unwrap();
+        assert_eq!(loaded.mode, config.mode);
+        assert_eq!(loaded.http.addr, config.http.addr);
+        assert_eq!(loaded.logging.level, config.logging.level);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_from_file_missing() {
+        let result = ServerConfig::from_file("/nonexistent/path/config.toml");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Failed to read config file"));
+    }
+
+    #[test]
+    fn test_from_file_invalid_toml() {
+        let dir = std::env::temp_dir().join("velocity_config_test_bad_toml");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("bad.toml");
+        std::fs::write(&path, "this is not [valid toml {{{").unwrap();
+
+        let result = ServerConfig::from_file(&path);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Failed to parse config file"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_load_with_env_missing_file_uses_defaults() {
+        let config = ServerConfig::load_with_env(Some("/nonexistent/config.toml"));
+        assert_eq!(config.mode, "stdio");
+    }
+
+    #[test]
+    fn test_load_with_env_none_uses_defaults() {
+        let config: ServerConfig = ServerConfig::load_with_env(None::<&str>);
+        assert_eq!(config.mode, "stdio");
+    }
+
+    #[test]
+    fn test_apply_env_overrides_mode() {
+        std::env::set_var("VELOCITY_MODE", "http");
+        let config = ServerConfig::default().apply_env_overrides();
+        assert_eq!(config.mode, "http");
+        std::env::remove_var("VELOCITY_MODE");
+    }
+
+    #[test]
+    fn test_apply_env_overrides_buffer_path() {
+        std::env::set_var("VELOCITY_BUFFER_PATH", "/custom/buffer.bin");
+        let config = ServerConfig::default().apply_env_overrides();
+        assert_eq!(config.buffer_path, "/custom/buffer.bin");
+        std::env::remove_var("VELOCITY_BUFFER_PATH");
+    }
+
+    #[test]
+    fn test_apply_env_overrides_csharp_path() {
+        std::env::set_var("VELOCITY_CSHARP_PATH", "/custom/engine.exe");
+        let config = ServerConfig::default().apply_env_overrides();
+        assert_eq!(config.csharp_path, "/custom/engine.exe");
+        std::env::remove_var("VELOCITY_CSHARP_PATH");
+    }
+
+    #[test]
+    fn test_apply_env_overrides_log_level() {
+        std::env::set_var("VELOCITY_LOG_LEVEL", "debug");
+        let config = ServerConfig::default().apply_env_overrides();
+        assert_eq!(config.logging.level, "debug");
+        std::env::remove_var("VELOCITY_LOG_LEVEL");
+    }
+
+    #[test]
+    fn test_apply_env_overrides_http_addr() {
+        std::env::set_var("VELOCITY_HTTP_ADDR", "127.0.0.1:9999");
+        let config = ServerConfig::default().apply_env_overrides();
+        assert_eq!(config.http.addr, "127.0.0.1:9999");
+        std::env::remove_var("VELOCITY_HTTP_ADDR");
+    }
+
+    #[test]
+    fn test_apply_env_overrides_api_key() {
+        std::env::set_var("VELOCITY_API_KEY", "secret-key-123");
+        let config = ServerConfig::default().apply_env_overrides();
+        assert_eq!(config.http.api_key.as_deref(), Some("secret-key-123"));
+        std::env::remove_var("VELOCITY_API_KEY");
+    }
+
+    #[test]
+    fn test_apply_env_overrides_max_request_size() {
+        std::env::set_var("VELOCITY_MAX_REQUEST_SIZE", "2048");
+        let config = ServerConfig::default().apply_env_overrides();
+        assert_eq!(config.http.max_request_size, 2048);
+        std::env::remove_var("VELOCITY_MAX_REQUEST_SIZE");
+    }
+
+    #[test]
+    fn test_apply_env_overrides_rate_limit() {
+        std::env::set_var("VELOCITY_ENABLE_RATE_LIMIT", "false");
+        let config = ServerConfig::default().apply_env_overrides();
+        assert!(!config.http.enable_rate_limit);
+        std::env::remove_var("VELOCITY_ENABLE_RATE_LIMIT");
+    }
+
+    #[test]
+    fn test_validate_invalid_log_level() {
+        let mut config = ServerConfig::default();
+        config.logging.level = "verbose".to_string();
+        let errors = config.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("log level")));
+    }
+
+    #[test]
+    fn test_validate_http_max_request_size_zero() {
+        let mut config = ServerConfig::default();
+        config.mode = "http".to_string();
+        config.http.max_request_size = 0;
+        let errors = config.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("Max request size")));
+    }
+
+    #[test]
+    fn test_validate_all_errors_collected() {
+        let mut config = ServerConfig::default();
+        config.mode = "invalid".to_string();
+        config.logging.level = "bogus".to_string();
+        let errors = config.validate().unwrap_err();
+        assert!(errors.len() >= 2);
+    }
+
+    #[test]
+    fn test_save_to_file_creates_file() {
+        let config = ServerConfig::default();
+        let dir = std::env::temp_dir().join("velocity_config_test_save");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("output.toml");
+
+        config.save_to_file(&path).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("mode"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

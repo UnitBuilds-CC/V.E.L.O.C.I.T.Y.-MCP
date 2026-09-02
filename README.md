@@ -8,7 +8,7 @@
 
 **The fastest, most secure, production-ready Model Context Protocol (MCP) server.**
 
-A high-performance MCP server written in Rust that replaces slow, bloated Node.js/Python MCP servers with a highly optimized, self-contained executable. **Up to 27.7x faster** than the Node.js reference implementation (NDA/shmem transport) with **enterprise-grade security** and **production-ready features**.
+A high-performance MCP server written in Rust that replaces slow, bloated Node.js/Python MCP servers with a highly optimized, self-contained executable. **Up to 26.2x faster** than the Node.js reference implementation (NDA/shmem transport) with **enterprise-grade security** and **production-ready features**.
 
 ## 🚀 Quick Start
 
@@ -360,38 +360,42 @@ tools, err := client.ListTools()
 
 ### NDA/shmem Transport (Primary Path)
 
-| Method | Latency | Throughput | vs JSON/stdio |
-|--------|---------|------------|---------------|
-| ping | 0.001 ms (1µs) | 1,657,825 r/s | 34.3x faster |
-| tools/list (16 tools) | 0.006 ms | 165,981 r/s | 29.7x faster |
-| tools/call (64B) | 0.001 ms | 750,413 r/s | 18.3x faster |
-| health/check | 0.000 ms | 2,190,101 r/s | 46.3x faster |
+| Method | Latency (avg) | Throughput | vs JSON/stdio |
+|--------|---------------|------------|---------------|
+| ping | 0.003 ms (3µs) | 306,405 r/s | 9.5x faster |
+| tools/list (17 tools) | 0.008 ms | 121,754 r/s | 26.2x faster |
+| tools/call (64B) | 0.003 ms | 300,217 r/s | 7.4x faster |
+| health/check | 0.002 ms | 466,860 r/s | 14.7x faster |
 
-**Overall: 27.7x faster average, 40.8x faster at p99** (NDA/shmem vs JSON/stdio)
+**Overall: 9.5x–26.2x faster across methods** (NDA/shmem vs JSON/stdio, p99 speedup up to 28.4x)
 
 ### Node.js vs Rust (Fair Comparison — JSON/stdio)
 
 | Method | Node.js avg | Rust avg | Speedup |
 |--------|------------|----------|---------|
-| ping | 0.061 ms | 0.034 ms | 1.8x |
-| tools/list | 0.075 ms | 0.128 ms | 0.6x* |
-| tools/call | 0.039 ms | 0.018 ms | 2.2x |
-| health/check | 0.040 ms | 0.038 ms | 1.0x |
+| ping | 0.057 ms | 0.031 ms | 1.8x |
+| tools/list | 0.139 ms | 0.215 ms | 0.6x* |
+| tools/call | 0.052 ms | 0.025 ms | 2.1x |
+| health/check | 0.042 ms | 0.031 ms | 1.4x |
 
 *tools/list: Node.js returns a static array; Rust dynamically assembles from 5 sources. Rust wins at p99.
 
 **Overall: 1.0x avg (tied), 1.7x p99** (Rust wins on tail latency)
 
-### 4-Pipeline Comparison
+### 8-Pipeline Comparison
 
 | Pipeline | Ping avg | tools/list avg | tools/call avg |
 |----------|----------|----------------|----------------|
-| Node.js JSON/stdio | 0.046 ms | 0.110 ms | 0.042 ms |
-| Rust JSON/stdio | 0.035 ms | 0.195 ms | 0.034 ms |
-| Rust NDA-wrapped JSON/stdio | 0.027 ms | 0.186 ms | 0.035 ms |
-| Rust NDA/shmem | 0.001 ms | 0.006 ms | 0.002 ms |
+| **NDA/shmem** | **0.003 ms** | **0.008 ms** | **0.003 ms** |
+| JSON/shmem | 0.006 ms | 0.081 ms | 0.010 ms |
+| NDA/stdio | 0.027 ms | 0.120 ms | 0.034 ms |
+| JSON/stdio | 0.031 ms | 0.215 ms | 0.025 ms |
+| Node/stdio | 0.057 ms | 0.139 ms | 0.052 ms |
+| JSON/HTTP | 0.079 ms | 0.226 ms | 0.091 ms |
+| Node/HTTP | 0.097 ms | 0.134 ms | 0.085 ms |
+| NDA/HTTP | 0.102 ms | 0.095 ms | 0.092 ms |
 
-**Key finding:** Transport is the dominant factor — shmem is an order of magnitude faster than stdio. Encoding format (JSON vs NDA) has negligible impact when transport is the same.
+**Key finding:** Transport is the dominant factor — shmem is an order of magnitude faster than stdio. Binary encoding (NDA) saves 1.9x–9.9x over JSON on the same transport. HTTP adds ~30–40µs of transport overhead.
 
 ### Phase Timing
 
@@ -399,10 +403,10 @@ All 8 pipelines instrument write/wait/read phases. The "wait" phase isolates ser
 
 | Pipeline | write | wait | read | Total |
 |----------|-------|------|------|-------|
-| NDA/shmem | 0.0µs | 0.5µs | 0.1µs | ~1µs |
-| JSON/shmem | 0.3µs | 6.3µs | 0.3µs | ~7µs |
+| NDA/shmem | ~2µs | ~0.3µs | ~0.3µs | ~3µs |
+| JSON/shmem | ~1µs | ~6µs | ~1µs | ~8µs |
 
-The 12x difference in "wait" phase (0.5µs vs 6.3µs) shows the JSON parse+stringify cost on the server side.
+The 20x difference in "wait" phase shows the JSON parse+stringify cost on the server side.
 
 ---
 

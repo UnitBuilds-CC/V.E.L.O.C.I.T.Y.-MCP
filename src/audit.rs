@@ -801,4 +801,209 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].session_id, Some("sess-42".to_string()));
     }
+
+    #[test]
+    fn test_export_json() {
+        let log = AuditLog::new();
+        let start = Instant::now();
+        log.record("tool_a", start, AuditOutcome::Success);
+        log.record("tool_b", start, AuditOutcome::Error("fail".into()));
+
+        let json = log.export_json().unwrap();
+        assert!(json.contains("tool_a"));
+        assert!(json.contains("tool_b"));
+        assert!(json.contains("Success"));
+    }
+
+    #[test]
+    fn test_flush_to_file() {
+        let log = AuditLog::new();
+        let start = Instant::now();
+        log.record("tool", start, AuditOutcome::Success);
+
+        let path = "test_audit_flush.json";
+        let count = log.flush_to_file(path).unwrap();
+        assert_eq!(count, 1);
+
+        let content = std::fs::read_to_string(path).unwrap();
+        assert!(content.contains("tool"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_is_empty() {
+        let log = AuditLog::new();
+        assert!(log.is_empty());
+
+        let start = Instant::now();
+        log.record("tool", start, AuditOutcome::Success);
+        assert!(!log.is_empty());
+    }
+
+    #[test]
+    fn test_record_full_with_all_metadata() {
+        let log = AuditLog::new();
+        let start = Instant::now();
+        log.record_full(
+            "tool",
+            start,
+            AuditOutcome::Success,
+            Some("http".into()),
+            Some(1024),
+            Some(2048),
+            Some("merkle123".into()),
+            Some("session-99".into()),
+        );
+
+        let entries = log.all();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].transport, Some("http".into()));
+        assert_eq!(entries[0].payload_size, Some(1024));
+        assert_eq!(entries[0].response_size, Some(2048));
+        assert_eq!(entries[0].merkle_root, Some("merkle123".into()));
+        assert_eq!(entries[0].session_id, Some("session-99".into()));
+    }
+
+    #[test]
+    fn test_transport_context() {
+        assert!(current_transport().is_none());
+
+        set_transport_context("http".to_string());
+        assert_eq!(current_transport(), Some("http".to_string()));
+
+        clear_transport_context();
+        assert!(current_transport().is_none());
+    }
+
+    #[test]
+    fn test_convenience_record_tool_call() {
+        clear_session_context();
+        clear_transport_context();
+
+        let start = Instant::now();
+        record_tool_call("test_tool", start, AuditOutcome::Success);
+
+        let entries = audit_registry().aggregate_all();
+        assert!(!entries.is_empty());
+        assert!(entries.iter().any(|e| e.tool_name == "test_tool"));
+    }
+
+    #[test]
+    fn test_convenience_record_with_merkle() {
+        clear_session_context();
+        let start = Instant::now();
+        record_tool_call_with_merkle("nda_tool", start, AuditOutcome::Success, Some("abc123".into()));
+
+        let entries = audit_registry().aggregate_all();
+        assert!(entries.iter().any(|e| e.tool_name == "nda_tool" && e.merkle_root == Some("abc123".into())));
+    }
+
+    #[test]
+    fn test_convenience_record_with_sizes() {
+        clear_session_context();
+        let start = Instant::now();
+        record_tool_call_with_sizes("sized_tool", start, AuditOutcome::Success, Some(512), Some(1024), None);
+
+        let entries = audit_registry().aggregate_all();
+        assert!(entries.iter().any(|e| e.tool_name == "sized_tool" && e.payload_size == Some(512)));
+    }
+
+    #[test]
+    fn test_convenience_record_full() {
+        clear_session_context();
+        let start = Instant::now();
+        record_tool_call_full("full_tool", start, AuditOutcome::Success, Some("stdio".into()), Some(256), Some(512), Some("root".into()));
+
+        let entries = audit_registry().aggregate_all();
+        assert!(entries.iter().any(|e| e.tool_name == "full_tool" && e.transport == Some("stdio".into())));
+    }
+
+    #[test]
+    fn test_registry_aggregate_recent() {
+        let registry = AuditRegistry {
+            sessions: std::sync::RwLock::new(HashMap::new()),
+        };
+
+        let log_a = registry.get_or_create("s1");
+        let log_b = registry.get_or_create("s2");
+
+        let start = Instant::now();
+        for i in 0..5 {
+            log_a.record(&format!("tool_a_{}", i), start, AuditOutcome::Success);
+            log_b.record(&format!("tool_b_{}", i), start, AuditOutcome::Success);
+        }
+
+        let recent = registry.aggregate_recent(3);
+        assert_eq!(recent.len(), 3);
+    }
+
+    #[test]
+    fn test_registry_flush_all() {
+        let registry = AuditRegistry {
+            sessions: std::sync::RwLock::new(HashMap::new()),
+        };
+
+        let log_a = registry.get_or_create("session_1");
+        let log_b = registry.get_or_create("session_2");
+
+        let start = Instant::now();
+        log_a.record("tool_a", start, AuditOutcome::Success);
+        log_b.record("tool_b", start, AuditOutcome::Success);
+
+        let base_path = "test_audit_flush_all";
+        let total = registry.flush_all(base_path).unwrap();
+        assert_eq!(total, 2);
+
+        let _ = std::fs::remove_dir_all(base_path);
+    }
+
+    #[test]
+    fn test_registry_clear() {
+        let registry = AuditRegistry {
+            sessions: std::sync::RwLock::new(HashMap::new()),
+        };
+
+        registry.get_or_create("s1");
+        registry.get_or_create("s2");
+        assert_eq!(registry.session_count(), 2);
+
+        registry.clear();
+        assert_eq!(registry.session_count(), 0);
+    }
+
+    #[test]
+    fn test_csv_with_error_and_rejected_outcomes() {
+        let log = AuditLog::new();
+        let start = Instant::now();
+        log.record("err_tool", start, AuditOutcome::Error("error,with,commas".into()));
+        log.record("rej_tool", start, AuditOutcome::Rejected("rejected,reason".into()));
+
+        let csv = log.export_csv().unwrap();
+        assert!(csv.contains("error:error;with;commas"));
+        assert!(csv.contains("rejected:rejected;reason"));
+    }
+
+    #[test]
+    fn test_global_audit_log() {
+        let log = global_audit();
+        let initial_len = log.len();
+
+        let start = Instant::now();
+        log.record("global_tool", start, AuditOutcome::Success);
+
+        assert_eq!(log.len(), initial_len + 1);
+    }
+
+    #[test]
+    fn test_flush_audit_convenience() {
+        clear_session_context();
+        let start = Instant::now();
+        record_tool_call("flush_test", start, AuditOutcome::Success);
+
+        let path = "test_flush_audit";
+        let result = flush_audit(path);
+        assert!(result.is_ok());
+
+        let _ = std::fs::remove_dir_all(path);
+    }
 }

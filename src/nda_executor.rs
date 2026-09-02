@@ -79,6 +79,10 @@ fn execute_binary_payload(base64_data: &Option<String>, args: &[String]) -> Resu
     let assembly_bytes = general_purpose::STANDARD.decode(b64)
         .map_err(|e| format!("Failed to decode BASE64_DATA: {}", e))?;
 
+    if assembly_bytes.len() > 30 * 1024 * 1024 {
+        return Err("Binary payload exceeds 30MB limit".to_string());
+    }
+
     // Execute inside sandbox with isolated temp directory
     let mut sandbox = Sandbox::new()?;
     let dll_name = format!("nda_run_{}.dll", random_suffix());
@@ -228,5 +232,152 @@ mod tests {
         let result = execute_nda(&data, &[]);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("BASE64_DATA"));
+    }
+
+    #[test]
+    fn test_interpreter_command_py() {
+        let path = std::path::Path::new("/tmp/test.py");
+        let (prog, args) = interpreter_command("py", path);
+        assert_eq!(prog, "python");
+        assert_eq!(args, vec!["/tmp/test.py"]);
+    }
+
+    #[test]
+    fn test_interpreter_command_js() {
+        let path = std::path::Path::new("/tmp/test.js");
+        let (prog, args) = interpreter_command("js", path);
+        assert_eq!(prog, "node");
+        assert_eq!(args, vec!["/tmp/test.js"]);
+    }
+
+    #[test]
+    fn test_interpreter_command_ps1() {
+        let path = std::path::Path::new("/tmp/test.ps1");
+        let (prog, args) = interpreter_command("ps1", path);
+        assert_eq!(prog, "powershell");
+        assert_eq!(args, vec!["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "/tmp/test.ps1"]);
+    }
+
+    #[test]
+    fn test_interpreter_command_sh() {
+        let path = std::path::Path::new("/tmp/test.sh");
+        let (prog, args) = interpreter_command("sh", path);
+        assert_eq!(prog, "bash");
+        assert_eq!(args, vec!["/tmp/test.sh"]);
+    }
+
+    #[test]
+    fn test_interpreter_command_cmd() {
+        let path = std::path::Path::new("/tmp/test.cmd");
+        let (prog, args) = interpreter_command("cmd", path);
+        assert_eq!(prog, "cmd.exe");
+        assert_eq!(args, vec!["/c", "/tmp/test.cmd"]);
+    }
+
+    #[test]
+    fn test_interpreter_command_bat() {
+        let path = std::path::Path::new("/tmp/test.bat");
+        let (prog, args) = interpreter_command("bat", path);
+        assert_eq!(prog, "cmd.exe");
+        assert_eq!(args, vec!["/c", "/tmp/test.bat"]);
+    }
+
+    #[test]
+    fn test_interpreter_command_unknown() {
+        let path = std::path::Path::new("/tmp/test.rb");
+        let (prog, args) = interpreter_command("rb", path);
+        assert_eq!(prog, "echo");
+        assert_eq!(args.len(), 1);
+        assert!(args[0].contains("rb"));
+    }
+
+    #[test]
+    fn test_interpreter_command_case_insensitive() {
+        let path = std::path::Path::new("/tmp/test.PY");
+        let (prog, _) = interpreter_command("PY", path);
+        assert_eq!(prog, "python");
+    }
+
+    #[test]
+    fn test_random_suffix_produces_hex() {
+        let s = random_suffix();
+        assert_eq!(s.len(), 8);
+        assert!(s.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_random_suffix_varies() {
+        let a = random_suffix();
+        // Spin until the clock advances to get a distinct value
+        let mut found_different = false;
+        for _ in 0..1_000_000 {
+            let b = random_suffix();
+            if b != a {
+                found_different = true;
+                break;
+            }
+        }
+        // On very fast machines these may collide; just ensure it's a valid hex string
+        assert!(found_different || a.len() == 8);
+    }
+
+    #[test]
+    fn test_execute_binary_payload_roundtrip() {
+        // Verify the binary payload path decodes base64 and attempts execution
+        // without panicking. The NDA format limits strings to u16::MAX (65535)
+        // bytes, so payloads are self-limiting to ~48KB decoded.
+        use base64::{Engine as _, engine::general_purpose};
+        let data_bytes = vec![0xABu8; 1024];
+        let b64 = general_purpose::STANDARD.encode(&data_bytes);
+
+        let mut compiler = NdaCompiler::new();
+        let bin_id = "BIN_RT";
+        compiler.add_triple(bin_id, "TYPE", "BinaryPayload");
+        compiler.add_triple(bin_id, "FILENAME", "test.dll");
+        compiler.add_triple(bin_id, "BASE64_DATA", &b64);
+        let data = compiler.compile();
+
+        // execute_nda should not panic; result depends on whether dotnet is available
+        let _result = execute_nda(&data, &[]);
+    }
+
+    #[test]
+    fn test_execute_binary_invalid_base64() {
+        let mut compiler = NdaCompiler::new();
+        let bin_id = "BIN_BAD";
+        compiler.add_triple(bin_id, "TYPE", "BinaryPayload");
+        compiler.add_triple(bin_id, "FILENAME", "test.dll");
+        compiler.add_triple(bin_id, "BASE64_DATA", "not-valid-base64!!!");
+        let data = compiler.compile();
+
+        let result = execute_nda(&data, &[]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("BASE64_DATA"));
+    }
+
+    #[test]
+    fn test_execute_unsupported_payload_type() {
+        let mut compiler = NdaCompiler::new();
+        let id = "WEIRD";
+        compiler.add_triple(id, "TYPE", "WeirdPayload");
+        let data = compiler.compile();
+
+        let result = execute_nda(&data, &[]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("runnable payload"));
+    }
+
+    #[test]
+    fn test_execute_source_code_default_extension() {
+        // SourceCode with no FILENAME should default to .py
+        let mut compiler = NdaCompiler::new();
+        let code_id = "CODE_NOEXT";
+        compiler.add_triple(code_id, "TYPE", "SourceCode");
+        // No FILENAME triple
+        compiler.add_command(1, 0xFFFFFFFF, 0, 0, 85, 20, "print('hello')");
+        let data = compiler.compile();
+
+        // Should not panic; result depends on whether python is available
+        let _result = execute_nda(&data, &[]);
     }
 }

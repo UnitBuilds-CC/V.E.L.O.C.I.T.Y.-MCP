@@ -695,6 +695,31 @@ fn test_adversarial_error_sanitization() {
     assert!(clean.contains("truncated"), "Should indicate truncation");
 }
 
+/// Verify that tool errors dispatched through handle_request don't leak raw paths.
+#[test]
+fn test_adversarial_dispatch_error_no_path_leak() {
+    let _t = test_timer("test_adversarial_dispatch_error_no_path_leak");
+    use serde_json::json;
+
+    let secret_path = "/home/admin/secret_credentials/token.key";
+    let req = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "file_read",
+            "arguments": { "path": secret_path }
+        }
+    });
+
+    let resp = velocity_mcp::protocol::json_rpc::handle_request(&req).expect("should return response");
+    let resp_text = resp.to_string();
+
+    assert!(!resp_text.contains("admin"), "Dispatch error must not leak username");
+    assert!(!resp_text.contains("secret_credentials"), "Dispatch error must not leak path components");
+    assert!(resp_text.contains("Error type:"), "Should still include error classification");
+}
+
 // ─── Adversarial: NDA Parser Robustness ──────────────────────────────────────
 
 /// Verify that the NDA parser handles corrupted headers gracefully.

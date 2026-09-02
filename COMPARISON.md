@@ -7,11 +7,11 @@
 
 | Metric | VELOCITY-MCP (Rust) | Node.js MCP | Advantage |
 |--------|---------------------|-------------|-----------|
-| NDA/shmem ping latency | 1µs | N/A | **Sub-microsecond IPC** |
-| NDA/shmem throughput | 1.66M req/s | N/A | **Node.js has no shmem** |
-| JSON/stdio latency (avg) | 0.035ms | 0.046ms | **1.3x faster** |
+| NDA/shmem ping latency | 3µs | N/A | **Sub-5µs IPC** |
+| NDA/shmem throughput | 306K req/s | N/A | **Node.js has no shmem** |
+| JSON/stdio latency (avg) | 0.031ms | 0.046ms | **1.5x faster** |
 | JSON/stdio latency (p99) | 0.112ms | 0.110ms | **Comparable tail latency** |
-| Full stack (NDA/shmem vs JSON/stdio) | 0.001ms | 0.046ms | **46x faster** |
+| Full stack (NDA/shmem vs JSON/stdio) | 0.003ms | 0.046ms | **15x faster** |
 | Memory footprint | 7.4 MB binary, ~15 MB RSS | ~80 MB binary, ~120 MB RSS | **8x smaller** |
 | Startup time | <50ms | ~500ms | **10x faster** |
 | JSON parsing | Zero-copy serde | V8 JSON.parse | **No allocation** |
@@ -115,6 +115,6 @@
 
 ## Bottom Line
 
-VELOCITY-MCP is **up to 27.7x faster** on the NDA/shmem transport (1µs round-trip), uses **8x less memory**, and provides **security, observability, and durability features** that the Node.js implementation simply does not have. On a fair JSON/stdio comparison, tail latency is **1.7x better** at p99. The binary protocol, memory-mapped IPC, and cryptographic integrity verification are capabilities that cannot be replicated in a garbage-collected runtime.
+VELOCITY-MCP is **up to 26.2x faster** on the NDA/shmem transport (3µs round-trip), uses **8x less memory**, and provides **security, observability, and durability features** that the Node.js implementation simply does not have. On a fair JSON/stdio comparison, average latency is **1.5x better**. The binary protocol, memory-mapped IPC, and cryptographic integrity verification are capabilities that cannot be replicated in a garbage-collected runtime.
 
 For teams that need maximum performance, security hardening, and operational visibility — VELOCITY-MCP is the clear choice.

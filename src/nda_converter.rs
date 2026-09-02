@@ -115,8 +115,15 @@ fn convert_xlsx(file_path: &str) -> Result<Vec<u8>, String> {
     compiler.add_triple(&sheet_id, "TYPE", "SpreadsheetGrid");
     compiler.add_triple(&sheet_id, "FILENAME", filename);
 
-    let file_bytes = std::fs::read(file_path)
-        .map_err(|e| format!("Failed to read XLSX: {}", e))?;
+    let file_bytes = {
+        let meta = std::fs::metadata(file_path)
+            .map_err(|e| format!("Failed to stat XLSX: {}", e))?;
+        if meta.len() > 50 * 1024 * 1024 {
+            return Err("XLSX file exceeds 50MB limit".to_string());
+        }
+        std::fs::read(file_path)
+            .map_err(|e| format!("Failed to read XLSX: {}", e))?
+    };
 
     let (_shared_strings, cells) = parse_xlsx_data(&file_bytes)?;
 
@@ -335,8 +342,15 @@ fn convert_docx(file_path: &str) -> Result<Vec<u8>, String> {
     compiler.add_triple(&doc_id, "TYPE", "FlowLayoutDocument");
     compiler.add_triple(&doc_id, "FILENAME", filename);
 
-    let file_bytes = std::fs::read(file_path)
-        .map_err(|e| format!("Failed to read DOCX: {}", e))?;
+    let file_bytes = {
+        let meta = std::fs::metadata(file_path)
+            .map_err(|e| format!("Failed to stat DOCX: {}", e))?;
+        if meta.len() > 50 * 1024 * 1024 {
+            return Err("DOCX file exceeds 50MB limit".to_string());
+        }
+        std::fs::read(file_path)
+            .map_err(|e| format!("Failed to read DOCX: {}", e))?
+    };
 
     let paragraphs = parse_docx_paragraphs(&file_bytes)?;
 
@@ -457,8 +471,15 @@ fn convert_pdf(file_path: &str) -> Result<Vec<u8>, String> {
     compiler.add_triple(&pdf_id, "TYPE", "PdfDocument");
     compiler.add_triple(&pdf_id, "FILENAME", filename);
 
-    let file_bytes = std::fs::read(file_path)
-        .map_err(|e| format!("Failed to read PDF: {}", e))?;
+    let file_bytes = {
+        let meta = std::fs::metadata(file_path)
+            .map_err(|e| format!("Failed to stat PDF: {}", e))?;
+        if meta.len() > 50 * 1024 * 1024 {
+            return Err("PDF file exceeds 50MB limit".to_string());
+        }
+        std::fs::read(file_path)
+            .map_err(|e| format!("Failed to read PDF: {}", e))?
+    };
 
     // Try to extract text from PDF using ASCII + regex (same approach as C#)
     let ascii_text = String::from_utf8_lossy(&file_bytes);
@@ -524,8 +545,15 @@ fn convert_image(file_path: &str, ocr_text: Option<&str>) -> Result<Vec<u8>, Str
     compiler.add_triple(&img_id, "FILENAME", filename);
     compiler.add_triple(&img_id, "FORMAT", &ext.to_uppercase());
 
-    let file_bytes = std::fs::read(file_path)
-        .map_err(|e| format!("Failed to read image: {}", e))?;
+    let file_bytes = {
+        let meta = std::fs::metadata(file_path)
+            .map_err(|e| format!("Failed to stat image: {}", e))?;
+        if meta.len() > 50 * 1024 * 1024 {
+            return Err("Image file exceeds 50MB limit".to_string());
+        }
+        std::fs::read(file_path)
+            .map_err(|e| format!("Failed to read image: {}", e))?
+    };
 
     let mime_type = match ext.as_str() {
         "png" => "image/png",
@@ -569,8 +597,15 @@ fn convert_code(file_path: &str) -> Result<Vec<u8>, String> {
     compiler.add_triple(&code_id, "FILENAME", filename);
     compiler.add_triple(&code_id, "LANGUAGE", &ext.to_uppercase());
 
-    let content = std::fs::read_to_string(file_path)
-        .map_err(|e| format!("Failed to read source file: {}", e))?;
+    let content = {
+        let meta = std::fs::metadata(file_path)
+            .map_err(|e| format!("Failed to stat source file: {}", e))?;
+        if meta.len() > 10 * 1024 * 1024 {
+            return Err("Source file exceeds 10MB limit".to_string());
+        }
+        std::fs::read_to_string(file_path)
+            .map_err(|e| format!("Failed to read source file: {}", e))?
+    };
     let lines: Vec<&str> = content.lines().collect();
 
     compiler.add_triple(&code_id, "LINE_COUNT", &lines.len().to_string());
@@ -619,8 +654,15 @@ fn convert_binary(file_path: &str) -> Result<Vec<u8>, String> {
     compiler.add_triple(&bin_id, "TYPE", "BinaryPayload");
     compiler.add_triple(&bin_id, "FILENAME", filename);
 
-    let bytes = std::fs::read(file_path)
-        .map_err(|e| format!("Failed to read binary file: {}", e))?;
+    let bytes = {
+        let meta = std::fs::metadata(file_path)
+            .map_err(|e| format!("Failed to stat binary file: {}", e))?;
+        if meta.len() > 50 * 1024 * 1024 {
+            return Err("Binary file exceeds 50MB limit".to_string());
+        }
+        std::fs::read(file_path)
+            .map_err(|e| format!("Failed to read binary file: {}", e))?
+    };
     compiler.add_triple(&bin_id, "SIZE_BYTES", &bytes.len().to_string());
 
     use base64::{Engine as _, engine::general_purpose};
@@ -785,5 +827,287 @@ mod tests {
         let result = convert_to_nda("/nonexistent/path/file.csv");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn test_convert_pdf_with_text_objects() {
+        let dir = std::env::temp_dir();
+        let pdf_path = dir.join("test_velocity_convert.pdf");
+        // Fake PDF with Tj text objects that the regex will extract
+        let fake_pdf = b"%PDF-1.4\n(Some Header Text) Tj\n(Body content here) Tj\n(Another line) Tj\n%%EOF";
+        std::fs::write(&pdf_path, fake_pdf).unwrap();
+
+        let result = convert_to_nda(pdf_path.to_str().unwrap());
+        assert!(result.is_ok(), "PDF conversion should succeed: {:?}", result);
+        let nda_data = result.unwrap();
+
+        let doc = NdaDocument::read(&nda_data).unwrap();
+        let has_type = doc.triples.iter().any(|t| {
+            doc.get_string(t.predicate_offset).unwrap_or_default() == "TYPE"
+            && doc.get_string(t.object_offset).unwrap_or_default() == "PdfDocument"
+        });
+        assert!(has_type, "Should have TYPE=PdfDocument triple");
+        assert!(doc.commands.len() > 0, "Should have display commands");
+
+        let _ = std::fs::remove_file(&pdf_path);
+    }
+
+    #[test]
+    fn test_convert_pdf_fallback_no_text() {
+        let dir = std::env::temp_dir();
+        let pdf_path = dir.join("test_velocity_scan.pdf");
+        // Fake PDF with no Tj patterns — should trigger fallback text
+        let fake_pdf = b"%PDF-1.4\nno text objects here\n%%EOF";
+        std::fs::write(&pdf_path, fake_pdf).unwrap();
+
+        let result = convert_to_nda(pdf_path.to_str().unwrap());
+        assert!(result.is_ok());
+        let nda_data = result.unwrap();
+        let doc = NdaDocument::read(&nda_data).unwrap();
+
+        // Should have the fallback "Scanned PDF" text
+        let has_fallback = doc.triples.iter().any(|t| {
+            let text = doc.get_string(t.object_offset).unwrap_or_default();
+            text.contains("OCR") || text.contains("vision model")
+        });
+        assert!(has_fallback, "Should have fallback OCR text for scanned PDF");
+
+        let _ = std::fs::remove_file(&pdf_path);
+    }
+
+    #[test]
+    fn test_convert_image_png() {
+        let dir = std::env::temp_dir();
+        let img_path = dir.join("test_velocity_convert.png");
+        // Minimal valid PNG (1x1 pixel)
+        let minimal_png: &[u8] = &[
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
+            0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, // IHDR chunk
+            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, // 1x1
+            0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE, // 8-bit RGB
+            0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, // IDAT chunk
+            0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00, 0x00,
+            0x00, 0x02, 0x00, 0x01, 0xE2, 0x21, 0xBC, 0x33,
+            0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, // IEND chunk
+            0xAE, 0x42, 0x60, 0x82,
+        ];
+        std::fs::write(&img_path, minimal_png).unwrap();
+
+        let result = convert_to_nda(img_path.to_str().unwrap());
+        assert!(result.is_ok(), "Image conversion should succeed: {:?}", result);
+        let nda_data = result.unwrap();
+
+        let doc = NdaDocument::read(&nda_data).unwrap();
+        let has_type = doc.triples.iter().any(|t| {
+            doc.get_string(t.predicate_offset).unwrap_or_default() == "TYPE"
+            && doc.get_string(t.object_offset).unwrap_or_default() == "ImageDocument"
+        });
+        assert!(has_type, "Should have TYPE=ImageDocument triple");
+
+        let has_format = doc.triples.iter().any(|t| {
+            doc.get_string(t.predicate_offset).unwrap_or_default() == "FORMAT"
+            && doc.get_string(t.object_offset).unwrap_or_default() == "PNG"
+        });
+        assert!(has_format, "Should have FORMAT=PNG triple");
+
+        // Should have AI_OCR_CAPTION since no OCR text provided
+        let has_ocr_caption = doc.triples.iter().any(|t| {
+            doc.get_string(t.predicate_offset).unwrap_or_default() == "AI_OCR_CAPTION"
+        });
+        assert!(has_ocr_caption, "Should have AI_OCR_CAPTION for image without OCR");
+
+        let _ = std::fs::remove_file(&img_path);
+    }
+
+    #[test]
+    fn test_convert_code_with_comments() {
+        let dir = std::env::temp_dir();
+        let code_path = dir.join("test_velocity_comments.js");
+        let code = "// This is a comment\nimport React from 'react';\nconst x = 42;\n/* block comment */\n";
+        std::fs::write(&code_path, code).unwrap();
+
+        let result = convert_to_nda(code_path.to_str().unwrap());
+        assert!(result.is_ok(), "Code with comments conversion should succeed: {:?}", result);
+        let nda_data = result.unwrap();
+
+        let doc = NdaDocument::read(&nda_data).unwrap();
+        let has_type = doc.triples.iter().any(|t| {
+            doc.get_string(t.predicate_offset).unwrap_or_default() == "TYPE"
+            && doc.get_string(t.object_offset).unwrap_or_default() == "SourceCode"
+        });
+        assert!(has_type, "Should have TYPE=SourceCode triple");
+
+        let has_lang = doc.triples.iter().any(|t| {
+            doc.get_string(t.predicate_offset).unwrap_or_default() == "LANGUAGE"
+            && doc.get_string(t.object_offset).unwrap_or_default() == "JS"
+        });
+        assert!(has_lang, "Should have LANGUAGE=JS triple");
+
+        let _ = std::fs::remove_file(&code_path);
+    }
+
+    #[test]
+    fn test_convert_csv_with_positive_values() {
+        let dir = std::env::temp_dir();
+        let csv_path = dir.join("test_velocity_positive.csv");
+        std::fs::write(&csv_path, "Item,Change\nStock A,+25.5\nStock B,-10.3\nStock C,normal\n").unwrap();
+
+        let result = convert_to_nda(csv_path.to_str().unwrap());
+        assert!(result.is_ok());
+        let nda_data = result.unwrap();
+        let doc = NdaDocument::read(&nda_data).unwrap();
+        assert!(doc.commands.len() > 0, "Should have display commands for CSV with +/- values");
+
+        let _ = std::fs::remove_file(&csv_path);
+    }
+
+    #[test]
+    fn test_convert_xlsx_round_trip() {
+        use std::io::Write;
+        let dir = std::env::temp_dir();
+        let xlsx_path = dir.join("test_velocity_convert.xlsx");
+
+        // Create a minimal XLSX (zip with sharedStrings.xml and sheet1.xml)
+        let file = std::fs::File::create(&xlsx_path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+
+        // Shared strings
+        let ss_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<si><t>Header1</t></si>
+<si><t>Header2</t></si>
+<si><t>Value1</t></si>
+<si><t>Value2</t></si>
+</st>"#;
+        zip.start_file("xl/sharedStrings.xml", options).unwrap();
+        zip.write_all(ss_xml.as_bytes()).unwrap();
+
+        // Sheet1 with cells referencing shared strings
+        let sheet_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<sheetData>
+<row r="1">
+<c r="A1" t="s"><v>0</v></c>
+<c r="B1" t="s"><v>1</v></c>
+</row>
+<row r="2">
+<c r="A2" t="s"><v>2</v></c>
+<c r="B2" t="s"><v>3</v></c>
+</row>
+</sheetData>
+</worksheet>"#;
+        zip.start_file("xl/worksheets/sheet1.xml", options).unwrap();
+        zip.write_all(sheet_xml.as_bytes()).unwrap();
+
+        zip.finish().unwrap();
+
+        let result = convert_to_nda(xlsx_path.to_str().unwrap());
+        assert!(result.is_ok(), "XLSX conversion should succeed: {:?}", result);
+        let nda_data = result.unwrap();
+
+        let doc = NdaDocument::read(&nda_data).unwrap();
+        let has_type = doc.triples.iter().any(|t| {
+            doc.get_string(t.predicate_offset).unwrap_or_default() == "TYPE"
+            && doc.get_string(t.object_offset).unwrap_or_default() == "SpreadsheetGrid"
+        });
+        assert!(has_type, "Should have TYPE=SpreadsheetGrid triple for XLSX");
+
+        // Should have cell values from shared strings
+        let has_cell = doc.triples.iter().any(|t| {
+            doc.get_string(t.predicate_offset).unwrap_or_default() == "VALUE"
+            && doc.get_string(t.object_offset).unwrap_or_default() == "Header1"
+        });
+        assert!(has_cell, "Should have cell VALUE=Header1 from shared strings");
+
+        let _ = std::fs::remove_file(&xlsx_path);
+    }
+
+    #[test]
+    fn test_convert_docx_round_trip() {
+        use std::io::Write;
+        let dir = std::env::temp_dir();
+        let docx_path = dir.join("test_velocity_convert.docx");
+
+        // Create a minimal DOCX (zip with word/document.xml)
+        let file = std::fs::File::create(&docx_path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+
+        let doc_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+<w:p>
+<w:r><w:t>First paragraph text</w:t></w:r>
+</w:p>
+<w:p>
+<w:r><w:t>Second paragraph here</w:t></w:r>
+</w:p>
+</w:body>
+</w:document>"#;
+        zip.start_file("word/document.xml", options).unwrap();
+        zip.write_all(doc_xml.as_bytes()).unwrap();
+
+        zip.finish().unwrap();
+
+        let result = convert_to_nda(docx_path.to_str().unwrap());
+        assert!(result.is_ok(), "DOCX conversion should succeed: {:?}", result);
+        let nda_data = result.unwrap();
+
+        let doc = NdaDocument::read(&nda_data).unwrap();
+        let has_type = doc.triples.iter().any(|t| {
+            doc.get_string(t.predicate_offset).unwrap_or_default() == "TYPE"
+            && doc.get_string(t.object_offset).unwrap_or_default() == "FlowLayoutDocument"
+        });
+        assert!(has_type, "Should have TYPE=FlowLayoutDocument triple for DOCX");
+
+        // Should have paragraph text
+        let has_para = doc.triples.iter().any(|t| {
+            let text = doc.get_string(t.object_offset).unwrap_or_default();
+            text.contains("First paragraph") || text.contains("Second paragraph")
+        });
+        assert!(has_para, "Should have paragraph text from DOCX");
+
+        let _ = std::fs::remove_file(&docx_path);
+    }
+
+    #[test]
+    fn test_convert_xlsx_invalid_zip_returns_error() {
+        let dir = std::env::temp_dir();
+        let xlsx_path = dir.join("test_velocity_bad.xlsx");
+        std::fs::write(&xlsx_path, b"not a zip file").unwrap();
+
+        let result = convert_to_nda(xlsx_path.to_str().unwrap());
+        assert!(result.is_err(), "Invalid XLSX should return error");
+        assert!(result.unwrap_err().contains("zip"));
+
+        let _ = std::fs::remove_file(&xlsx_path);
+    }
+
+    #[test]
+    fn test_convert_docx_invalid_zip_returns_error() {
+        let dir = std::env::temp_dir();
+        let docx_path = dir.join("test_velocity_bad.docx");
+        std::fs::write(&docx_path, b"not a zip file").unwrap();
+
+        let result = convert_to_nda(docx_path.to_str().unwrap());
+        assert!(result.is_err(), "Invalid DOCX should return error");
+        assert!(result.unwrap_err().contains("zip"));
+
+        let _ = std::fs::remove_file(&docx_path);
+    }
+
+    #[test]
+    fn test_random_hex_id_format() {
+        let id1 = random_hex_id();
+        let id2 = random_hex_id();
+        assert_eq!(id1.len(), 8, "Hex ID should be 8 chars");
+        assert!(id1.chars().all(|c| c.is_ascii_hexdigit()), "Should be hex digits");
+        // IDs might collide if nanos are same, but format should be consistent
+        assert_eq!(id2.len(), 8);
     }
 }

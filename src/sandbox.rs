@@ -277,8 +277,16 @@ impl Sandbox {
     /// Write a file into the sandbox's working directory.
     /// Path traversal is blocked — the resolved path must stay within work_dir.
     pub fn write_file(&self, name: &str, contents: &[u8]) -> Result<PathBuf, String> {
+        let name_path = Path::new(name);
+        if name_path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+            return Err("Path traversal detected in sandbox file write".to_string());
+        }
         let path = self.work_dir.join(name);
-        if !path.starts_with(&self.work_dir) {
+        let canonical_work_dir = std::fs::canonicalize(&self.work_dir)
+            .map_err(|e| format!("Failed to canonicalize sandbox dir: {}", e))?;
+        let canonical_path = std::fs::canonicalize(path.parent().unwrap_or(&path))
+            .map_err(|e| format!("Failed to canonicalize parent dir: {}", e))?;
+        if !canonical_path.starts_with(&canonical_work_dir) {
             return Err("Path traversal detected in sandbox file write".to_string());
         }
         std::fs::write(&path, contents)
@@ -580,17 +588,16 @@ fn apply_job_object_limits(child: &mut std::process::Child, max_memory: usize) {
         // For simplicity, use a byte array and set the fields we need
         let mut info = [0u8; 128]; // Large enough for JOBOBJECT_EXTENDED_LIMIT_INFORMATION
 
+        let base = info.as_mut_ptr();
+
         // LimitFlags at offset 24 (DWORD = 4 bytes)
-        let flags_ptr = info.as_mut_ptr().add(24) as *mut u32;
-        *flags_ptr = JOB_OBJECT_LIMIT_WORKINGSET;
+        std::ptr::write_unaligned(base.add(24) as *mut u32, JOB_OBJECT_LIMIT_WORKINGSET);
 
         // MinimumWorkingSetSize at offset 0 (SIZE_T = 8 bytes on 64-bit)
-        let min_ptr = info.as_mut_ptr() as *mut usize;
-        *min_ptr = min_set;
+        std::ptr::write_unaligned(base as *mut usize, min_set);
 
         // MaximumWorkingSetSize at offset 8 (SIZE_T = 8 bytes on 64-bit)
-        let max_ptr = info.as_mut_ptr().add(8) as *mut usize;
-        *max_ptr = max_set;
+        std::ptr::write_unaligned(base.add(8) as *mut usize, max_set);
 
         let set_result = SetInformationJobObject(
             job,
@@ -681,7 +688,8 @@ fn category_label(cat: &ViolationCategory) -> &'static str {
 /// Sanitize an error message to prevent leaking internal paths or system details.
 pub fn sanitize_error(msg: &str) -> String {
     let truncated = if msg.len() > 500 {
-        format!("{}... [truncated]", &msg[..500])
+        let cut = msg.floor_char_boundary(500);
+        format!("{}... [truncated]", &msg[..cut])
     } else {
         msg.to_string()
     };
@@ -752,6 +760,31 @@ mod tests {
         assert!(!sanitized.contains("C:\\Users"));
         assert!(!sanitized.contains("admin"));
         assert!(sanitized.contains("<path>"));
+    }
+
+    #[test]
+    fn test_sanitize_error_removes_unix_paths() {
+        let msg = "Failed to read /home/user/secret/data.csv: no such file";
+        let sanitized = sanitize_error(msg);
+        assert!(!sanitized.contains("/home/user"));
+        assert!(!sanitized.contains("secret"));
+        assert!(sanitized.contains("<path>"));
+        assert!(sanitized.contains("no such file"));
+    }
+
+    #[test]
+    fn test_sanitize_error_preserves_classification_keywords() {
+        let cases = vec![
+            ("not found", "not found"),
+            ("Permission denied (os error 13)", "Permission denied"),
+            ("required field missing", "required"),
+            ("operation timed out", "timed out"),
+            ("connection refused", "connection"),
+        ];
+        for (input, keyword) in cases {
+            let sanitized = sanitize_error(input);
+            assert!(sanitized.contains(keyword), "sanitize_error stripped keyword {:?} from {:?}", keyword, input);
+        }
     }
 
     #[test]
@@ -886,5 +919,80 @@ mod tests {
             .with_allowed_path("/tmp");
         assert!(caps.allow_network);
         assert!(caps.is_path_allowed(Path::new("/tmp/test")));
+    }
+
+    #[test]
+    fn test_write_file_path_traversal() {
+        let sandbox = Sandbox::new().unwrap();
+        let result = sandbox.write_file("../../../etc/passwd", b"hacked");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Path traversal"));
+    }
+
+    #[test]
+    fn test_is_path_allowed_lexical_fallback() {
+        let caps = ProcessCapabilities::restricted()
+            .with_allowed_path("/tmp/sandbox_test_lex");
+        // Non-existent path falls through to lexical check
+        let path = Path::new("/tmp/sandbox_test_lex/subdir/file.txt");
+        assert!(caps.is_path_allowed(path));
+
+        let outside = Path::new("/tmp/other_dir/file.txt");
+        assert!(!caps.is_path_allowed(outside));
+    }
+
+    #[test]
+    fn test_is_path_allowed_permissive_empty_paths() {
+        let caps = ProcessCapabilities::permissive();
+        // permissive has empty allowed_paths AND allow_network=true → is_path_allowed returns true
+        assert!(caps.is_path_allowed(Path::new("/any/path/whatever")));
+    }
+
+    #[test]
+    fn test_sanitize_error_short_message_unchanged() {
+        let msg = "simple error";
+        let sanitized = sanitize_error(msg);
+        assert_eq!(sanitized, "simple error");
+    }
+
+    #[test]
+    fn test_sanitize_error_exactly_at_limit() {
+        let msg = "a".repeat(500);
+        let sanitized = sanitize_error(&msg);
+        assert!(!sanitized.contains("[truncated]"));
+        assert_eq!(sanitized.len(), 500);
+    }
+
+    #[test]
+    fn test_sandbox_drop_cleanup() {
+        let work_dir;
+        {
+            let sandbox = Sandbox::new().unwrap();
+            work_dir = sandbox.work_dir().to_path_buf();
+            sandbox.write_file("temp.txt", b"data").unwrap();
+            assert!(work_dir.exists());
+        }
+        // After drop, the directory should be cleaned up
+        assert!(!work_dir.exists());
+    }
+
+    #[test]
+    fn test_exit_status_info_from_success() {
+        let status = std::process::Command::new("echo")
+            .arg("test")
+            .status()
+            .unwrap();
+        let info = ExitStatusInfo::from(status);
+        assert!(info.success);
+        assert_eq!(info.code, Some(0));
+    }
+
+    #[test]
+    fn test_category_labels() {
+        assert_eq!(category_label(&ViolationCategory::FileSystem), "FileSystem");
+        assert_eq!(category_label(&ViolationCategory::Network), "Network");
+        assert_eq!(category_label(&ViolationCategory::Interpreter), "Interpreter");
+        assert_eq!(category_label(&ViolationCategory::Memory), "Memory");
+        assert_eq!(category_label(&ViolationCategory::Timeout), "Timeout");
     }
 }

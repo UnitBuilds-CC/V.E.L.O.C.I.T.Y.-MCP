@@ -218,4 +218,97 @@ mod tests {
         assert!(json_err["error"]["message"].as_str().unwrap().contains("Method not found"));
         assert_eq!(json_err["id"], 1);
     }
+
+    #[test]
+    fn test_all_error_constructors() {
+        let err = VelocityError::resource("File not found");
+        assert!(err.to_string().contains("File not found"));
+        assert!(err.to_string().contains("Resource error"));
+
+        let err = VelocityError::config("Missing required field");
+        assert!(err.to_string().contains("Missing required field"));
+        assert!(err.to_string().contains("Configuration error"));
+
+        let err = VelocityError::rate_limit("Too many requests");
+        assert!(err.to_string().contains("Too many requests"));
+        assert!(err.to_string().contains("Rate limit exceeded"));
+
+        let err = VelocityError::internal("Unexpected state");
+        assert!(err.to_string().contains("Unexpected state"));
+        assert!(err.to_string().contains("Internal error"));
+    }
+
+    #[test]
+    fn test_to_json_rpc_error_all_variants() {
+        let id = serde_json::json!(42);
+
+        let err = VelocityError::registry("Tool not found");
+        let json_err = err.to_json_rpc_error(id.clone());
+        assert_eq!(json_err["error"]["code"], -32000);
+        assert!(json_err["error"]["message"].as_str().unwrap().contains("Tool not found"));
+
+        let err = VelocityError::resource("File missing");
+        let json_err = err.to_json_rpc_error(id.clone());
+        assert_eq!(json_err["error"]["code"], -32000);
+        assert!(json_err["error"]["message"].as_str().unwrap().contains("File missing"));
+
+        let err = VelocityError::config("Bad config");
+        let json_err = err.to_json_rpc_error(id.clone());
+        assert_eq!(json_err["error"]["code"], -32000);
+        assert!(json_err["error"]["message"].as_str().unwrap().contains("Bad config"));
+
+        let err = VelocityError::auth("Unauthorized");
+        let json_err = err.to_json_rpc_error(id.clone());
+        assert_eq!(json_err["error"]["code"], -32000);
+        assert!(json_err["error"]["message"].as_str().unwrap().contains("Unauthorized"));
+
+        let err = VelocityError::rate_limit("Too fast");
+        let json_err = err.to_json_rpc_error(id.clone());
+        assert_eq!(json_err["error"]["code"], -32000);
+        assert!(json_err["error"]["message"].as_str().unwrap().contains("Too fast"));
+
+        let err = VelocityError::internal("Panic avoided");
+        let json_err = err.to_json_rpc_error(id.clone());
+        assert_eq!(json_err["error"]["code"], -32603);
+        assert!(json_err["error"]["message"].as_str().unwrap().contains("Panic avoided"));
+    }
+
+    #[test]
+    fn test_from_io_error() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file missing");
+        let vel_err: VelocityError = io_err.into();
+        assert!(vel_err.to_string().contains("file missing"));
+        assert!(vel_err.to_string().contains("IO error"));
+
+        let json_err = vel_err.to_json_rpc_error(serde_json::json!(1));
+        assert_eq!(json_err["error"]["code"], -32000);
+    }
+
+    #[test]
+    fn test_from_json_error() {
+        let json_err = serde_json::from_str::<serde_json::Value>("invalid json{{{").unwrap_err();
+        let vel_err: VelocityError = json_err.into();
+        assert!(vel_err.to_string().contains("JSON error"));
+
+        let rpc_err = vel_err.to_json_rpc_error(serde_json::json!(2));
+        assert_eq!(rpc_err["error"]["code"], -32700);
+    }
+
+    #[test]
+    fn test_error_context_empty() {
+        let ctx = ErrorContext::new("nda", "convert");
+        let formatted = ctx.format();
+        assert!(formatted.contains("module=nda"));
+        assert!(formatted.contains("operation=convert"));
+        assert!(!formatted.contains("=") || formatted.matches('=').count() == 2);
+    }
+
+    #[test]
+    fn test_velocity_result_type_alias() {
+        let ok_result: VelocityResult<i32> = Ok(42);
+        assert_eq!(ok_result.unwrap(), 42);
+
+        let err_result: VelocityResult<i32> = Err(VelocityError::internal("test"));
+        assert!(err_result.is_err());
+    }
 }

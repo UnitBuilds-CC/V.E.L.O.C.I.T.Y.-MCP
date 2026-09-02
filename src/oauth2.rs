@@ -436,9 +436,13 @@ pub fn send_webhook(connector_id: &str, event: &WebhookEvent) -> Result<WebhookD
         .map_err(|e| format!("Failed to serialize webhook event: {}", e))?;
     
     // Compute signature if secret is configured
-    let signature = webhook_config.secret.as_ref().map(|secret| {
-        compute_webhook_signature(&payload, secret).ok()
-    }).flatten();
+    let signature = match &webhook_config.secret {
+        Some(secret) => Some(
+            compute_webhook_signature(&payload, secret)
+                .map_err(|e| format!("Failed to compute webhook signature: {}", e))?
+        ),
+        None => None,
+    };
     
     // Send webhook with retry logic
     let max_attempts = 3;
@@ -805,6 +809,20 @@ pub fn call_connector(connector_id: &str, request: &ConnectorRequest) -> Result<
         .and_then(|r| r.get(connector_id).cloned())
         .ok_or_else(|| format!("Connector not found: {}", connector_id))?;
 
+    // Validate path to prevent SSRF via path manipulation
+    if !request.path.starts_with('/') {
+        return Err("Connector path must start with '/'".to_string());
+    }
+    if request.path.contains('@') {
+        return Err("Connector path must not contain '@'".to_string());
+    }
+    if request.path.contains("://") || request.path.starts_with("//") {
+        return Err("Connector path must not contain scheme or authority".to_string());
+    }
+    if request.path.contains('\0') || request.path.contains('\r') || request.path.contains('\n') {
+        return Err("Connector path must not contain control characters".to_string());
+    }
+
     let url = format!("{}{}", config.base_url, request.path);
 
     let mut req_builder = match request.method.as_str() {
@@ -831,9 +849,15 @@ pub fn call_connector(connector_id: &str, request: &ConnectorRequest) -> Result<
         _ => {}
     }
 
-    // Add custom headers
+    // Add custom headers with injection prevention
     if let Some(headers) = &request.headers {
         for (k, v) in headers {
+            if k.contains('\r') || k.contains('\n') || k.contains(':') {
+                return Err(format!("Invalid header name: contains control characters or colon"));
+            }
+            if v.contains('\r') || v.contains('\n') {
+                return Err(format!("Invalid header value for '{}': contains control characters", k));
+            }
             req_builder = req_builder.set(k, v);
         }
     }
@@ -1270,5 +1294,149 @@ mod tests {
         let result = handle_incoming_webhook("webhook_test", payload, Some("invalid"));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Invalid webhook signature"));
+    }
+
+    #[test]
+    fn test_connector_path_ssrf_prevention() {
+        // Register a test connector
+        let config = ConnectorConfig {
+            id: "ssrf_test".to_string(),
+            name: "SSRF Test".to_string(),
+            base_url: "https://api.example.com".to_string(),
+            auth_type: "none".to_string(),
+            oauth2_config: None,
+            webhook_config: None,
+        };
+        register_connector(config);
+
+        // Valid path should pass validation (will fail on network, not validation)
+        let request = ConnectorRequest {
+            method: "GET".to_string(),
+            path: "/users/123".to_string(),
+            body: None,
+            headers: None,
+        };
+        let result = call_connector("ssrf_test", &request);
+        // Will fail on network, but not on path validation
+        assert!(result.is_err());
+        assert!(!result.unwrap_err().contains("path must"));
+
+        // Path without leading slash should be rejected
+        let request = ConnectorRequest {
+            method: "GET".to_string(),
+            path: "users/123".to_string(),
+            body: None,
+            headers: None,
+        };
+        let result = call_connector("ssrf_test", &request);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("must start with '/'"));
+
+        // Path with @ should be rejected (prevents user:pass@host injection)
+        let request = ConnectorRequest {
+            method: "GET".to_string(),
+            path: "/@evil.com/steal".to_string(),
+            body: None,
+            headers: None,
+        };
+        let result = call_connector("ssrf_test", &request);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("must not contain '@'"));
+
+        // Path with :// should be rejected (prevents scheme injection)
+        let request = ConnectorRequest {
+            method: "GET".to_string(),
+            path: "/redirect://evil.com".to_string(),
+            body: None,
+            headers: None,
+        };
+        let result = call_connector("ssrf_test", &request);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("must not contain scheme"));
+
+        // Path starting with // should be rejected (prevents authority override)
+        let request = ConnectorRequest {
+            method: "GET".to_string(),
+            path: "//evil.com/steal".to_string(),
+            body: None,
+            headers: None,
+        };
+        let result = call_connector("ssrf_test", &request);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("must not contain scheme"));
+
+        // Path with null byte should be rejected
+        let request = ConnectorRequest {
+            method: "GET".to_string(),
+            path: "/users\0evil".to_string(),
+            body: None,
+            headers: None,
+        };
+        let result = call_connector("ssrf_test", &request);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("control characters"));
+
+        // Path with CR/LF should be rejected
+        let request = ConnectorRequest {
+            method: "GET".to_string(),
+            path: "/users\r\nX-Evil: injected".to_string(),
+            body: None,
+            headers: None,
+        };
+        let result = call_connector("ssrf_test", &request);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("control characters"));
+    }
+
+    #[test]
+    fn test_connector_header_injection_prevention() {
+        let config = ConnectorConfig {
+            id: "header_test".to_string(),
+            name: "Header Test".to_string(),
+            base_url: "https://api.example.com".to_string(),
+            auth_type: "none".to_string(),
+            oauth2_config: None,
+            webhook_config: None,
+        };
+        register_connector(config);
+
+        // Header name with colon should be rejected
+        let mut headers = HashMap::new();
+        headers.insert("X-Bad: Header".to_string(), "value".to_string());
+        let request = ConnectorRequest {
+            method: "GET".to_string(),
+            path: "/test".to_string(),
+            body: None,
+            headers: Some(headers),
+        };
+        let result = call_connector("header_test", &request);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid header name"));
+
+        // Header name with CR should be rejected
+        let mut headers = HashMap::new();
+        headers.insert("X-Bad\rHeader".to_string(), "value".to_string());
+        let request = ConnectorRequest {
+            method: "GET".to_string(),
+            path: "/test".to_string(),
+            body: None,
+            headers: Some(headers),
+        };
+        let result = call_connector("header_test", &request);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid header name"));
+
+        // Header value with LF should be rejected
+        let mut headers = HashMap::new();
+        headers.insert("X-Normal".to_string(), "value\ninjected".to_string());
+        let request = ConnectorRequest {
+            method: "GET".to_string(),
+            path: "/test".to_string(),
+            body: None,
+            headers: Some(headers),
+        };
+        let result = call_connector("header_test", &request);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid header value"));
     }
 }

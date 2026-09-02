@@ -290,7 +290,7 @@ proptest! {
         use serde_json::json;
         let id = json!(String::from_utf8_lossy(&request_id).to_string());
         let data = json!({"key": "value", "num": 42});
-        let frame = nda_native::build_nda_request(method_byte, &id, &data);
+        let frame = nda_native::build_nda_request(method_byte, &id, &data).unwrap();
 
         prop_assert!(nda_native::is_nda_frame(&frame));
 
@@ -313,7 +313,7 @@ proptest! {
         tamper_byte in any::<u8>(),
     ) {
         use serde_json::json;
-        let frame = nda_native::build_nda_request(nda_native::METHOD_PING, &json!(1), &json!({}));
+        let frame = nda_native::build_nda_request(nda_native::METHOD_PING, &json!(1), &json!({})).unwrap();
         let mut tampered = frame.clone();
 
         let pos = tamper_offset % tampered.len();
@@ -353,7 +353,7 @@ proptest! {
     #[test]
     fn prop_tlv_round_trip_arbitrary_json(value in arb_json_value()) {
         let mut encoded = Vec::new();
-        nda_native::encode_json_value(&value, &mut encoded);
+        nda_native::encode_json_value(&value, &mut encoded).unwrap();
         let (decoded, consumed) = nda_native::decode_json_value(&encoded)
             .expect("TLV decode must succeed for encoded value");
         prop_assert_eq!(consumed, encoded.len());
@@ -374,7 +374,7 @@ proptest! {
         use serde_json::json;
         let id = json!(req_id);
         let result = json!(msg);
-        let frame = nda_native::build_nda_response(status, &id, &result);
+        let frame = nda_native::build_nda_response(status, &id, &result).unwrap();
 
         prop_assert!(nda_native::is_nda_frame(&frame));
         prop_assert!(frame.len() >= nda_native::FRAME_HEADER_SIZE + 1);
@@ -402,7 +402,7 @@ proptest! {
     fn prop_nda_native_truncated_frame_never_panic(
         valid_frame in {
             use serde_json::json;
-            Just(nda_native::build_nda_request(nda_native::METHOD_TOOLS_CALL, &json!(1), &json!({"name": "test", "arguments": {"path": "/tmp/file.txt"}})))
+            Just(nda_native::build_nda_request(nda_native::METHOD_TOOLS_CALL, &json!(1), &json!({"name": "test", "arguments": {"path": "/tmp/file.txt"}})).unwrap())
         },
         truncate_at in 0usize..300,
     ) {

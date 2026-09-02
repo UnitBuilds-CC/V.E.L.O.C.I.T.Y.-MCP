@@ -81,8 +81,8 @@ impl RateLimiter {
 
         let elapsed_ms = now - last;
 
-        // Calculate new tokens to add
-        let new_tokens_scaled = elapsed_ms * (self.rate as u64); // tokens * 1000 / 1000ms
+        // Calculate new tokens to add (saturating to prevent overflow)
+        let new_tokens_scaled = elapsed_ms.saturating_mul(self.rate as u64);
 
         // Try to update the refill timestamp (only one thread wins)
         if self
@@ -93,7 +93,7 @@ impl RateLimiter {
             // We won the refill race; add tokens
             loop {
                 let current = self.tokens_scaled.load(Ordering::Relaxed);
-                let new_val = (current + new_tokens_scaled).min(self.burst_scaled);
+                let new_val = current.saturating_add(new_tokens_scaled).min(self.burst_scaled);
                 match self.tokens_scaled.compare_exchange_weak(
                     current,
                     new_val,

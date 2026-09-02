@@ -332,7 +332,7 @@ fn get_db_connection() -> Result<std::sync::MutexGuard<'static, Option<rusqlite:
     if guard.is_none() {
         let conn = match DATABASE_PATH.get() {
             Some(path) => rusqlite::Connection::open(path)
-                .map_err(|e| format!("Failed to open database at {}: {}", path, e))?,
+                .map_err(|e| format!("Failed to open database: {}", e))?,
             None => rusqlite::Connection::open_in_memory()
                 .map_err(|e| format!("Failed to open in-memory database: {}", e))?,
         };
@@ -563,8 +563,13 @@ pub fn register_structured_prompt(
     args: Vec<(&str, &str, bool)>,
     messages: Vec<(String, Vec<PromptContentBlock>)>,
 ) {
+    const MAX_PROMPTS: usize = 10_000;
     let registry = get_structured_prompt_registry();
     if let Ok(mut prompts) = registry.lock() {
+        if prompts.len() >= MAX_PROMPTS {
+            tracing::error!(name = %name, "Structured prompt limit reached ({}), cannot register more", MAX_PROMPTS);
+            return;
+        }
         prompts.push(StructuredPrompt {
             name: name.to_string(),
             description: description.to_string(),
@@ -671,8 +676,13 @@ fn get_prompt_registry() -> &'static Mutex<Vec<Prompt>> {
 
 /// Register a prompt template.
 pub fn register_prompt(name: &str, description: &str, args: Vec<(&str, &str, bool)>) {
+    const MAX_PROMPTS: usize = 10_000;
     let registry = get_prompt_registry();
     if let Ok(mut prompts) = registry.lock() {
+        if prompts.len() >= MAX_PROMPTS {
+            tracing::error!(name = %name, "Prompt registry limit reached ({}), cannot register more", MAX_PROMPTS);
+            return;
+        }
         prompts.push(Prompt {
             name: name.to_string(),
             description: description.to_string(),
@@ -1064,5 +1074,325 @@ mod tests {
         
         let first_content = &contents[0];
         assert_eq!(first_content["mimeType"], "application/json");
+    }
+
+    #[test]
+    fn test_guess_mime_known_extensions() {
+        assert_eq!(guess_mime("txt"), "text/plain");
+        assert_eq!(guess_mime("md"), "text/markdown");
+        assert_eq!(guess_mime("json"), "application/json");
+        assert_eq!(guess_mime("csv"), "text/csv");
+        assert_eq!(guess_mime("html"), "text/html");
+        assert_eq!(guess_mime("xml"), "application/xml");
+        assert_eq!(guess_mime("yaml"), "application/yaml");
+        assert_eq!(guess_mime("yml"), "application/yaml");
+        assert_eq!(guess_mime("py"), "text/x-python");
+        assert_eq!(guess_mime("rs"), "text/x-rust");
+        assert_eq!(guess_mime("js"), "application/javascript");
+        assert_eq!(guess_mime("ts"), "application/typescript");
+    }
+
+    #[test]
+    fn test_guess_mime_unknown_extension() {
+        assert_eq!(guess_mime("xyz"), "application/octet-stream");
+        assert_eq!(guess_mime(""), "application/octet-stream");
+    }
+
+    #[test]
+    fn test_notify_and_poll_resource_updates() {
+        register_file_resource("test://notify_poll", "Notify", "Test notify", "/tmp/notify.txt");
+        subscribe_resource("test://notify_poll", "client_poll").ok();
+
+        notify_resource_update("test://notify_poll");
+        let updates = poll_resource_updates();
+        assert!(updates.iter().any(|u| u.uri == "test://notify_poll"));
+    }
+
+    #[test]
+    fn test_notify_nonexistent_resource_produces_no_update() {
+        let before = poll_resource_updates();
+        notify_resource_update("nonexistent://nothing");
+        let after = poll_resource_updates();
+        assert_eq!(before.len(), after.len());
+    }
+
+    #[test]
+    fn test_read_file_resource() {
+        let dir = std::env::temp_dir().join("mcp_test_read_resource");
+        let _ = std::fs::create_dir_all(&dir);
+        let file_path = dir.join("hello.txt");
+        std::fs::write(&file_path, "hello world").unwrap();
+
+        register_file_resource("test://read_file", "ReadFile", "Read test", file_path.to_str().unwrap());
+        let result = read_resource("test://read_file");
+        assert!(result.is_ok(), "read_resource should succeed: {:?}", result.err());
+        let data = result.unwrap();
+        let text = data["contents"][0]["text"].as_str().unwrap();
+        assert_eq!(text, "hello world");
+        assert_eq!(data["contents"][0]["mimeType"], "text/plain");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_read_file_resource_missing_file() {
+        register_file_resource("test://read_missing", "Missing", "Missing file", "/tmp/nonexistent_mcp_file_xyz.txt");
+        let result = read_resource("test://read_missing");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Failed to open file"));
+    }
+
+    #[test]
+    fn test_read_api_resource() {
+        let mut headers = HashMap::new();
+        headers.insert("X-Test".to_string(), "yes".to_string());
+        register_api_resource("test://api_read", "ApiRead", "API read test", "https://api.example.com/test", "POST", headers);
+
+        let result = read_resource("test://api_read");
+        assert!(result.is_ok());
+        let data = result.unwrap();
+        let text = data["contents"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(parsed["endpoint"], "https://api.example.com/test");
+        assert_eq!(parsed["method"], "POST");
+    }
+
+    #[test]
+    fn test_read_nonexistent_resource() {
+        let result = read_resource("test://does_not_exist_at_all");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn test_register_and_list_resource_templates() {
+        register_resource_template("file://{path}", "File Template", "A file template", Some("text/plain"));
+        let templates = list_resource_templates();
+        assert!(templates.iter().any(|t| t.uri_template == "file://{path}"));
+    }
+
+    #[test]
+    fn test_handle_resource_templates_list() {
+        register_resource_template("db://{table}", "DB Template", "DB template", None);
+        let result = handle_resource_templates_list(None);
+        assert!(result["resourceTemplates"].is_array());
+    }
+
+    #[test]
+    fn test_handle_resource_templates_list_pagination() {
+        let result = handle_resource_templates_list(Some("0"));
+        assert!(result["resourceTemplates"].is_array());
+    }
+
+    #[test]
+    fn test_handle_resources_read() {
+        register_file_resource("test://handler_read", "HandlerRead", "Handler test", "/tmp/handler_read.txt");
+        let result = handle_resources_read("test://handler_read");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_prompt_not_found() {
+        let args = HashMap::new();
+        let result = get_prompt("nonexistent_prompt_xyz", &args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn test_expand_uri_template_empty_params() {
+        let params = HashMap::new();
+        let result = expand_uri_template("file://static/path.txt", &params);
+        assert_eq!(result, "file://static/path.txt");
+    }
+
+    #[test]
+    fn test_poll_resource_updates_drains() {
+        register_file_resource("test://drain_test", "Drain", "Drain test", "/tmp/drain.txt");
+        notify_resource_update("test://drain_test");
+        let first = poll_resource_updates();
+        let second = poll_resource_updates();
+        assert!(!first.is_empty());
+        assert!(second.is_empty(), "Second poll should be empty after drain");
+    }
+
+    #[test]
+    fn test_set_database_path_once() {
+        let path = format!("/tmp/test_db_{}.sqlite", std::process::id());
+        set_database_path(&path);
+        set_database_path("/tmp/should_be_ignored.sqlite");
+    }
+
+    #[test]
+    fn test_notify_update_caps_at_10k() {
+        let store = get_resource_registry();
+        if let Ok(mut s) = store.lock() {
+            s.resources.push(Resource {
+                uri: "test://cap_resource".to_string(),
+                name: "CapResource".to_string(),
+                description: "test".to_string(),
+                mime_type: Some("text/plain".to_string()),
+            });
+            for _ in 0..10_001 {
+                s.pending_updates.push(ResourceUpdate {
+                    uri: "test://cap_resource".to_string(),
+                    mime_type: Some("text/plain".to_string()),
+                });
+            }
+            assert!(s.pending_updates.len() > 10_000);
+            s.notify_update("test://cap_resource");
+            assert!(s.pending_updates.len() <= 5002, "notify_update should cap at ~5002 after draining 5000");
+            s.pending_updates.clear();
+            s.resources.retain(|r| r.uri != "test://cap_resource");
+        }
+    }
+
+    #[test]
+    fn test_structured_prompt_missing_required_argument() {
+        register_structured_prompt(
+            "cov_req_prompt",
+            "Test required args",
+            vec![("name", "Name", true), ("opt", "Optional", false)],
+            vec![("user".to_string(), vec![PromptContentBlock::Text { text: "Hello {name}".to_string() }])],
+        );
+        let mut args = HashMap::new();
+        args.insert("opt".to_string(), "val".to_string());
+        let result = get_structured_prompt("cov_req_prompt", &args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Missing required argument"));
+    }
+
+    #[test]
+    fn test_structured_prompt_with_resource_block() {
+        register_file_resource("test://cov_prompt_res", "PromptRes", "For prompt", "/nonexistent/cov_prompt_res.txt");
+        register_structured_prompt(
+            "cov_res_prompt",
+            "Test resource block",
+            vec![],
+            vec![
+                ("user".to_string(), vec![
+                    PromptContentBlock::Text { text: "See resource:".to_string() },
+                    PromptContentBlock::Resource { uri: "test://cov_prompt_res".to_string() },
+                ]),
+            ],
+        );
+        let args = HashMap::new();
+        let result = get_structured_prompt("cov_res_prompt", &args);
+        assert!(result.is_ok());
+        let val = result.unwrap();
+        let messages = val["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1);
+        let content = messages[0]["content"].as_array().unwrap();
+        assert!(content.len() >= 2);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[1]["type"], "text");
+        assert!(content[1]["text"].as_str().unwrap().contains("not available"));
+    }
+
+    #[test]
+    fn test_structured_prompt_with_successful_resource_read() {
+        let tmp = std::env::temp_dir().join(format!("cov_prompt_res_{}.txt", std::process::id()));
+        std::fs::write(&tmp, "hello from resource").unwrap();
+        let path_str = tmp.to_str().unwrap().to_string();
+
+        register_file_resource("test://cov_prompt_res_ok", "PromptResOk", "For prompt success", &path_str);
+        register_structured_prompt(
+            "cov_res_ok_prompt",
+            "Test successful resource read",
+            vec![],
+            vec![
+                ("user".to_string(), vec![
+                    PromptContentBlock::Text { text: "See:".to_string() },
+                    PromptContentBlock::Resource { uri: "test://cov_prompt_res_ok".to_string() },
+                ]),
+            ],
+        );
+        let args = HashMap::new();
+        let result = get_structured_prompt("cov_res_ok_prompt", &args);
+        assert!(result.is_ok());
+        let val = result.unwrap();
+        let messages = val["messages"].as_array().unwrap();
+        let content = messages[0]["content"].as_array().unwrap();
+        assert!(content.len() >= 2);
+        assert_eq!(content[1]["type"], "resource");
+
+        let _ = std::fs::remove_file(&tmp);
+        let store = get_resource_registry();
+        if let Ok(mut s) = store.lock() {
+            s.resources.retain(|r| r.uri != "test://cov_prompt_res_ok");
+            s.file_resources.remove("test://cov_prompt_res_ok");
+        }
+    }
+
+    #[test]
+    fn test_subscribe_too_many_uris() {
+        let store = get_resource_registry();
+        if let Ok(mut s) = store.lock() {
+            for i in 0..257 {
+                let uri = format!("test://sub_limit_{}", i);
+                s.resources.push(Resource {
+                    uri: uri.clone(),
+                    name: format!("Res{}", i),
+                    description: "limit test".to_string(),
+                    mime_type: Some("text/plain".to_string()),
+                });
+                let _ = s.subscribe(&uri, "subscriber_0");
+            }
+            s.resources.push(Resource {
+                uri: "test://sub_limit_257".to_string(),
+                name: "Res257".to_string(),
+                description: "limit test".to_string(),
+                mime_type: Some("text/plain".to_string()),
+            });
+            let result = s.subscribe("test://sub_limit_257", "subscriber_0");
+            s.resources.retain(|r| !r.uri.starts_with("test://sub_limit_"));
+            s.subscriptions.clear();
+            assert!(result.is_err());
+            assert!(result.unwrap_err().contains("Too many subscribed resources"));
+        }
+    }
+
+    #[test]
+    fn test_subscribe_too_many_subscribers_per_uri() {
+        let store = get_resource_registry();
+        if let Ok(mut s) = store.lock() {
+            let uri = "test://sub_per_uri";
+            s.resources.push(Resource {
+                uri: uri.to_string(),
+                name: "SubPerUri".to_string(),
+                description: "test".to_string(),
+                mime_type: Some("text/plain".to_string()),
+            });
+            for i in 0..1000 {
+                let _ = s.subscribe(uri, &format!("sub_{}", i));
+            }
+            let result = s.subscribe(uri, "sub_overflow");
+            s.resources.retain(|r| r.uri != uri);
+            s.subscriptions.remove(uri);
+            assert!(result.is_err());
+            assert!(result.unwrap_err().contains("Too many subscribers"));
+        }
+    }
+
+    #[test]
+    fn test_read_file_resource_too_large() {
+        let tmp = std::env::temp_dir().join(format!("cov_large_res_{}.txt", std::process::id()));
+        let file = std::fs::File::create(&tmp).unwrap();
+        file.set_len(11 * 1024 * 1024).unwrap();
+        drop(file);
+        let path_str = tmp.to_str().unwrap().to_string();
+
+        register_file_resource("test://cov_large_res", "LargeRes", "Too large", &path_str);
+        let result = read_resource("test://cov_large_res");
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err();
+        assert!(err_msg.contains("too large") || err_msg.contains("Too large") || err_msg.contains("Failed"));
+
+        let _ = std::fs::remove_file(&tmp);
+        let store = get_resource_registry();
+        if let Ok(mut s) = store.lock() {
+            s.resources.retain(|r| r.uri != "test://cov_large_res");
+            s.file_resources.remove("test://cov_large_res");
+        }
     }
 }

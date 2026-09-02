@@ -44,7 +44,11 @@ impl ResponseCache {
     
     /// Create a new response cache with custom max size.
     pub fn with_max_size(default_ttl: Duration, max_size: usize) -> Self {
-        let max_size = NonZeroUsize::new(max_size).unwrap_or(NonZeroUsize::new(10000).unwrap());
+        const FALLBACK: NonZeroUsize = match NonZeroUsize::new(10000) {
+            Some(n) => n,
+            None => unreachable!(),
+        };
+        let max_size = NonZeroUsize::new(max_size).unwrap_or(FALLBACK);
         Self {
             entries: Arc::new(RwLock::new(LruCache::new(max_size))),
             default_ttl,
@@ -188,8 +192,20 @@ pub async fn handle_batch_request(
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     crate::audit::set_session_context(session_id);
 
+    const MAX_BATCH_SIZE: usize = 100;
+    if batch.requests.len() > MAX_BATCH_SIZE {
+        return axum::Json(serde_json::json!({
+            "jsonrpc": "2.0",
+            "error": {
+                "code": -32600,
+                "message": format!("Batch too large: {} requests (maximum {})", batch.requests.len(), MAX_BATCH_SIZE)
+            },
+            "id": null
+        })).into_response();
+    }
+
     let mut responses = Vec::new();
-    
+
     for request in batch.requests {
         let result = crate::protocol::json_rpc::handle_request(&request);
         match result {

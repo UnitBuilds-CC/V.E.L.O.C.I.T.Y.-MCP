@@ -64,7 +64,7 @@ pub fn is_nda_frame(data: &[u8]) -> bool {
     data.len() >= 4 && &data[0..4] == NDA_MAGIC
 }
 
-pub fn encode_json_value(value: &Value, buf: &mut Vec<u8>) {
+pub fn encode_json_value(value: &Value, buf: &mut Vec<u8>) -> Result<(), String> {
     match value {
         Value::String(s) => {
             buf.push(0x01);
@@ -95,7 +95,7 @@ pub fn encode_json_value(value: &Value, buf: &mut Vec<u8>) {
             buf.push(0x05);
             buf.extend_from_slice(&(arr.len() as u32).to_be_bytes());
             for item in arr {
-                encode_json_value(item, buf);
+                encode_json_value(item, buf)?;
             }
         }
         Value::Object(obj) => {
@@ -103,12 +103,16 @@ pub fn encode_json_value(value: &Value, buf: &mut Vec<u8>) {
             buf.extend_from_slice(&(obj.len() as u32).to_be_bytes());
             for (key, val) in obj {
                 let key_bytes = key.as_bytes();
+                if key_bytes.len() > u16::MAX as usize {
+                    return Err(format!("JSON key exceeds maximum length of {} bytes", u16::MAX));
+                }
                 buf.extend_from_slice(&(key_bytes.len() as u16).to_be_bytes());
                 buf.extend_from_slice(key_bytes);
-                encode_json_value(val, buf);
+                encode_json_value(val, buf)?;
             }
         }
     }
+    Ok(())
 }
 
 const TLV_MAX_DEPTH: u32 = 32;
@@ -246,6 +250,10 @@ pub fn parse_nda_request(frame: &[u8]) -> Result<NdaRequest, Box<dyn Error>> {
 /// Total byte length of one TLV value, walking nested containers without
 /// allocating or building a Value. Mirrors decode_json_value's consumption.
 pub fn skip_tlv_value(bytes: &[u8]) -> Result<usize, Box<dyn Error>> {
+    skip_tlv_value_inner(bytes, 0)
+}
+
+fn skip_tlv_value_inner(bytes: &[u8], depth: u32) -> Result<usize, Box<dyn Error>> {
     if bytes.is_empty() {
         return Err("TLV skip: empty value".into());
     }
@@ -266,15 +274,21 @@ pub fn skip_tlv_value(bytes: &[u8]) -> Result<usize, Box<dyn Error>> {
         }
         0x04 => Ok(1),
         0x05 => {
+            if depth >= TLV_MAX_DEPTH {
+                return Err(format!("TLV skip: array nesting depth exceeds maximum {}", TLV_MAX_DEPTH).into());
+            }
             if bytes.len() < 5 { return Err("TLV skip: truncated array count".into()); }
             let count = u32::from_be_bytes(bytes[1..5].try_into()?) as usize;
             let mut off = 5usize;
             for _ in 0..count {
-                off += skip_tlv_value(&bytes[off..])?;
+                off += skip_tlv_value_inner(&bytes[off..], depth + 1)?;
             }
             Ok(off)
         }
         0x06 => {
+            if depth >= TLV_MAX_DEPTH {
+                return Err(format!("TLV skip: object nesting depth exceeds maximum {}", TLV_MAX_DEPTH).into());
+            }
             if bytes.len() < 5 { return Err("TLV skip: truncated object count".into()); }
             let count = u32::from_be_bytes(bytes[1..5].try_into()?) as usize;
             let mut off = 5usize;
@@ -283,7 +297,7 @@ pub fn skip_tlv_value(bytes: &[u8]) -> Result<usize, Box<dyn Error>> {
                 let klen = u16::from_be_bytes(bytes[off..off + 2].try_into()?) as usize;
                 off += 2 + klen;
                 if bytes.len() < off { return Err("TLV skip: truncated key".into()); }
-                off += skip_tlv_value(&bytes[off..])?;
+                off += skip_tlv_value_inner(&bytes[off..], depth + 1)?;
             }
             Ok(off)
         }
@@ -403,7 +417,7 @@ pub fn health_result_tlv() -> &'static [u8] {
             "status": "healthy",
             "mode": "shmem-nda",
             "version": crate::VERSION
-        }), &mut buf);
+        }), &mut buf).expect("static JSON keys fit in u16");
         buf
     })
 }
@@ -420,15 +434,15 @@ pub fn build_nda_frame(payload: &[u8]) -> Vec<u8> {
     frame
 }
 
-pub fn build_nda_response(status: u8, request_id: &Value, result: &Value) -> Vec<u8> {
+pub fn build_nda_response(status: u8, request_id: &Value, result: &Value) -> Result<Vec<u8>, String> {
     let mut payload = Vec::new();
     payload.push(status);
-    encode_json_value(request_id, &mut payload);
-    encode_json_value(result, &mut payload);
-    build_nda_frame(&payload)
+    encode_json_value(request_id, &mut payload)?;
+    encode_json_value(result, &mut payload)?;
+    Ok(build_nda_frame(&payload))
 }
 
-pub fn build_nda_error(request_id: &Value, error_msg: &str) -> Vec<u8> {
+pub fn build_nda_error(request_id: &Value, error_msg: &str) -> Result<Vec<u8>, String> {
     build_nda_response(STATUS_ERROR, request_id, &json!(error_msg))
 }
 
@@ -436,7 +450,7 @@ pub fn build_nda_error(request_id: &Value, error_msg: &str) -> Vec<u8> {
 /// structs, skipping the intermediate serde_json::Value tree. Emits keys in
 /// sorted order (description, inputSchema, name) to match serde_json's
 /// BTreeMap iteration, so output is byte-identical to encode_json_value.
-pub fn encode_tools_list_result(buf: &mut Vec<u8>, tools: &[crate::registry::Tool]) {
+pub fn encode_tools_list_result(buf: &mut Vec<u8>, tools: &[crate::registry::Tool]) -> Result<(), String> {
     buf.push(0x06); // outer object
     buf.extend_from_slice(&1u32.to_be_bytes());
     buf.extend_from_slice(&5u16.to_be_bytes());
@@ -456,7 +470,7 @@ pub fn encode_tools_list_result(buf: &mut Vec<u8>, tools: &[crate::registry::Too
 
         buf.extend_from_slice(&11u16.to_be_bytes());
         buf.extend_from_slice(b"inputSchema");
-        encode_json_value(&t.input_schema, buf);
+        encode_json_value(&t.input_schema, buf)?;
 
         buf.extend_from_slice(&4u16.to_be_bytes());
         buf.extend_from_slice(b"name");
@@ -465,6 +479,7 @@ pub fn encode_tools_list_result(buf: &mut Vec<u8>, tools: &[crate::registry::Too
         buf.extend_from_slice(&(n.len() as u32).to_be_bytes());
         buf.extend_from_slice(n);
     }
+    Ok(())
 }
 
 static TOOLS_LIST_CACHE: OnceLock<Mutex<Option<(u64, Vec<u8>)>>> = OnceLock::new();
@@ -485,7 +500,7 @@ pub fn encoded_tools_list_result() -> Vec<u8> {
     }
     let tools = crate::registry::get_tools();
     let mut bytes = Vec::with_capacity(8 * 1024);
-    encode_tools_list_result(&mut bytes, &tools);
+    encode_tools_list_result(&mut bytes, &tools).expect("tool definition keys fit in u16");
     // Only store if the generation was stable across the build: otherwise a
     // concurrent registration would be masked by pre-mutation bytes cached
     // under the post-mutation generation.
@@ -525,14 +540,14 @@ pub fn method_from_str(name: &str) -> Option<u8> {
     }
 }
 
-pub fn build_nda_request(method: u8, request_id: &Value, data: &Value) -> Vec<u8> {
+pub fn build_nda_request(method: u8, request_id: &Value, data: &Value) -> Result<Vec<u8>, String> {
     let mut payload = Vec::new();
     payload.push(method);
-    encode_json_value(request_id, &mut payload);
+    encode_json_value(request_id, &mut payload)?;
     if !data.is_null() {
-        encode_json_value(data, &mut payload);
+        encode_json_value(data, &mut payload)?;
     }
-    build_nda_frame(&payload)
+    Ok(build_nda_frame(&payload))
 }
 
 // ─── Deterministic Flat Binary Format ────────────────────────────────────────
@@ -703,6 +718,9 @@ pub fn parse_flat_request(frame: &[u8]) -> Result<FlatRequest, Box<dyn Error>> {
 
     let mut fields = Vec::new();
     while offset < payload.len() {
+        if fields.len() >= TLV_MAX_ELEMENTS {
+            return Err(format!("Flat request field count exceeds maximum {}", TLV_MAX_ELEMENTS).into());
+        }
         fields.push(decode_flat_value(payload, &mut offset)?);
     }
 
@@ -752,6 +770,9 @@ pub fn parse_flat_response(frame: &[u8]) -> Result<FlatResponse, Box<dyn Error>>
 
     let mut fields = Vec::new();
     while offset < payload.len() {
+        if fields.len() >= TLV_MAX_ELEMENTS {
+            return Err(format!("Flat response field count exceeds maximum {}", TLV_MAX_ELEMENTS).into());
+        }
         fields.push(decode_flat_value(payload, &mut offset)?);
     }
 
@@ -798,7 +819,7 @@ mod tests {
             "args": {"path": "/tmp/test.txt", "offset": 42, "flag": true, "extra": null}
         });
         let mut encoded = Vec::new();
-        encode_json_value(&original, &mut encoded);
+        encode_json_value(&original, &mut encoded).unwrap();
         let (decoded, consumed) = decode_json_value(&encoded).unwrap();
         assert_eq!(consumed, encoded.len());
         assert_eq!(decoded, original);
@@ -808,7 +829,7 @@ mod tests {
     fn test_build_and_parse_request() {
         let req_id = json!(1);
         let data = json!({"name": "read_file", "arguments": {"path": "/test.txt"}});
-        let frame = build_nda_request(METHOD_TOOLS_CALL, &req_id, &data);
+        let frame = build_nda_request(METHOD_TOOLS_CALL, &req_id, &data).unwrap();
 
         assert!(is_nda_frame(&frame));
         assert_eq!(&frame[0..4], b"NMCP");
@@ -824,7 +845,7 @@ mod tests {
     fn test_build_and_parse_response() {
         let req_id = json!(42);
         let result = json!({"content": [{"type": "text", "text": "hello"}]});
-        let frame = build_nda_response(STATUS_OK, &req_id, &result);
+        let frame = build_nda_response(STATUS_OK, &req_id, &result).unwrap();
 
         assert!(is_nda_frame(&frame));
 
@@ -842,7 +863,7 @@ mod tests {
 
     #[test]
     fn test_merkle_integrity() {
-        let frame = build_nda_request(METHOD_PING, &json!(1), &Value::Null);
+        let frame = build_nda_request(METHOD_PING, &json!(1), &Value::Null).unwrap();
         let mut tampered = frame.clone();
         let last = tampered.len() - 1;
         tampered[last] ^= 0xFF;
@@ -867,7 +888,7 @@ mod tests {
 
     #[test]
     fn test_error_response() {
-        let frame = build_nda_error(&json!(99), "something broke");
+        let frame = build_nda_error(&json!(99), "something broke").unwrap();
         let payload = &frame[FRAME_HEADER_SIZE..];
         assert_eq!(payload[0], STATUS_ERROR);
 
@@ -893,7 +914,7 @@ mod tests {
 
     #[test]
     fn test_ping_request_minimal() {
-        let frame = build_nda_request(METHOD_PING, &json!(1), &Value::Null);
+        let frame = build_nda_request(METHOD_PING, &json!(1), &Value::Null).unwrap();
         let parsed = parse_nda_request(&frame).unwrap();
         assert_eq!(parsed.method, METHOD_PING);
         assert_eq!(parsed.request_id, json!(1));
@@ -944,7 +965,7 @@ mod tests {
     fn test_flat_args_smaller_than_tlv_args() {
         let args = json!(["/test.txt", 42]);
         let mut tlv_buf = Vec::new();
-        encode_json_value(&args, &mut tlv_buf);
+        encode_json_value(&args, &mut tlv_buf).unwrap();
 
         let mut flat_buf = Vec::new();
         encode_flat_value(&args, &mut flat_buf);
@@ -984,8 +1005,8 @@ mod tests {
         for _ in 0..iters {
             let mut payload = Vec::new();
             payload.push(STATUS_OK);
-            encode_json_value(&json!(1), &mut payload);
-            encode_json_value(&result, &mut payload);
+            encode_json_value(&json!(1), &mut payload).unwrap();
+            encode_json_value(&result, &mut payload).unwrap();
             payload_len = payload.len();
         }
         let encode_us = start.elapsed().as_secs_f64() * 1e6 / iters as f64;
@@ -1008,7 +1029,7 @@ mod tests {
 
         let start = Instant::now();
         for _ in 0..iters {
-            let f = build_nda_response(STATUS_OK, &json!(1), &result);
+            let f = build_nda_response(STATUS_OK, &json!(1), &result).unwrap();
             std::hint::black_box(f);
         }
         let full_us = start.elapsed().as_secs_f64() * 1e6 / iters as f64;
@@ -1042,10 +1063,10 @@ mod tests {
         }).collect();
         let result = json!({"tools": tools_json});
         let mut expected = Vec::new();
-        encode_json_value(&result, &mut expected);
+        encode_json_value(&result, &mut expected).unwrap();
 
         let mut actual = Vec::new();
-        encode_tools_list_result(&mut actual, &tools);
+        encode_tools_list_result(&mut actual, &tools).unwrap();
         assert_eq!(actual, expected, "direct encoder must be byte-identical to Value path");
 
         // Round-trip through the decoder as well.
@@ -1064,7 +1085,7 @@ mod tests {
             let b = encoded_tools_list_result();
             let tools = crate::registry::get_tools();
             let mut direct = Vec::new();
-            encode_tools_list_result(&mut direct, &tools);
+            encode_tools_list_result(&mut direct, &tools).unwrap();
             if crate::registry::registry_generation() == g0 {
                 return (a, b, direct);
             }
@@ -1181,7 +1202,7 @@ mod tests {
             (METHOD_HEALTH_CHECK, json!(2), json!({"deep": {"nested": [1, 2, {"k": "v"}]}})),
         ];
         for (method, id, data) in &cases {
-            let frame = build_nda_request(*method, id, data);
+            let frame = build_nda_request(*method, id, data).unwrap();
             let old = parse_nda_request(&frame).unwrap();
             let new = parse_nda_request_inplace(&frame).unwrap();
             assert_eq!(new.method, old.method, "method mismatch");
@@ -1200,7 +1221,7 @@ mod tests {
 
     #[test]
     fn inplace_parse_rejects_bad_frames() {
-        let frame = build_nda_request(METHOD_PING, &json!(1), &Value::Null);
+        let frame = build_nda_request(METHOD_PING, &json!(1), &Value::Null).unwrap();
         assert!(parse_nda_request_inplace(&frame[..10]).is_err(), "truncated header");
         let mut bad_magic = frame.clone();
         bad_magic[0] = b'X';
@@ -1239,7 +1260,7 @@ mod tests {
 
         // Via encode_json_value (sorted keys: arguments before name)
         let mut sorted = Vec::new();
-        encode_json_value(&json!({"name": "echo", "arguments": {"size": 64}}), &mut sorted);
+        encode_json_value(&json!({"name": "echo", "arguments": {"size": 64}}), &mut sorted).unwrap();
         let (name, args) = extract_tools_call_fields(&sorted).unwrap();
         assert_eq!(name, Some("echo"));
         let (args_val, consumed) = decode_json_value(args.unwrap()).unwrap();
@@ -1261,7 +1282,7 @@ mod tests {
         assert!(args.is_none());
         let string_data = {
             let mut b = Vec::new();
-            encode_json_value(&json!("not an object"), &mut b);
+            encode_json_value(&json!("not an object"), &mut b).unwrap();
             b
         };
         let (name, args) = extract_tools_call_fields(&string_data).unwrap();
@@ -1273,16 +1294,16 @@ mod tests {
         let id = json!(12345);
         let result = json!({"status": "healthy", "mode": "shmem-nda"});
         let mut id_tlv = Vec::new();
-        encode_json_value(&id, &mut id_tlv);
+        encode_json_value(&id, &mut id_tlv).unwrap();
         let mut result_tlv = Vec::new();
-        encode_json_value(&result, &mut result_tlv);
+        encode_json_value(&result, &mut result_tlv).unwrap();
 
         assert_eq!(
-            build_nda_response(STATUS_OK, &id, &result),
+            build_nda_response(STATUS_OK, &id, &result).unwrap(),
             build_nda_response_raw(STATUS_OK, &id_tlv, &result_tlv)
         );
         assert_eq!(
-            build_nda_error(&id, "boom"),
+            build_nda_error(&id, "boom").unwrap(),
             build_nda_error_raw(&id_tlv, "boom")
         );
     }
@@ -1300,6 +1321,604 @@ mod tests {
         assert_eq!(val["mode"], "shmem-nda");
         assert_eq!(val["version"], crate::VERSION);
         assert_eq!(health_result_tlv(), health, "must be cached, stable bytes");
+    }
+
+    #[test]
+    fn skip_tlv_value_rejects_deeply_nested_arrays() {
+        // Build 33 levels of single-element arrays wrapping a null leaf.
+        // TLV_MAX_DEPTH is 32, so 33 should be rejected.
+        let mut bytes = Vec::new();
+        for _ in 0..33 {
+            bytes.push(0x05); // array tag
+            bytes.extend_from_slice(&1u32.to_be_bytes()); // count = 1
+        }
+        bytes.push(0x04); // null leaf
+
+        let result = skip_tlv_value(&bytes);
+        assert!(result.is_err(), "should reject nesting depth > TLV_MAX_DEPTH");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("depth exceeds maximum"), "error should mention depth limit: {}", err);
+    }
+
+    #[test]
+    fn skip_tlv_value_accepts_max_depth_nesting() {
+        // Build exactly 32 levels of single-element arrays wrapping a null leaf.
+        // This should succeed (depth == TLV_MAX_DEPTH is the boundary).
+        let mut bytes = Vec::new();
+        for _ in 0..32 {
+            bytes.push(0x05); // array tag
+            bytes.extend_from_slice(&1u32.to_be_bytes()); // count = 1
+        }
+        bytes.push(0x04); // null leaf
+
+        let result = skip_tlv_value(&bytes);
+        assert!(result.is_ok(), "should accept nesting depth == TLV_MAX_DEPTH: {:?}", result.err());
+        assert_eq!(result.unwrap(), bytes.len());
+    }
+
+    #[test]
+    fn skip_tlv_value_rejects_deeply_nested_objects() {
+        // Build 33 levels of single-key objects wrapping a null leaf.
+        let mut bytes = Vec::new();
+        for _ in 0..33 {
+            bytes.push(0x06); // object tag
+            bytes.extend_from_slice(&1u32.to_be_bytes()); // count = 1
+            bytes.extend_from_slice(&1u16.to_be_bytes()); // key length = 1
+            bytes.push(b'k'); // key = "k"
+        }
+        bytes.push(0x04); // null leaf (value)
+
+        let result = skip_tlv_value(&bytes);
+        assert!(result.is_err(), "should reject object nesting depth > TLV_MAX_DEPTH");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("depth exceeds maximum"), "error should mention depth limit: {}", err);
+    }
+
+    // ─── Coverage: decode_json_value error paths ───────────────────────────
+
+    #[test]
+    fn test_decode_json_value_empty_buffer() {
+        let result = decode_json_value(&[]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("end of TLV"));
+    }
+
+    #[test]
+    fn test_decode_json_value_unknown_tag() {
+        let result = decode_json_value(&[0xFF]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Unknown TLV type tag"));
+    }
+
+    #[test]
+    fn test_decode_json_value_truncated_string_length() {
+        let result = decode_json_value(&[0x01, 0, 0]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("missing length"));
+    }
+
+    #[test]
+    fn test_decode_json_value_string_exceeds_max_len() {
+        let mut buf = vec![0x01];
+        buf.extend_from_slice(&((TLV_MAX_STRING_LEN as u32) + 1).to_be_bytes());
+        let result = decode_json_value(&buf);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("exceeds maximum"));
+    }
+
+    #[test]
+    fn test_decode_json_value_truncated_string_data() {
+        let mut buf = vec![0x01];
+        buf.extend_from_slice(&100u32.to_be_bytes());
+        buf.extend_from_slice(b"short");
+        let result = decode_json_value(&buf);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("truncated"));
+    }
+
+    #[test]
+    fn test_decode_json_value_truncated_integer() {
+        let result = decode_json_value(&[0x02, 0, 0, 0]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("missing data"));
+    }
+
+    #[test]
+    fn test_decode_json_value_truncated_float() {
+        let result = decode_json_value(&[0x07, 0, 0]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("missing data"));
+    }
+
+    #[test]
+    fn test_decode_json_value_truncated_bool() {
+        let result = decode_json_value(&[0x03]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("missing data"));
+    }
+
+    #[test]
+    fn test_decode_json_value_array_missing_count() {
+        let result = decode_json_value(&[0x05, 0, 0]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("missing count"));
+    }
+
+    #[test]
+    fn test_decode_json_value_array_count_exceeds_max() {
+        let mut buf = vec![0x05];
+        buf.extend_from_slice(&((TLV_MAX_ELEMENTS as u32) + 1).to_be_bytes());
+        let result = decode_json_value(&buf);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("exceeds maximum"));
+    }
+
+    #[test]
+    fn test_decode_json_value_object_missing_count() {
+        let result = decode_json_value(&[0x06, 0]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("missing count"));
+    }
+
+    #[test]
+    fn test_decode_json_value_object_count_exceeds_max() {
+        let mut buf = vec![0x06];
+        buf.extend_from_slice(&((TLV_MAX_ELEMENTS as u32) + 1).to_be_bytes());
+        let result = decode_json_value(&buf);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("exceeds maximum"));
+    }
+
+    #[test]
+    fn test_decode_json_value_object_missing_key_length() {
+        let mut buf = vec![0x06];
+        buf.extend_from_slice(&1u32.to_be_bytes());
+        // no key length bytes follow
+        let result = decode_json_value(&buf);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("missing key length"));
+    }
+
+    #[test]
+    fn test_decode_json_value_object_truncated_key() {
+        let mut buf = vec![0x06];
+        buf.extend_from_slice(&1u32.to_be_bytes());
+        buf.extend_from_slice(&10u16.to_be_bytes());
+        buf.extend_from_slice(b"short");
+        let result = decode_json_value(&buf);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("truncated key"));
+    }
+
+    // ─── Coverage: skip_tlv_value error paths ──────────────────────────────
+
+    #[test]
+    fn test_skip_tlv_empty_buffer() {
+        assert!(skip_tlv_value(&[]).is_err());
+    }
+
+    #[test]
+    fn test_skip_tlv_unknown_tag() {
+        let result = skip_tlv_value(&[0xFE]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unknown tag"));
+    }
+
+    #[test]
+    fn test_skip_tlv_truncated_string_length() {
+        let result = skip_tlv_value(&[0x01, 0, 0]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("truncated string length"));
+    }
+
+    #[test]
+    fn test_skip_tlv_truncated_string_body() {
+        let mut buf = vec![0x01];
+        buf.extend_from_slice(&50u32.to_be_bytes());
+        buf.extend_from_slice(b"short");
+        let result = skip_tlv_value(&buf);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("truncated string body"));
+    }
+
+    #[test]
+    fn test_skip_tlv_truncated_number() {
+        assert!(skip_tlv_value(&[0x02, 0, 0]).is_err());
+        assert!(skip_tlv_value(&[0x07, 0]).is_err());
+    }
+
+    #[test]
+    fn test_skip_tlv_truncated_bool() {
+        assert!(skip_tlv_value(&[0x03]).is_err());
+    }
+
+    #[test]
+    fn test_skip_tlv_null() {
+        assert_eq!(skip_tlv_value(&[0x04]).unwrap(), 1);
+    }
+
+    #[test]
+    fn test_skip_tlv_truncated_array_count() {
+        let result = skip_tlv_value(&[0x05, 0, 0]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("truncated array count"));
+    }
+
+    #[test]
+    fn test_skip_tlv_truncated_object_count() {
+        let result = skip_tlv_value(&[0x06, 0]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("truncated object count"));
+    }
+
+    #[test]
+    fn test_skip_tlv_object_truncated_key_length() {
+        let mut buf = vec![0x06];
+        buf.extend_from_slice(&1u32.to_be_bytes());
+        // only 1 byte of key length (needs 2)
+        buf.push(0);
+        let result = skip_tlv_value(&buf);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("truncated key length"));
+    }
+
+    #[test]
+    fn test_skip_tlv_object_truncated_key_body() {
+        let mut buf = vec![0x06];
+        buf.extend_from_slice(&1u32.to_be_bytes());
+        buf.extend_from_slice(&10u16.to_be_bytes());
+        buf.extend_from_slice(b"sh");
+        let result = skip_tlv_value(&buf);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("truncated key"));
+    }
+
+    // ─── Coverage: encode_flat_value with Object and nested containers ─────
+
+    #[test]
+    fn test_encode_flat_value_object() {
+        let obj = json!({"a": "hello", "b": 42, "c": true, "d": null});
+        let mut buf = Vec::new();
+        encode_flat_value(&obj, &mut buf);
+        assert!(!buf.is_empty());
+        // Object values are encoded without keys, in sorted order (a, b, c, d)
+        let mut offset = 0;
+        let v_a = decode_flat_value(&buf, &mut offset).unwrap();
+        assert_eq!(v_a, "hello");
+        let v_b = decode_flat_value(&buf, &mut offset).unwrap();
+        assert_eq!(v_b, 42);
+        let v_c = decode_flat_value(&buf, &mut offset).unwrap();
+        assert_eq!(v_c, true);
+        let v_d = decode_flat_value(&buf, &mut offset).unwrap();
+        assert_eq!(v_d, Value::Null);
+    }
+
+    #[test]
+    fn test_encode_flat_value_nested_array() {
+        let arr = json!([1, [2, 3], "end"]);
+        let mut buf = Vec::new();
+        encode_flat_value(&arr, &mut buf);
+        let mut offset = 0;
+        assert_eq!(decode_flat_value(&buf, &mut offset).unwrap(), 1);
+        assert_eq!(decode_flat_value(&buf, &mut offset).unwrap(), 2);
+        assert_eq!(decode_flat_value(&buf, &mut offset).unwrap(), 3);
+        assert_eq!(decode_flat_value(&buf, &mut offset).unwrap(), "end");
+    }
+
+    // ─── Coverage: encode_json_value oversized key ─────────────────────────
+
+    #[test]
+    fn test_encode_json_value_oversized_key() {
+        let big_key = "x".repeat(u16::MAX as usize + 1);
+        let mut obj = serde_json::Map::new();
+        obj.insert(big_key, json!(1));
+        let val = Value::Object(obj);
+        let mut buf = Vec::new();
+        let result = encode_json_value(&val, &mut buf);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("exceeds maximum length"));
+    }
+
+    // ─── Coverage: parse_nda_request empty payload ─────────────────────────
+
+    #[test]
+    fn test_parse_nda_request_empty_payload() {
+        let frame = build_nda_frame(&[]);
+        let result = parse_nda_request(&frame);
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("empty"));
+    }
+
+    // ─── Coverage: parse_flat_request / parse_flat_response error paths ────
+
+    #[test]
+    fn test_parse_flat_request_too_small() {
+        let result = parse_flat_request(&[0u8; 10]);
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("too small"));
+    }
+
+    #[test]
+    fn test_parse_flat_request_bad_magic() {
+        let mut data = vec![0u8; FRAME_HEADER_SIZE + 4];
+        data[0..4].copy_from_slice(b"XXXX");
+        let result = parse_flat_request(&data);
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("magic"));
+    }
+
+    #[test]
+    fn test_parse_flat_request_empty_payload() {
+        let frame = build_nda_frame(&[]);
+        let result = parse_flat_request(&frame);
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("empty"));
+    }
+
+    #[test]
+    fn test_parse_flat_request_missing_request_id() {
+        let frame = build_nda_frame(&[METHOD_PING]);
+        let result = parse_flat_request(&frame);
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("missing request id"));
+    }
+
+    #[test]
+    fn test_parse_flat_request_missing_name_length() {
+        let mut payload = vec![METHOD_PING];
+        payload.extend_from_slice(&1u64.to_le_bytes());
+        let frame = build_nda_frame(&payload);
+        let result = parse_flat_request(&frame);
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("missing tool name length"));
+    }
+
+    #[test]
+    fn test_parse_flat_request_truncated_name() {
+        let mut payload = vec![METHOD_PING];
+        payload.extend_from_slice(&1u64.to_le_bytes());
+        payload.extend_from_slice(&100u16.to_le_bytes());
+        payload.extend_from_slice(b"short");
+        let frame = build_nda_frame(&payload);
+        let result = parse_flat_request(&frame);
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("truncated tool name"));
+    }
+
+    #[test]
+    fn test_parse_flat_response_too_small() {
+        let result = parse_flat_response(&[0u8; 10]);
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("too small"));
+    }
+
+    #[test]
+    fn test_parse_flat_response_bad_magic() {
+        let mut data = vec![0u8; FRAME_HEADER_SIZE + 4];
+        data[0..4].copy_from_slice(b"XXXX");
+        let result = parse_flat_response(&data);
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("magic"));
+    }
+
+    #[test]
+    fn test_parse_flat_response_empty_payload() {
+        let frame = build_nda_frame(&[]);
+        let result = parse_flat_response(&frame);
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("empty"));
+    }
+
+    #[test]
+    fn test_parse_flat_response_missing_id() {
+        let frame = build_nda_frame(&[STATUS_OK]);
+        let result = parse_flat_response(&frame);
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("missing response request id"));
+    }
+
+    // ─── Coverage: decode_flat_value error paths ───────────────────────────
+
+    #[test]
+    fn test_decode_flat_value_end_of_buffer() {
+        let buf = [0x01u8];
+        let mut offset = 1;
+        let result = decode_flat_value(&buf, &mut offset);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("end of buffer"));
+    }
+
+    #[test]
+    fn test_decode_flat_value_string_missing_length() {
+        let buf = [0x01u8, 0, 0];
+        let mut offset = 0;
+        let result = decode_flat_value(&buf, &mut offset);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("missing length"));
+    }
+
+    #[test]
+    fn test_decode_flat_value_string_truncated() {
+        let mut buf = vec![0x01u8];
+        buf.extend_from_slice(&50u32.to_le_bytes());
+        buf.extend_from_slice(b"short");
+        let mut offset = 0;
+        let result = decode_flat_value(&buf, &mut offset);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("truncated"));
+    }
+
+    #[test]
+    fn test_decode_flat_value_integer_missing_data() {
+        let buf = [0x02u8, 0, 0, 0];
+        let mut offset = 0;
+        let result = decode_flat_value(&buf, &mut offset);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("missing data"));
+    }
+
+    #[test]
+    fn test_decode_flat_value_float_missing_data() {
+        let buf = [0x05u8, 0, 0];
+        let mut offset = 0;
+        let result = decode_flat_value(&buf, &mut offset);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("missing data"));
+    }
+
+    #[test]
+    fn test_decode_flat_value_bool_missing_data() {
+        let buf = [0x03u8];
+        let mut offset = 0;
+        let result = decode_flat_value(&buf, &mut offset);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decode_flat_value_unknown_tag() {
+        let buf = [0xEEu8];
+        let mut offset = 0;
+        let result = decode_flat_value(&buf, &mut offset);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unknown tag"));
+    }
+
+    #[test]
+    fn test_decode_flat_value_float_round_trip() {
+        let val = json!(3.14);
+        let mut buf = Vec::new();
+        encode_flat_value(&val, &mut buf);
+        let mut offset = 0;
+        let decoded = decode_flat_value(&buf, &mut offset).unwrap();
+        assert_eq!(decoded, 3.14);
+    }
+
+    // ─── Coverage: value_to_u64 variants ───────────────────────────────────
+
+    #[test]
+    fn test_value_to_u64_variants() {
+        assert_eq!(value_to_u64(&json!(42)), 42);
+        assert_eq!(value_to_u64(&json!("123")), 123);
+        assert_eq!(value_to_u64(&json!("not_a_number")), 0);
+        assert_eq!(value_to_u64(&json!(true)), 0);
+        assert_eq!(value_to_u64(&json!(null)), 0);
+        assert_eq!(value_to_u64(&json!(-1)), 0);
+    }
+
+    // ─── Coverage: method_name / method_from_str uncovered arms ────────────
+
+    #[test]
+    fn test_method_name_all_variants() {
+        assert_eq!(method_name(METHOD_LOGGING_SET_LEVEL), "logging/setLevel");
+        assert_eq!(method_name(METHOD_HEALTH_CHECK), "health/check");
+        assert_eq!(method_name(NOTIF_INITIALIZED), "notifications/initialized");
+        assert_eq!(method_name(NOTIF_CANCELLED), "notifications/cancelled");
+    }
+
+    #[test]
+    fn test_method_from_str_all_variants() {
+        assert_eq!(method_from_str("logging/setLevel"), Some(METHOD_LOGGING_SET_LEVEL));
+        assert_eq!(method_from_str("health/check"), Some(METHOD_HEALTH_CHECK));
+        assert_eq!(method_from_str("notifications/initialized"), Some(NOTIF_INITIALIZED));
+        assert_eq!(method_from_str("notifications/cancelled"), Some(NOTIF_CANCELLED));
+    }
+
+    // ─── Coverage: extract_tools_call_fields truncated object errors ───────
+
+    #[test]
+    fn test_extract_tools_call_fields_truncated_object() {
+        // object tag with only 3 bytes (needs 5 for count)
+        let data = [0x06, 0, 0];
+        let result = extract_tools_call_fields(&data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("truncated"));
+    }
+
+    #[test]
+    fn test_extract_tools_call_fields_truncated_key_length() {
+        let mut data = vec![0x06];
+        data.extend_from_slice(&1u32.to_be_bytes());
+        // no key length bytes
+        let result = extract_tools_call_fields(&data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("truncated key length"));
+    }
+
+    #[test]
+    fn test_extract_tools_call_fields_truncated_key() {
+        let mut data = vec![0x06];
+        data.extend_from_slice(&1u32.to_be_bytes());
+        data.extend_from_slice(&10u16.to_be_bytes());
+        data.extend_from_slice(b"short");
+        let result = extract_tools_call_fields(&data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("truncated key"));
+    }
+
+    #[test]
+    fn test_skip_tlv_bool_success() {
+        assert_eq!(skip_tlv_value(&[0x03, 0x01]).unwrap(), 2);
+        assert_eq!(skip_tlv_value(&[0x03, 0x00]).unwrap(), 2);
+    }
+
+    #[test]
+    fn test_skip_tlv_string_success() {
+        let mut buf = vec![0x01];
+        buf.extend_from_slice(&5u32.to_be_bytes());
+        buf.extend_from_slice(b"hello");
+        assert_eq!(skip_tlv_value(&buf).unwrap(), buf.len());
+    }
+
+    #[test]
+    fn test_skip_tlv_integer_and_float() {
+        let mut int_buf = vec![0x02];
+        int_buf.extend_from_slice(&42i64.to_be_bytes());
+        assert_eq!(skip_tlv_value(&int_buf).unwrap(), 9);
+
+        let mut float_buf = vec![0x07];
+        float_buf.extend_from_slice(&3.14f64.to_be_bytes());
+        assert_eq!(skip_tlv_value(&float_buf).unwrap(), 9);
+    }
+
+    #[test]
+    fn test_extract_tools_call_fields_unknown_key_ignored() {
+        let mut data = vec![0x06];
+        data.extend_from_slice(&2u32.to_be_bytes());
+        data.extend_from_slice(&7u16.to_be_bytes());
+        data.extend_from_slice(b"unknown");
+        data.push(0x04);
+        data.extend_from_slice(&4u16.to_be_bytes());
+        data.extend_from_slice(b"name");
+        data.push(0x01);
+        data.extend_from_slice(&4u32.to_be_bytes());
+        data.extend_from_slice(b"echo");
+        let (name, args) = extract_tools_call_fields(&data).unwrap();
+        assert_eq!(name, Some("echo"));
+        assert!(args.is_none());
+    }
+
+    #[test]
+    fn test_method_name_tools_list() {
+        assert_eq!(method_name(METHOD_TOOLS_LIST), "tools/list");
+    }
+
+    #[test]
+    fn test_parse_flat_response_merkle_mismatch() {
+        let result = json!(["ok"]);
+        let mut frame = build_flat_response(STATUS_OK, 1, &result);
+        let last = frame.len() - 1;
+        frame[last] ^= 0xFF;
+        let err = parse_flat_response(&frame).err().unwrap();
+        assert!(err.to_string().contains("Merkle"));
+    }
+
+    #[test]
+    fn test_parse_flat_request_merkle_mismatch() {
+        let mut frame = build_flat_request(METHOD_PING, &json!(1), "test", &Value::Null);
+        let last = frame.len() - 1;
+        frame[last] ^= 0xFF;
+        let err = parse_flat_request(&frame).err().unwrap();
+        assert!(err.to_string().contains("Merkle"));
     }
 
 }

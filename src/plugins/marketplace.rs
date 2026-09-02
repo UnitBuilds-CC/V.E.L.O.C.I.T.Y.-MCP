@@ -298,6 +298,11 @@ impl Marketplace {
             .ok_or_else(|| format!("Plugin '{}' not found in marketplace", plugin_id))?
             .clone();
         
+        // Validate plugin_id against path traversal
+        if metadata.id.contains("..") || metadata.id.contains('/') || metadata.id.contains('\\') {
+            return Err(format!("Invalid plugin ID '{}': must not contain path separators or '..'", metadata.id));
+        }
+
         // Download plugin (simulated for now)
         let install_path = self.storage_path.join("plugins").join(&metadata.id);
         std::fs::create_dir_all(&install_path)
@@ -747,5 +752,275 @@ mod tests {
         assert_eq!(stats.installed_plugins, 1);
         assert_eq!(stats.verified_plugins, 2);
         assert_eq!(stats.total_downloads, 450, "Total downloads should be 100 + 200 + 150");
+    }
+
+    #[test]
+    fn test_serde_defaults() {
+        let _t = test_timer("test_serde_defaults");
+        let json = r#"{"query": "test", "tags": [], "verified_only": false, "offset": 0}"#;
+        let q: SearchQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(q.sort_by, "downloads");
+        assert_eq!(q.limit, 20);
+    }
+
+    #[test]
+    fn test_marketplace_new_with_existing_files() {
+        let _t = test_timer("test_marketplace_new_with_existing_files");
+        let dir = tempdir().unwrap();
+
+        let index = MarketplaceIndex {
+            plugins: vec![make_plugin("persisted.plugin", "Persisted", "Author", vec![], 42, 3.0, true)],
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+            version: "1".to_string(),
+        };
+        std::fs::write(dir.path().join("index.json"), serde_json::to_string(&index).unwrap()).unwrap();
+
+        let mut installed_map = HashMap::new();
+        installed_map.insert("persisted.plugin".to_string(), InstalledPlugin {
+            metadata: make_plugin("persisted.plugin", "Persisted", "Author", vec![], 42, 3.0, true),
+            install_path: PathBuf::from("/tmp/persisted"),
+            installed_at: "2026-01-01".to_string(),
+            enabled: true,
+        });
+        std::fs::write(dir.path().join("installed.json"), serde_json::to_string(&installed_map).unwrap()).unwrap();
+
+        let marketplace = Marketplace::new(dir.path());
+        assert_eq!(marketplace.index.plugins.len(), 1);
+        assert_eq!(marketplace.index.plugins[0].id, "persisted.plugin");
+        assert!(marketplace.installed.contains_key("persisted.plugin"));
+    }
+
+    #[test]
+    fn test_marketplace_new_with_corrupt_files() {
+        let _t = test_timer("test_marketplace_new_with_corrupt_files");
+        let dir = tempdir().unwrap();
+
+        std::fs::write(dir.path().join("index.json"), "not valid json").unwrap();
+        std::fs::write(dir.path().join("installed.json"), "also not valid").unwrap();
+
+        let marketplace = Marketplace::new(dir.path());
+        assert!(marketplace.index.plugins.is_empty());
+        assert!(marketplace.installed.is_empty());
+    }
+
+    #[test]
+    fn test_update_index() {
+        let _t = test_timer("test_update_index");
+        let dir = tempdir().unwrap();
+        let mut marketplace = Marketplace::new(dir.path());
+
+        let new_index = MarketplaceIndex {
+            plugins: vec![make_plugin("new.plugin", "New", "Author", vec![], 10, 4.0, false)],
+            updated_at: "2026-09-02T00:00:00Z".to_string(),
+            version: "2".to_string(),
+        };
+        let result = marketplace.update_index(new_index);
+        assert!(result.is_ok(), "update_index should succeed: {:?}", result.err());
+        assert_eq!(marketplace.index.plugins.len(), 1);
+        assert_eq!(marketplace.index.plugins[0].id, "new.plugin");
+
+        assert!(dir.path().join("index.json").exists(), "index.json should be persisted");
+    }
+
+    #[test]
+    fn test_search_sort_by_updated_at() {
+        let _t = test_timer("test_search_sort_by_updated_at");
+        let dir = tempdir().unwrap();
+        let mut marketplace = Marketplace::new(dir.path());
+
+        let mut p1 = make_plugin("p1", "Old", "A", vec![], 100, 4.0, false);
+        p1.updated_at = "2026-01-01T00:00:00Z".to_string();
+        let mut p2 = make_plugin("p2", "New", "A", vec![], 100, 4.0, false);
+        p2.updated_at = "2026-09-01T00:00:00Z".to_string();
+        marketplace.index.plugins.push(p1);
+        marketplace.index.plugins.push(p2);
+
+        let query = SearchQuery {
+            query: String::new(),
+            tags: Vec::new(),
+            author: None,
+            verified_only: false,
+            sort_by: "updated_at".to_string(),
+            limit: 10,
+            offset: 0,
+        };
+        let results = marketplace.search(&query);
+        assert_eq!(results.plugins[0].id, "p2", "Most recently updated should be first");
+    }
+
+    #[test]
+    fn test_search_sort_unknown_field() {
+        let _t = test_timer("test_search_sort_unknown_field");
+        let dir = tempdir().unwrap();
+        let mut marketplace = Marketplace::new(dir.path());
+        marketplace.index.plugins.push(make_plugin("p1", "P1", "A", vec![], 100, 4.0, false));
+
+        let query = SearchQuery {
+            query: String::new(),
+            tags: Vec::new(),
+            author: None,
+            verified_only: false,
+            sort_by: "nonexistent".to_string(),
+            limit: 10,
+            offset: 0,
+        };
+        let results = marketplace.search(&query);
+        assert_eq!(results.total, 1);
+    }
+
+    #[test]
+    fn test_install_already_installed() {
+        let _t = test_timer("test_install_already_installed");
+        let dir = tempdir().unwrap();
+        let mut marketplace = Marketplace::new(dir.path());
+        marketplace.index.plugins.push(make_plugin("dup.plugin", "Dup", "A", vec![], 0, 0.0, false));
+
+        marketplace.install("dup.plugin").unwrap();
+        let result = marketplace.install("dup.plugin");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("already installed"), "Expected 'already installed' error, got: {}", err);
+    }
+
+    #[test]
+    fn test_install_path_traversal() {
+        let _t = test_timer("test_install_path_traversal");
+        let dir = tempdir().unwrap();
+        let mut marketplace = Marketplace::new(dir.path());
+
+        let mut evil = make_plugin("../etc/evil", "Evil", "A", vec![], 0, 0.0, false);
+        evil.id = "../etc/evil".to_string();
+        marketplace.index.plugins.push(evil);
+
+        let result = marketplace.install("../etc/evil");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("path separators") || err.contains(".."), "Expected path traversal error, got: {}", err);
+    }
+
+    #[test]
+    fn test_uninstall_removes_directory() {
+        let _t = test_timer("test_uninstall_removes_directory");
+        let dir = tempdir().unwrap();
+        let mut marketplace = Marketplace::new(dir.path());
+        marketplace.index.plugins.push(make_plugin("rm.plugin", "Rm", "A", vec![], 0, 0.0, false));
+
+        let installed = marketplace.install("rm.plugin").unwrap();
+        assert!(installed.install_path.exists(), "Install directory should exist after install");
+
+        marketplace.uninstall("rm.plugin").unwrap();
+        assert!(!installed.install_path.exists(), "Install directory should be removed after uninstall");
+    }
+
+    #[test]
+    fn test_list_installed() {
+        let _t = test_timer("test_list_installed");
+        let dir = tempdir().unwrap();
+        let mut marketplace = Marketplace::new(dir.path());
+        marketplace.index.plugins.push(make_plugin("a", "A", "Auth", vec![], 0, 0.0, false));
+        marketplace.index.plugins.push(make_plugin("b", "B", "Auth", vec![], 0, 0.0, false));
+
+        marketplace.install("a").unwrap();
+        marketplace.install("b").unwrap();
+
+        let list = marketplace.list_installed();
+        assert_eq!(list.len(), 2);
+    }
+
+    #[test]
+    fn test_set_enabled() {
+        let _t = test_timer("test_set_enabled");
+        let dir = tempdir().unwrap();
+        let mut marketplace = Marketplace::new(dir.path());
+        marketplace.index.plugins.push(make_plugin("toggle", "Toggle", "A", vec![], 0, 0.0, false));
+        marketplace.install("toggle").unwrap();
+
+        assert!(marketplace.installed["toggle"].enabled);
+
+        marketplace.set_enabled("toggle", false).unwrap();
+        assert!(!marketplace.installed["toggle"].enabled);
+
+        marketplace.set_enabled("toggle", true).unwrap();
+        assert!(marketplace.installed["toggle"].enabled);
+    }
+
+    #[test]
+    fn test_set_enabled_not_installed() {
+        let _t = test_timer("test_set_enabled_not_installed");
+        let dir = tempdir().unwrap();
+        let mut marketplace = Marketplace::new(dir.path());
+
+        let result = marketplace.set_enabled("nonexistent", true);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not installed"), "Expected 'not installed' error, got: {}", err);
+    }
+
+    #[test]
+    fn test_submit_review_invalid_rating() {
+        let _t = test_timer("test_submit_review_invalid_rating");
+        let dir = tempdir().unwrap();
+        let mut marketplace = Marketplace::new(dir.path());
+        marketplace.index.plugins.push(make_plugin("rated", "Rated", "A", vec![], 0, 0.0, false));
+
+        let result = marketplace.submit_review("rated", "user", 0, "bad".to_string());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("between 1 and 5"));
+
+        let result = marketplace.submit_review("rated", "user", 6, "bad".to_string());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("between 1 and 5"));
+    }
+
+    #[test]
+    fn test_check_updates_no_update_needed() {
+        let _t = test_timer("test_check_updates_no_update_needed");
+        let dir = tempdir().unwrap();
+        let mut marketplace = Marketplace::new(dir.path());
+        marketplace.index.plugins.push(make_plugin("same", "Same", "A", vec![], 0, 0.0, false));
+
+        marketplace.installed.insert("same".to_string(), InstalledPlugin {
+            metadata: make_plugin("same", "Same", "A", vec![], 0, 0.0, false),
+            install_path: PathBuf::from("/tmp/same"),
+            installed_at: "2026-01-01".to_string(),
+            enabled: true,
+        });
+
+        let updates = marketplace.check_updates();
+        assert!(updates.is_empty(), "No updates when versions match");
+    }
+
+    #[test]
+    fn test_update_plugin_success() {
+        let _t = test_timer("test_update_plugin_success");
+        let dir = tempdir().unwrap();
+        let mut marketplace = Marketplace::new(dir.path());
+
+        let mut latest = make_plugin("up.plugin", "Up", "A", vec![], 0, 0.0, false);
+        latest.version = "2.0.0".to_string();
+        marketplace.index.plugins.push(latest);
+
+        marketplace.installed.insert("up.plugin".to_string(), InstalledPlugin {
+            metadata: make_plugin("up.plugin", "Up", "A", vec![], 0, 0.0, false),
+            install_path: dir.path().join("plugins").join("up.plugin"),
+            installed_at: "2026-01-01".to_string(),
+            enabled: true,
+        });
+
+        let result = marketplace.update_plugin("up.plugin");
+        assert!(result.is_ok(), "update_plugin should succeed: {:?}", result.err());
+        let updated = result.unwrap();
+        assert_eq!(updated.metadata.version, "2.0.0");
+    }
+
+    #[test]
+    fn test_update_plugin_not_installed() {
+        let _t = test_timer("test_update_plugin_not_installed");
+        let dir = tempdir().unwrap();
+        let mut marketplace = Marketplace::new(dir.path());
+
+        let result = marketplace.update_plugin("nonexistent");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not installed"));
     }
 }

@@ -187,7 +187,7 @@ pub fn handle_sampling_create_message(params: &Value) -> Result<Value, String> {
     let messages: Vec<SamplingMessage> = serde_json::from_value(params["messages"].clone())
         .map_err(|e| format!("Invalid messages: {}", e))?;
 
-    let max_tokens = params["maxTokens"].as_u64().map(|v| v as u32);
+    let max_tokens = params["maxTokens"].as_u64().and_then(|v| u32::try_from(v).ok());
     let temperature = params["temperature"].as_f64();
     let include_context = params["includeContext"].as_str().map(|s| s.to_string());
     
@@ -514,7 +514,57 @@ mod tests {
         // Verify that conversation history was tracked
         let history = get_conversation("conv-123");
         assert_eq!(history.len(), 2); // user message + assistant response
-        
+
         clear_conversation("conv-123");
+    }
+
+    #[test]
+    fn test_conversation_history_eviction() {
+        // Clear any existing test conversations
+        for i in 0..260 {
+            clear_conversation(&format!("evict_test_{}", i));
+        }
+
+        // Fill up to MAX_CONVERSATIONS (256)
+        for i in 0..256 {
+            let conv_id = format!("evict_test_{}", i);
+            add_to_conversation(&conv_id, SamplingMessage {
+                role: "user".to_string(),
+                content: SamplingContent {
+                    content_type: "text".to_string(),
+                    text: Some(format!("Message {}", i)),
+                    resource: None,
+                },
+            });
+        }
+
+        // Verify we have 256 conversations
+        {
+            let history = get_conversation_history().lock().unwrap();
+            assert_eq!(history.len(), 256, "Should have 256 conversations");
+        }
+
+        // Add one more - should evict the oldest
+        add_to_conversation("evict_test_new", SamplingMessage {
+            role: "user".to_string(),
+            content: SamplingContent {
+                content_type: "text".to_string(),
+                text: Some("New message".to_string()),
+                resource: None,
+            },
+        });
+
+        // Verify eviction occurred
+        {
+            let history = get_conversation_history().lock().unwrap();
+            assert_eq!(history.len(), 256, "Should still have 256 after eviction");
+            assert!(history.contains_key("evict_test_new"), "New conversation should be present");
+        }
+
+        // Clean up
+        for i in 0..256 {
+            clear_conversation(&format!("evict_test_{}", i));
+        }
+        clear_conversation("evict_test_new");
     }
 }

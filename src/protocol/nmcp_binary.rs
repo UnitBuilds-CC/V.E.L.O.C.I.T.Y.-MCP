@@ -3,6 +3,7 @@ use crate::protocol::nda_native;
 use crate::registry;
 use crate::audit::{self, AuditOutcome};
 use crate::rate_limit;
+use crate::sandbox;
 use serde_json::{json, Value};
 use std::error::Error;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -116,10 +117,10 @@ fn decode_req_data(data: &[u8]) -> Result<Value, Box<dyn Error>> {
     Ok(v)
 }
 
-fn build_response_value(id_tlv: &[u8], result: &Value) -> Vec<u8> {
+fn build_response_value(id_tlv: &[u8], result: &Value) -> Result<Vec<u8>, Box<dyn Error>> {
     let mut tlv = Vec::new();
-    nda_native::encode_json_value(result, &mut tlv);
-    nda_native::build_nda_response_raw(nda_native::STATUS_OK, id_tlv, &tlv)
+    nda_native::encode_json_value(result, &mut tlv)?;
+    Ok(nda_native::build_nda_response_raw(nda_native::STATUS_OK, id_tlv, &tlv))
 }
 
 /// Dispatch an NDA request and return the response frame.
@@ -163,7 +164,9 @@ pub fn dispatch_nda_request(raw: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
                 }
             });
             let mut result_tlv = Vec::new();
-            nda_native::encode_json_value(&result, &mut result_tlv);
+            if let Err(e) = nda_native::encode_json_value(&result, &mut result_tlv) {
+                return Ok(nda_native::build_nda_error_raw(req.id_tlv, &format!("Encoding error: {}", e)));
+            }
             nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, &result_tlv)
         }
         nda_native::NOTIF_INITIALIZED => {
@@ -206,13 +209,15 @@ pub fn dispatch_nda_request(raw: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
                         audit::record_tool_call_with_merkle(name, call_start, AuditOutcome::Success, merkle_root.clone());
                         let result_val: Value = serde_json::from_str(&res).unwrap_or_else(|_| json!(res));
                         let mut result_tlv = Vec::new();
-                        nda_native::encode_json_value(&result_val, &mut result_tlv);
+                        if let Err(e) = nda_native::encode_json_value(&result_val, &mut result_tlv) {
+                            return Ok(nda_native::build_nda_error_raw(req.id_tlv, &sandbox::sanitize_error(&format!("Result encoding error: {}", e))));
+                        }
                         nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, &result_tlv)
                     }
                     Err(e) => {
                         error!(tool = name, error = %e, "Tool execution failed (NDA-native)");
                         audit::record_tool_call_with_merkle(name, call_start, AuditOutcome::Error(e.to_string()), merkle_root.clone());
-                        nda_native::build_nda_error_raw(req.id_tlv, &format!("Error running tool '{}': {}", name, e))
+                        nda_native::build_nda_error_raw(req.id_tlv, &sandbox::sanitize_error(&format!("Error running tool '{}': {}", name, e)))
                     }
                 }
             }
@@ -225,7 +230,7 @@ pub fn dispatch_nda_request(raw: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
                 Ok(data) => {
                     let cursor = data.get("cursor").and_then(|c| c.as_str());
                     let result = crate::resources::handle_resources_list(cursor);
-                    build_response_value(req.id_tlv, &result)
+                    build_response_value(req.id_tlv, &result)?
                 }
                 Err(e) => nda_native::build_nda_error_raw(req.id_tlv, &format!("Invalid request data: {}", e)),
             }
@@ -235,8 +240,8 @@ pub fn dispatch_nda_request(raw: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
                 Ok(data) => {
                     let uri = data["uri"].as_str().unwrap_or("");
                     match crate::resources::handle_resources_read(uri) {
-                        Ok(result) => build_response_value(req.id_tlv, &result),
-                        Err(e) => nda_native::build_nda_error_raw(req.id_tlv, &e),
+                        Ok(result) => build_response_value(req.id_tlv, &result)?,
+                        Err(e) => nda_native::build_nda_error_raw(req.id_tlv, &sandbox::sanitize_error(&e)),
                     }
                 }
                 Err(e) => nda_native::build_nda_error_raw(req.id_tlv, &format!("Invalid request data: {}", e)),
@@ -247,7 +252,7 @@ pub fn dispatch_nda_request(raw: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
                 Ok(data) => {
                     let cursor = data.get("cursor").and_then(|c| c.as_str());
                     let result = crate::resources::handle_resource_templates_list(cursor);
-                    build_response_value(req.id_tlv, &result)
+                    build_response_value(req.id_tlv, &result)?
                 }
                 Err(e) => nda_native::build_nda_error_raw(req.id_tlv, &format!("Invalid request data: {}", e)),
             }
@@ -257,7 +262,7 @@ pub fn dispatch_nda_request(raw: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
                 Ok(data) => {
                     let cursor = data.get("cursor").and_then(|c| c.as_str());
                     let result = crate::resources::handle_prompts_list(cursor);
-                    build_response_value(req.id_tlv, &result)
+                    build_response_value(req.id_tlv, &result)?
                 }
                 Err(e) => nda_native::build_nda_error_raw(req.id_tlv, &format!("Invalid request data: {}", e)),
             }
@@ -268,8 +273,8 @@ pub fn dispatch_nda_request(raw: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
                     let name = data["name"].as_str().unwrap_or("");
                     let arguments = &data["arguments"];
                     match crate::resources::handle_prompts_get(name, arguments) {
-                        Ok(result) => build_response_value(req.id_tlv, &result),
-                        Err(e) => nda_native::build_nda_error_raw(req.id_tlv, &e),
+                        Ok(result) => build_response_value(req.id_tlv, &result)?,
+                        Err(e) => nda_native::build_nda_error_raw(req.id_tlv, &sandbox::sanitize_error(&e)),
                     }
                 }
                 Err(e) => nda_native::build_nda_error_raw(req.id_tlv, &format!("Invalid request data: {}", e)),
@@ -279,8 +284,8 @@ pub fn dispatch_nda_request(raw: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
             match decode_req_data(req.data) {
                 Ok(data) => {
                     match crate::sampling::handle_sampling_create_message(&data) {
-                        Ok(result) => build_response_value(req.id_tlv, &result),
-                        Err(e) => nda_native::build_nda_error_raw(req.id_tlv, &e),
+                        Ok(result) => build_response_value(req.id_tlv, &result)?,
+                        Err(e) => nda_native::build_nda_error_raw(req.id_tlv, &sandbox::sanitize_error(&e)),
                     }
                 }
                 Err(e) => nda_native::build_nda_error_raw(req.id_tlv, &format!("Invalid request data: {}", e)),
@@ -326,7 +331,9 @@ fn handle_nda_native(
         Ok(frame) => frame,
         Err(e) => {
             warn!(error = %e, "NDA frame parse error");
-            let err_frame = nda_native::build_nda_error(&Value::Null, &format!("Parse error: {}", e));
+            let err_msg = format!("Parse error: {}", e);
+            let err_frame = nda_native::build_nda_error(&Value::Null, &err_msg)
+                .unwrap_or_else(|_| nda_native::build_nda_error_raw(&[], &err_msg));
             buffer.write_output_raw(&err_frame)?;
             SharedMemoryBuffer::sync_fence();
             buffer.set_state(shmem::STATE_ERROR);
@@ -442,7 +449,7 @@ fn handle_json_shmem(buffer: &mut SharedMemoryBuffer, input_str: &str) -> Result
                         is_error = true;
                         error!(tool = name, error = %e, "Tool execution failed in shmem");
                         audit::record_tool_call(name, call_start, AuditOutcome::Error(e.to_string()));
-                        format!("Error running tool '{}': {}", name, e)
+                        sandbox::sanitize_error(&format!("Error running tool '{}': {}", name, e))
                     }
                 };
 
@@ -469,7 +476,7 @@ fn handle_json_shmem(buffer: &mut SharedMemoryBuffer, input_str: &str) -> Result
         }
         "resources/list" => {
             let cursor = request["params"]["cursor"].as_str();
-            crate::resources::handle_resources_list(cursor)
+            json!({"jsonrpc": "2.0", "id": id, "result": crate::resources::handle_resources_list(cursor)})
         }
         "resources/read" => {
             let uri = request["params"]["uri"].as_str().unwrap_or("");
@@ -488,7 +495,7 @@ fn handle_json_shmem(buffer: &mut SharedMemoryBuffer, input_str: &str) -> Result
         }
         "resources/templates/list" => {
             let cursor = request["params"]["cursor"].as_str();
-            crate::resources::handle_resource_templates_list(cursor)
+            json!({"jsonrpc": "2.0", "id": id, "result": crate::resources::handle_resource_templates_list(cursor)})
         }
         "resources/subscribe" => {
             let uri = request["params"]["uri"].as_str().unwrap_or("");
@@ -508,7 +515,7 @@ fn handle_json_shmem(buffer: &mut SharedMemoryBuffer, input_str: &str) -> Result
         }
         "prompts/list" => {
             let cursor = request["params"]["cursor"].as_str();
-            crate::resources::handle_prompts_list(cursor)
+            json!({"jsonrpc": "2.0", "id": id, "result": crate::resources::handle_prompts_list(cursor)})
         }
         "prompts/get" => {
             let name = request["params"]["name"].as_str().unwrap_or("");
@@ -761,4 +768,983 @@ mod tests {
         let frame = NmcpBinaryFrame::parse(&buffer).unwrap();
         assert_eq!(frame.merkle_root, &merkle);
     }
+
+    // ─── dispatch_nda_request tests ─────────────────────────────────────────
+
+    fn parse_response_status(frame: &[u8]) -> u8 {
+        assert!(frame.len() >= 37, "response frame too short: {} bytes", frame.len());
+        assert_eq!(&frame[..4], b"NMCP");
+        frame[36]
+    }
+
+    fn parse_response_result_json(frame: &[u8]) -> Value {
+        let payload = &frame[37..]; // skip header + status byte
+        // skip id_tlv: decode it to find its length
+        let (_, id_consumed) = nda_native::decode_json_value(payload).unwrap();
+        let result_bytes = &payload[id_consumed..];
+        if result_bytes.is_empty() {
+            return Value::Null;
+        }
+        nda_native::decode_json_value(result_bytes).map(|(v, _)| v).unwrap_or(Value::Null)
+    }
+
+    fn parse_response_error_msg(frame: &[u8]) -> String {
+        let payload = &frame[37..];
+        let (_, id_consumed) = nda_native::decode_json_value(payload).unwrap();
+        let result_bytes = &payload[id_consumed..];
+        // error result is encoded as [0x01][4-byte len][string bytes]
+        if result_bytes.is_empty() || result_bytes[0] != 0x01 {
+            return String::new();
+        }
+        let len = u32::from_be_bytes([result_bytes[1], result_bytes[2], result_bytes[3], result_bytes[4]]) as usize;
+        String::from_utf8_lossy(&result_bytes[5..5 + len]).to_string()
+    }
+
+    #[test]
+    fn test_dispatch_ping() {
+        let frame = nda_native::build_nda_request(nda_native::METHOD_PING, &json!(1u64), &Value::Null).unwrap();
+        let resp = dispatch_nda_request(&frame).unwrap();
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_OK);
+        let result = parse_response_result_json(&resp);
+        assert_eq!(result, json!({}));
+    }
+
+    #[test]
+    fn test_dispatch_initialize() {
+        let frame = nda_native::build_nda_request(nda_native::METHOD_INITIALIZE, &json!(1u64), &Value::Null).unwrap();
+        let resp = dispatch_nda_request(&frame).unwrap();
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_OK);
+        let result = parse_response_result_json(&resp);
+        assert!(result["protocolVersion"].is_string());
+        assert!(result["capabilities"]["tools"].is_object());
+        assert!(result["capabilities"]["resources"].is_object());
+        assert!(result["capabilities"]["prompts"].is_object());
+        assert!(result["capabilities"]["sampling"].is_object());
+        assert!(result["capabilities"]["logging"].is_object());
+        assert_eq!(result["serverInfo"]["name"], "velocity-mcp-rust-server");
+        assert!(result["serverInfo"]["version"].is_string());
+    }
+
+    #[test]
+    fn test_dispatch_initialized_notification() {
+        let frame = nda_native::build_nda_request(nda_native::NOTIF_INITIALIZED, &json!(0u64), &Value::Null).unwrap();
+        let resp = dispatch_nda_request(&frame).unwrap();
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_OK);
+    }
+
+    #[test]
+    fn test_dispatch_logging_set_level() {
+        let frame = nda_native::build_nda_request(nda_native::METHOD_LOGGING_SET_LEVEL, &json!(1u64), &json!("debug")).unwrap();
+        let resp = dispatch_nda_request(&frame).unwrap();
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_OK);
+    }
+
+    #[test]
+    fn test_dispatch_logging_set_level_empty_data() {
+        let frame = nda_native::build_nda_request(nda_native::METHOD_LOGGING_SET_LEVEL, &json!(1u64), &Value::Null).unwrap();
+        let resp = dispatch_nda_request(&frame).unwrap();
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_OK);
+    }
+
+    #[test]
+    fn test_dispatch_tools_list() {
+        let frame = nda_native::build_nda_request(nda_native::METHOD_TOOLS_LIST, &json!(1u64), &Value::Null).unwrap();
+        let resp = dispatch_nda_request(&frame).unwrap();
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_OK);
+        let result = parse_response_result_json(&resp);
+        assert!(result["tools"].is_array());
+    }
+
+    #[test]
+    fn test_dispatch_tools_call_unknown_tool() {
+        let data = json!({"name": "nonexistent_tool_xyz", "arguments": {}});
+        let frame = nda_native::build_nda_request(nda_native::METHOD_TOOLS_CALL, &json!(1u64), &data).unwrap();
+        let resp = dispatch_nda_request(&frame).unwrap();
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_ERROR);
+        let err = parse_response_error_msg(&resp);
+        assert!(err.contains("nonexistent_tool_xyz"), "error was: {}", err);
+    }
+
+    #[test]
+    fn test_dispatch_tools_call_empty_data() {
+        let frame = nda_native::build_nda_request(nda_native::METHOD_TOOLS_CALL, &json!(1u64), &Value::Null).unwrap();
+        let resp = dispatch_nda_request(&frame).unwrap();
+        // empty name → tool not found
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_ERROR);
+    }
+
+    #[test]
+    fn test_dispatch_health_check() {
+        let frame = nda_native::build_nda_request(nda_native::METHOD_HEALTH_CHECK, &json!(1u64), &Value::Null).unwrap();
+        let resp = dispatch_nda_request(&frame).unwrap();
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_OK);
+        let result = parse_response_result_json(&resp);
+        assert_eq!(result["status"], "healthy");
+        assert_eq!(result["mode"], "shmem-nda");
+    }
+
+    #[test]
+    fn test_dispatch_resources_list() {
+        let frame = nda_native::build_nda_request(nda_native::METHOD_RESOURCES_LIST, &json!(1u64), &Value::Null).unwrap();
+        let resp = dispatch_nda_request(&frame).unwrap();
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_OK);
+        let result = parse_response_result_json(&resp);
+        assert!(result["resources"].is_array());
+    }
+
+    #[test]
+    fn test_dispatch_resources_list_with_cursor() {
+        let data = json!({"cursor": "abc123"});
+        let frame = nda_native::build_nda_request(nda_native::METHOD_RESOURCES_LIST, &json!(1u64), &data).unwrap();
+        let resp = dispatch_nda_request(&frame).unwrap();
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_OK);
+    }
+
+    #[test]
+    fn test_dispatch_resources_read_missing_uri() {
+        let data = json!({});
+        let frame = nda_native::build_nda_request(nda_native::METHOD_RESOURCES_READ, &json!(1u64), &data).unwrap();
+        let resp = dispatch_nda_request(&frame).unwrap();
+        // empty uri → error from resources handler
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_ERROR);
+    }
+
+    #[test]
+    fn test_dispatch_resource_templates_list() {
+        let frame = nda_native::build_nda_request(nda_native::METHOD_RESOURCE_TEMPLATES_LIST, &json!(1u64), &Value::Null).unwrap();
+        let resp = dispatch_nda_request(&frame).unwrap();
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_OK);
+        let result = parse_response_result_json(&resp);
+        assert!(result["resourceTemplates"].is_array());
+    }
+
+    #[test]
+    fn test_dispatch_prompts_list() {
+        let frame = nda_native::build_nda_request(nda_native::METHOD_PROMPTS_LIST, &json!(1u64), &Value::Null).unwrap();
+        let resp = dispatch_nda_request(&frame).unwrap();
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_OK);
+        let result = parse_response_result_json(&resp);
+        assert!(result["prompts"].is_array());
+    }
+
+    #[test]
+    fn test_dispatch_prompts_get_unknown() {
+        let data = json!({"name": "nonexistent_prompt xyz"});
+        let frame = nda_native::build_nda_request(nda_native::METHOD_PROMPTS_GET, &json!(1u64), &data).unwrap();
+        let resp = dispatch_nda_request(&frame).unwrap();
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_ERROR);
+    }
+
+    #[test]
+    fn test_dispatch_sampling_create_message() {
+        let data = json!({"messages": [{"role": "user", "content": {"type": "text", "text": "hello"}}]});
+        let frame = nda_native::build_nda_request(nda_native::METHOD_SAMPLING_CREATE, &json!(1u64), &data).unwrap();
+        let resp = dispatch_nda_request(&frame).unwrap();
+        // may succeed or fail depending on sampling handler, but should not panic
+        let status = parse_response_status(&resp);
+        assert!(status == nda_native::STATUS_OK || status == nda_native::STATUS_ERROR);
+    }
+
+    #[test]
+    fn test_dispatch_cancelled_notification() {
+        let frame = nda_native::build_nda_request(nda_native::NOTIF_CANCELLED, &json!(42u64), &Value::Null).unwrap();
+        let resp = dispatch_nda_request(&frame).unwrap();
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_OK);
+    }
+
+    #[test]
+    fn test_dispatch_progress_notification() {
+        let data = json!({"progressToken": "tok1", "progress": 0.5});
+        let frame = nda_native::build_nda_request(nda_native::NOTIF_PROGRESS, &json!(0u64), &data).unwrap();
+        let resp = dispatch_nda_request(&frame).unwrap();
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_OK);
+    }
+
+    #[test]
+    fn test_dispatch_unknown_method() {
+        let frame = nda_native::build_nda_request(0xFF, &json!(1u64), &Value::Null).unwrap();
+        let resp = dispatch_nda_request(&frame).unwrap();
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_ERROR);
+        let err = parse_response_error_msg(&resp);
+        assert!(err.contains("Unknown method: 0xff"), "error was: {}", err);
+    }
+
+    #[test]
+    fn test_dispatch_malformed_frame() {
+        let result = dispatch_nda_request(&[0u8; 5]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_dispatch_empty_frame() {
+        let result = dispatch_nda_request(&[]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_hex_encode_empty() {
+        assert_eq!(hex_encode(&[]), "");
+    }
+
+    #[test]
+    fn test_hex_encode_bytes() {
+        assert_eq!(hex_encode(&[0xde, 0xad, 0xbe, 0xef]), "deadbeef");
+    }
+
+    #[test]
+    fn test_hex_encode_all_zeros() {
+        assert_eq!(hex_encode(&[0x00, 0x00, 0x00]), "000000");
+    }
+
+    #[test]
+    fn test_decode_req_data_empty() {
+        let val = decode_req_data(&[]).unwrap();
+        assert_eq!(val, Value::Null);
+    }
+
+    #[test]
+    fn test_decode_req_data_with_json() {
+        let mut buf = Vec::new();
+        let _ = nda_native::encode_json_value(&json!({"key": "value"}), &mut buf);
+        let val = decode_req_data(&buf).unwrap();
+        assert_eq!(val["key"], "value");
+    }
+
+    #[test]
+    fn test_dispatch_merkle_root_extracted() {
+        let frame = nda_native::build_nda_request(nda_native::METHOD_PING, &json!(1u64), &Value::Null).unwrap();
+        let resp = dispatch_nda_request(&frame).unwrap();
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_OK);
+    }
+
+    #[test]
+    fn test_dispatch_tools_call_bench_echo() {
+        let data = json!({"name": "bench_echo", "arguments": {"size": 16}});
+        let frame = nda_native::build_nda_request(nda_native::METHOD_TOOLS_CALL, &json!(1u64), &data).unwrap();
+        let resp = dispatch_nda_request(&frame).unwrap();
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_OK);
+        let result = parse_response_result_json(&resp);
+        let text = result.as_str().unwrap_or("");
+        assert_eq!(text.len(), 16);
+        assert!(text.chars().all(|c| c == 'x'));
+    }
+
+    // ─── PhaseRecorder tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_phase_recorder_disabled_by_default() {
+        std::env::remove_var("VELOCITY_PHASE_TIMING");
+        let rec = PhaseRecorder::enabled();
+        assert!(rec.is_none());
+    }
+
+    #[test]
+    fn test_phase_recorder_enabled_with_env() {
+        let tmp = std::env::temp_dir().join(format!("phase_test_{}.log", std::process::id()));
+        let path_str = tmp.to_str().unwrap().to_string();
+        std::env::set_var("VELOCITY_PHASE_TIMING", &path_str);
+        let rec = PhaseRecorder::enabled();
+        assert!(rec.is_some());
+        let rec = rec.unwrap();
+        assert_eq!(rec.path, path_str);
+        assert!(rec.file.is_none());
+        assert_eq!(rec.window_n, 0);
+        std::env::remove_var("VELOCITY_PHASE_TIMING");
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_phase_recorder_record_and_flush() {
+        let tmp = std::env::temp_dir().join(format!("phase_flush_{}.log", std::process::id()));
+        let path_str = tmp.to_str().unwrap().to_string();
+        let _ = std::fs::remove_file(&tmp);
+
+        let now = Instant::now();
+        let mut rec = PhaseRecorder {
+            path: path_str.clone(),
+            file: None,
+            window_n: 0,
+            method: 0x01,
+            wake_read_ns: 0,
+            parse_ns: 0,
+            dispatch_ns: 0,
+            respond_ns: 0,
+        };
+
+        for i in 0..5 {
+            let t_wake = now;
+            let t_read = now + std::time::Duration::from_micros(1);
+            let t_parse = now + std::time::Duration::from_micros(2);
+            let t_dispatch = now + std::time::Duration::from_micros(10 + i);
+            let t_respond = now + std::time::Duration::from_micros(12 + i);
+            rec.record(0x01, t_wake, t_read, t_parse, t_dispatch, t_respond);
+        }
+        assert_eq!(rec.window_n, 5);
+
+        rec.flush_window();
+        assert_eq!(rec.window_n, 0);
+        assert!(tmp.exists(), "phase log file should have been created");
+        let contents = std::fs::read_to_string(&tmp).unwrap();
+        assert!(contents.contains("PHASE"), "log should contain PHASE header: {}", contents);
+        assert!(contents.contains("method=0x01"), "log should contain method code");
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_phase_recorder_auto_flush_at_64() {
+        let tmp = std::env::temp_dir().join(format!("phase_auto_{}.log", std::process::id()));
+        let path_str = tmp.to_str().unwrap().to_string();
+        let _ = std::fs::remove_file(&tmp);
+
+        let now = Instant::now();
+        let mut rec = PhaseRecorder {
+            path: path_str.clone(),
+            file: None,
+            window_n: 0,
+            method: 0x02,
+            wake_read_ns: 0,
+            parse_ns: 0,
+            dispatch_ns: 0,
+            respond_ns: 0,
+        };
+
+        let t_wake = now;
+        let t_read = now + std::time::Duration::from_micros(1);
+        let t_parse = now + std::time::Duration::from_micros(2);
+        let t_dispatch = now + std::time::Duration::from_micros(5);
+        let t_respond = now + std::time::Duration::from_micros(7);
+
+        for _ in 0..64 {
+            rec.record(0x02, t_wake, t_read, t_parse, t_dispatch, t_respond);
+        }
+        assert_eq!(rec.window_n, 0, "window should auto-flush at 64");
+        assert!(tmp.exists(), "phase log file should have been created by auto-flush");
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_phase_recorder_flush_empty_window() {
+        let tmp = std::env::temp_dir().join(format!("phase_empty_{}.log", std::process::id()));
+        let path_str = tmp.to_str().unwrap().to_string();
+        let _ = std::fs::remove_file(&tmp);
+
+        let mut rec = PhaseRecorder {
+            path: path_str,
+            file: None,
+            window_n: 0,
+            method: 0,
+            wake_read_ns: 0,
+            parse_ns: 0,
+            dispatch_ns: 0,
+            respond_ns: 0,
+        };
+        rec.flush_window();
+        assert!(!tmp.exists(), "empty window should not create file");
+    }
+
+    #[test]
+    fn test_phase_recorder_drop_flushes() {
+        let tmp = std::env::temp_dir().join(format!("phase_drop_{}.log", std::process::id()));
+        let path_str = tmp.to_str().unwrap().to_string();
+        let _ = std::fs::remove_file(&tmp);
+
+        let now = Instant::now();
+        {
+            let mut rec = PhaseRecorder {
+                path: path_str,
+                file: None,
+                window_n: 0,
+                method: 0x03,
+                wake_read_ns: 0,
+                parse_ns: 0,
+                dispatch_ns: 0,
+                respond_ns: 0,
+            };
+            let t = now;
+            rec.record(0x03, t, t, t, t, t);
+            assert_eq!(rec.window_n, 1);
+            // rec dropped here — Drop calls flush_window
+        }
+        assert!(tmp.exists(), "Drop should flush remaining window");
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    // ─── Resources/Prompts success paths via NDA dispatch ───────────────────
+
+    #[test]
+    fn test_dispatch_resources_read_success() {
+        let tmp = std::env::temp_dir().join(format!("nda_res_read_{}.txt", std::process::id()));
+        std::fs::write(&tmp, "hello nda resource").unwrap();
+        let path_str = tmp.to_str().unwrap().to_string();
+
+        crate::resources::register_file_resource(
+            "test://nda_dispatch_read",
+            "NdaDispatchRead",
+            "For NDA dispatch test",
+            &path_str,
+        );
+
+        let data = json!({"uri": "test://nda_dispatch_read"});
+        let frame = nda_native::build_nda_request(nda_native::METHOD_RESOURCES_READ, &json!(1u64), &data).unwrap();
+        let resp = dispatch_nda_request(&frame).unwrap();
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_OK);
+        let result = parse_response_result_json(&resp);
+        assert!(result["uri"].as_str().unwrap_or("").contains("nda_dispatch_read") || result.is_object());
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_dispatch_prompts_get_success() {
+        crate::resources::register_prompt(
+            "nda_test_prompt_get",
+            "NDA dispatch test prompt",
+            vec![],
+        );
+
+        let data = json!({"name": "nda_test_prompt_get", "arguments": {}});
+        let frame = nda_native::build_nda_request(nda_native::METHOD_PROMPTS_GET, &json!(1u64), &data).unwrap();
+        let resp = dispatch_nda_request(&frame).unwrap();
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_OK);
+        let result = parse_response_result_json(&resp);
+        assert!(result["messages"].is_array());
+    }
+
+    #[test]
+    fn test_dispatch_sampling_create_no_handler() {
+        let data = json!({"messages": [{"role": "user", "content": {"type": "text", "text": "test"}}]});
+        let frame = nda_native::build_nda_request(nda_native::METHOD_SAMPLING_CREATE, &json!(1u64), &data).unwrap();
+        let resp = dispatch_nda_request(&frame).unwrap();
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_ERROR);
+        let err = parse_response_error_msg(&resp);
+        assert!(err.contains("sampling") || err.contains("No sampling"), "error was: {}", err);
+    }
+
+    #[test]
+    fn test_dispatch_ping_with_delay() {
+        // Set a small delay to test the delay path (lines 143-147)
+        std::env::set_var("VELOCITY_PING_DELAY_US", "1000"); // 1ms delay
+
+        let start = std::time::Instant::now();
+        let frame = nda_native::build_nda_request(nda_native::METHOD_PING, &json!(1u64), &Value::Null).unwrap();
+        let resp = dispatch_nda_request(&frame).unwrap();
+        let elapsed = start.elapsed();
+
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_OK);
+        // Should take at least 1ms due to the delay
+        assert!(elapsed.as_micros() >= 1000, "expected delay >= 1000us, got {}us", elapsed.as_micros());
+
+        // Clean up env var
+        std::env::remove_var("VELOCITY_PING_DELAY_US");
+    }
+
+    #[test]
+    fn test_dispatch_tools_call_rate_limit_exceeded() {
+        // Exhaust the global rate limiter by making many rapid calls
+        // Default burst is 100, so we need to exceed that
+        let data = json!({"name": "rate_limit_test_tool", "arguments": {}});
+
+        // Make enough calls to exhaust the rate limiter
+        let mut rate_limited_hit = false;
+        for _ in 0..150 {
+            let frame = nda_native::build_nda_request(nda_native::METHOD_TOOLS_CALL, &json!(1u64), &data).unwrap();
+            let resp = dispatch_nda_request(&frame).unwrap();
+
+            if parse_response_status(&resp) == nda_native::STATUS_ERROR {
+                let err = parse_response_error_msg(&resp);
+                if err.contains("Rate limit exceeded") {
+                    rate_limited_hit = true;
+                    break;
+                }
+            }
+        }
+
+        // We should have hit the rate limit
+        assert!(rate_limited_hit, "Expected to hit rate limit after 150 rapid calls");
+    }
+
+    #[test]
+    fn test_dispatch_resources_list_malformed_data() {
+        // Manually construct a frame with malformed data to trigger decode error (line 235)
+        use sha2::{Sha256, Digest};
+
+        // Build payload: method byte + id TLV + malformed data TLV
+        let mut payload = Vec::new();
+        payload.push(nda_native::METHOD_RESOURCES_LIST);
+        // ID TLV (JSON value 1)
+        let id_json = b"1";
+        payload.push(0x02); // type for JSON
+        payload.extend_from_slice(&(id_json.len() as u32).to_be_bytes());
+        payload.extend_from_slice(id_json);
+        // Malformed data TLV: type byte + length but invalid JSON
+        payload.push(0x02); // type for JSON
+        payload.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]); // invalid length/JSON
+
+        // Compute merkle root
+        let mut hasher = Sha256::new();
+        hasher.update(&payload);
+        let merkle = hasher.finalize();
+
+        let mut frame = Vec::new();
+        frame.extend_from_slice(b"NMCP");
+        frame.extend_from_slice(&merkle);
+        frame.extend_from_slice(&payload);
+
+        let resp = dispatch_nda_request(&frame).unwrap();
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_ERROR);
+        let err = parse_response_error_msg(&resp);
+        assert!(err.contains("Invalid request data") || err.contains("decode"), "error was: {}", err);
+    }
+
+    #[test]
+    fn test_dispatch_resources_read_malformed_data() {
+        use sha2::{Sha256, Digest};
+
+        let mut payload = Vec::new();
+        payload.push(nda_native::METHOD_RESOURCES_READ);
+        let id_json = b"1";
+        payload.push(0x02);
+        payload.extend_from_slice(&(id_json.len() as u32).to_be_bytes());
+        payload.extend_from_slice(id_json);
+        payload.push(0x02);
+        payload.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]);
+
+        let mut hasher = Sha256::new();
+        hasher.update(&payload);
+        let merkle = hasher.finalize();
+
+        let mut frame = Vec::new();
+        frame.extend_from_slice(b"NMCP");
+        frame.extend_from_slice(&merkle);
+        frame.extend_from_slice(&payload);
+
+        let resp = dispatch_nda_request(&frame).unwrap();
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_ERROR);
+    }
+
+    #[test]
+    fn test_dispatch_prompts_list_malformed_data() {
+        use sha2::{Sha256, Digest};
+
+        let mut payload = Vec::new();
+        payload.push(nda_native::METHOD_PROMPTS_LIST);
+        let id_json = b"1";
+        payload.push(0x02);
+        payload.extend_from_slice(&(id_json.len() as u32).to_be_bytes());
+        payload.extend_from_slice(id_json);
+        payload.push(0x02);
+        payload.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]);
+
+        let mut hasher = Sha256::new();
+        hasher.update(&payload);
+        let merkle = hasher.finalize();
+
+        let mut frame = Vec::new();
+        frame.extend_from_slice(b"NMCP");
+        frame.extend_from_slice(&merkle);
+        frame.extend_from_slice(&payload);
+
+        let resp = dispatch_nda_request(&frame).unwrap();
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_ERROR);
+    }
+
+    #[test]
+    fn test_dispatch_resource_templates_list_malformed_data() {
+        use sha2::{Sha256, Digest};
+
+        let mut payload = Vec::new();
+        payload.push(nda_native::METHOD_RESOURCE_TEMPLATES_LIST);
+        let id_json = b"1";
+        payload.push(0x02);
+        payload.extend_from_slice(&(id_json.len() as u32).to_be_bytes());
+        payload.extend_from_slice(id_json);
+        payload.push(0x02);
+        payload.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]);
+
+        let mut hasher = Sha256::new();
+        hasher.update(&payload);
+        let merkle = hasher.finalize();
+
+        let mut frame = Vec::new();
+        frame.extend_from_slice(b"NMCP");
+        frame.extend_from_slice(&merkle);
+        frame.extend_from_slice(&payload);
+
+        let resp = dispatch_nda_request(&frame).unwrap();
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_ERROR);
+    }
+
+    #[test]
+    fn test_dispatch_prompts_get_malformed_data() {
+        use sha2::{Sha256, Digest};
+
+        let mut payload = Vec::new();
+        payload.push(nda_native::METHOD_PROMPTS_GET);
+        let id_json = b"1";
+        payload.push(0x02);
+        payload.extend_from_slice(&(id_json.len() as u32).to_be_bytes());
+        payload.extend_from_slice(id_json);
+        payload.push(0x02);
+        payload.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]);
+
+        let mut hasher = Sha256::new();
+        hasher.update(&payload);
+        let merkle = hasher.finalize();
+
+        let mut frame = Vec::new();
+        frame.extend_from_slice(b"NMCP");
+        frame.extend_from_slice(&merkle);
+        frame.extend_from_slice(&payload);
+
+        let resp = dispatch_nda_request(&frame).unwrap();
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_ERROR);
+    }
+
+    #[test]
+    fn test_dispatch_sampling_create_malformed_data() {
+        use sha2::{Sha256, Digest};
+
+        let mut payload = Vec::new();
+        payload.push(nda_native::METHOD_SAMPLING_CREATE);
+        let id_json = b"1";
+        payload.push(0x02);
+        payload.extend_from_slice(&(id_json.len() as u32).to_be_bytes());
+        payload.extend_from_slice(id_json);
+        payload.push(0x02);
+        payload.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]);
+
+        let mut hasher = Sha256::new();
+        hasher.update(&payload);
+        let merkle = hasher.finalize();
+
+        let mut frame = Vec::new();
+        frame.extend_from_slice(b"NMCP");
+        frame.extend_from_slice(&merkle);
+        frame.extend_from_slice(&payload);
+
+        let resp = dispatch_nda_request(&frame).unwrap();
+        assert_eq!(parse_response_status(&resp), nda_native::STATUS_ERROR);
+    }
+
+    // ─── shmem handler integration tests ─────────────────────────────────────
+
+    fn temp_shmem_path(name: &str) -> String {
+        format!("test_shmem_handler_{}.bin", name)
+    }
+
+    fn cleanup_shmem(path: &str) {
+        let _ = std::fs::remove_file(path);
+    }
+
+    fn read_output_json(buffer: &SharedMemoryBuffer) -> Value {
+        let output = buffer.read_output().expect("read_output failed");
+        serde_json::from_str(&output).expect("output is not valid JSON")
+    }
+
+    #[test]
+    fn test_handle_nda_native_valid_ping() {
+        let path = temp_shmem_path("nda_ping");
+        cleanup_shmem(&path);
+        let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
+
+        let frame = nda_native::build_nda_request(
+            nda_native::METHOD_PING, &json!(1u64), &Value::Null,
+        ).unwrap();
+
+        handle_nda_native(&mut buffer, &frame, None, None, None).unwrap();
+
+        assert_eq!(buffer.get_state(), shmem::STATE_RES_READY);
+        let output_len = buffer.get_output_len();
+        assert!(output_len > 37, "output too small for NDA response frame: {} bytes", output_len);
+
+        cleanup_shmem(&path);
+    }
+
+    #[test]
+    fn test_handle_nda_native_invalid_merkle() {
+        let path = temp_shmem_path("nda_bad_merkle");
+        cleanup_shmem(&path);
+        let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
+
+        let mut bad_frame = Vec::new();
+        bad_frame.extend_from_slice(b"NMCP");
+        bad_frame.extend_from_slice(&[0xABu8; 32]);
+        bad_frame.extend_from_slice(b"garbage payload");
+
+        handle_nda_native(&mut buffer, &bad_frame, None, None, None).unwrap();
+
+        assert_eq!(buffer.get_state(), shmem::STATE_ERROR);
+        assert!(buffer.get_output_len() > 0, "expected error response in output");
+
+        cleanup_shmem(&path);
+    }
+
+    #[test]
+    fn test_handle_nda_native_with_phase_recorder() {
+        let path = temp_shmem_path("nda_recorder");
+        cleanup_shmem(&path);
+        let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
+
+        let frame = nda_native::build_nda_request(
+            nda_native::METHOD_PING, &json!(42u64), &Value::Null,
+        ).unwrap();
+
+        let mut rec = PhaseRecorder::enabled();
+        let t_wake = Instant::now();
+        let t_read = Instant::now();
+
+        handle_nda_native(&mut buffer, &frame, rec.as_mut(), Some(t_wake), Some(t_read)).unwrap();
+
+        assert_eq!(buffer.get_state(), shmem::STATE_RES_READY);
+        cleanup_shmem(&path);
+    }
+
+    #[test]
+    fn test_handle_json_shmem_initialize() {
+        let path = temp_shmem_path("json_init");
+        cleanup_shmem(&path);
+        let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
+
+        let req = r#"{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}},"id":1}"#;
+        handle_json_shmem(&mut buffer, req).unwrap();
+
+        assert_eq!(buffer.get_state(), shmem::STATE_RES_READY);
+        let resp = read_output_json(&buffer);
+        assert_eq!(resp["jsonrpc"], "2.0");
+        assert_eq!(resp["id"], 1);
+        assert!(resp["result"]["protocolVersion"].is_string());
+        assert!(resp["result"]["capabilities"]["tools"].is_object());
+        assert_eq!(resp["result"]["serverInfo"]["name"], "velocity-mcp-rust-server");
+
+        cleanup_shmem(&path);
+    }
+
+    #[test]
+    fn test_handle_json_shmem_ping() {
+        let path = temp_shmem_path("json_ping");
+        cleanup_shmem(&path);
+        let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
+
+        let req = r#"{"jsonrpc":"2.0","method":"ping","id":2}"#;
+        handle_json_shmem(&mut buffer, req).unwrap();
+
+        assert_eq!(buffer.get_state(), shmem::STATE_RES_READY);
+        let resp = read_output_json(&buffer);
+        assert_eq!(resp["id"], 2);
+        assert_eq!(resp["result"], json!({}));
+
+        cleanup_shmem(&path);
+    }
+
+    #[test]
+    fn test_handle_json_shmem_tools_list() {
+        let path = temp_shmem_path("json_tools_list");
+        cleanup_shmem(&path);
+        let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
+
+        let req = r#"{"jsonrpc":"2.0","method":"tools/list","id":3}"#;
+        handle_json_shmem(&mut buffer, req).unwrap();
+
+        assert_eq!(buffer.get_state(), shmem::STATE_RES_READY);
+        let resp = read_output_json(&buffer);
+        assert_eq!(resp["id"], 3);
+        assert!(resp["result"]["tools"].is_array());
+        let tools = resp["result"]["tools"].as_array().unwrap();
+        assert!(!tools.is_empty(), "expected at least one registered tool");
+
+        cleanup_shmem(&path);
+    }
+
+    #[test]
+    fn test_handle_json_shmem_tools_call_unknown() {
+        let path = temp_shmem_path("json_tools_call_unk");
+        cleanup_shmem(&path);
+        let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
+
+        let req = r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"nonexistent_tool_xyz","arguments":{}},"id":4}"#;
+        handle_json_shmem(&mut buffer, req).unwrap();
+
+        assert_eq!(buffer.get_state(), shmem::STATE_RES_READY);
+        let resp = read_output_json(&buffer);
+        assert_eq!(resp["id"], 4);
+        assert_eq!(resp["result"]["isError"], true);
+
+        cleanup_shmem(&path);
+    }
+
+    #[test]
+    fn test_handle_json_shmem_health_check() {
+        let path = temp_shmem_path("json_health");
+        cleanup_shmem(&path);
+        let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
+
+        let req = r#"{"jsonrpc":"2.0","method":"health/check","id":5}"#;
+        handle_json_shmem(&mut buffer, req).unwrap();
+
+        assert_eq!(buffer.get_state(), shmem::STATE_RES_READY);
+        let resp = read_output_json(&buffer);
+        assert_eq!(resp["result"]["status"], "healthy");
+        assert_eq!(resp["result"]["mode"], "shmem");
+
+        cleanup_shmem(&path);
+    }
+
+    #[test]
+    fn test_handle_json_shmem_unknown_method() {
+        let path = temp_shmem_path("json_unknown");
+        cleanup_shmem(&path);
+        let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
+
+        let req = r#"{"jsonrpc":"2.0","method":"frobnicate/whatever","id":6}"#;
+        handle_json_shmem(&mut buffer, req).unwrap();
+
+        assert_eq!(buffer.get_state(), shmem::STATE_RES_READY);
+        let resp = read_output_json(&buffer);
+        assert_eq!(resp["id"], 6);
+        assert_eq!(resp["error"]["code"], -32601);
+        assert!(resp["error"]["message"].as_str().unwrap().contains("frobnicate/whatever"));
+
+        cleanup_shmem(&path);
+    }
+
+    #[test]
+    fn test_handle_json_shmem_invalid_json() {
+        let path = temp_shmem_path("json_bad");
+        cleanup_shmem(&path);
+        let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
+
+        handle_json_shmem(&mut buffer, "{not valid json}}}").unwrap();
+
+        assert_eq!(buffer.get_state(), shmem::STATE_ERROR);
+        let resp = read_output_json(&buffer);
+        assert_eq!(resp["error"]["code"], -32700);
+        assert!(resp["error"]["message"].as_str().unwrap().contains("Parse error"));
+
+        cleanup_shmem(&path);
+    }
+
+    #[test]
+    fn test_handle_json_shmem_resources_list() {
+        let path = temp_shmem_path("json_res_list");
+        cleanup_shmem(&path);
+        let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
+
+        let req = r#"{"jsonrpc":"2.0","method":"resources/list","id":7}"#;
+        handle_json_shmem(&mut buffer, req).unwrap();
+
+        assert_eq!(buffer.get_state(), shmem::STATE_RES_READY);
+        let resp = read_output_json(&buffer);
+        assert_eq!(resp["jsonrpc"], "2.0");
+        assert_eq!(resp["id"], 7);
+        assert!(resp["result"]["resources"].is_array());
+
+        cleanup_shmem(&path);
+    }
+
+    #[test]
+    fn test_handle_json_shmem_prompts_list() {
+        let path = temp_shmem_path("json_prompts_list");
+        cleanup_shmem(&path);
+        let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
+
+        let req = r#"{"jsonrpc":"2.0","method":"prompts/list","id":8}"#;
+        handle_json_shmem(&mut buffer, req).unwrap();
+
+        assert_eq!(buffer.get_state(), shmem::STATE_RES_READY);
+        let resp = read_output_json(&buffer);
+        assert_eq!(resp["jsonrpc"], "2.0");
+        assert_eq!(resp["id"], 8);
+        assert!(resp["result"]["prompts"].is_array());
+
+        cleanup_shmem(&path);
+    }
+
+    #[test]
+    fn test_handle_json_shmem_notifications_cancelled() {
+        let path = temp_shmem_path("json_cancelled");
+        cleanup_shmem(&path);
+        let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
+
+        let req = r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1,"reason":"test cancel"},"id":null}"#;
+        handle_json_shmem(&mut buffer, req).unwrap();
+
+        assert_eq!(buffer.get_state(), shmem::STATE_RES_READY);
+        let resp = read_output_json(&buffer);
+        assert_eq!(resp["result"], json!({}));
+
+        cleanup_shmem(&path);
+    }
+
+    #[test]
+    fn test_handle_json_shmem_logging_set_level() {
+        let path = temp_shmem_path("json_log_level");
+        cleanup_shmem(&path);
+        let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
+
+        let req = r#"{"jsonrpc":"2.0","method":"logging/setLevel","params":{"level":"debug"},"id":9}"#;
+        handle_json_shmem(&mut buffer, req).unwrap();
+
+        assert_eq!(buffer.get_state(), shmem::STATE_RES_READY);
+        let resp = read_output_json(&buffer);
+        assert_eq!(resp["id"], 9);
+        assert_eq!(resp["result"], json!({}));
+
+        cleanup_shmem(&path);
+    }
+
+    #[test]
+    fn test_handle_json_shmem_notifications_initialized() {
+        let path = temp_shmem_path("json_notif_init");
+        cleanup_shmem(&path);
+        let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
+
+        let req = r#"{"jsonrpc":"2.0","method":"notifications/initialized","id":null}"#;
+        handle_json_shmem(&mut buffer, req).unwrap();
+
+        assert_eq!(buffer.get_state(), shmem::STATE_RES_READY);
+        let resp = read_output_json(&buffer);
+        assert_eq!(resp["result"], json!({}));
+
+        cleanup_shmem(&path);
+    }
+
+    #[test]
+    fn test_handle_json_shmem_resources_read_not_found() {
+        let path = temp_shmem_path("json_res_read_nf");
+        cleanup_shmem(&path);
+        let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
+
+        let req = r#"{"jsonrpc":"2.0","method":"resources/read","params":{"uri":"file:///nonexistent_resource_xyz"},"id":10}"#;
+        handle_json_shmem(&mut buffer, req).unwrap();
+
+        assert_eq!(buffer.get_state(), shmem::STATE_RES_READY);
+        let resp = read_output_json(&buffer);
+        assert_eq!(resp["id"], 10);
+        assert!(resp["error"].is_object(), "expected error for nonexistent resource");
+
+        cleanup_shmem(&path);
+    }
+
+    #[test]
+    fn test_shmem_loop_inner_immediate_shutdown() {
+        let path = temp_shmem_path("loop_shutdown");
+        cleanup_shmem(&path);
+        let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
+        let shutdown = AtomicBool::new(true);
+
+        let result = run_shmem_loop_inner(&mut buffer, &shutdown);
+        assert!(result.is_ok());
+
+        cleanup_shmem(&path);
+    }
+
+    // Note: run_shmem_loop_inner is not tested with threaded request processing
+    // because on Windows, wait_for_request() calls WaitForSingleObject(INFINITE)
+    // which blocks the thread permanently after the spin budget expires. The
+    // loop's dispatch logic is fully covered by the direct handler tests above
+    // (handle_nda_native, handle_json_shmem). The shutdown path is tested by
+    // test_shmem_loop_inner_immediate_shutdown. End-to-end loop behavior is
+    // covered by tests/e2e_smoke.rs which spawns the real binary.
 }

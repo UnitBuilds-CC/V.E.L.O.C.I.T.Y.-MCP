@@ -553,4 +553,79 @@ mod tests {
         // Channel should be closed
         assert!(rx.recv().await.is_none());
     }
+
+    #[test]
+    fn test_progress_callback_capacity_limit() {
+        // Clear existing test callbacks
+        if let Ok(mut callbacks) = get_progress_callbacks().lock() {
+            callbacks.retain(|k, _| !k.starts_with("cap_test_"));
+        }
+
+        // Fill up to MAX_CALLBACKS (1024)
+        for i in 0..1024 {
+            let tool_name = format!("cap_test_tool_{}", i);
+            register_progress_callback(&tool_name, |_, _| {});
+        }
+
+        // Verify we have 1024 callbacks
+        {
+            let callbacks = get_progress_callbacks().lock().unwrap();
+            assert_eq!(callbacks.len(), 1024, "Should have 1024 callbacks");
+        }
+
+        // Try to add one more - should be rejected (logged as warning)
+        register_progress_callback("cap_test_tool_new", |_, _| {});
+
+        // Verify the new callback was NOT added (capacity limit enforced)
+        {
+            let callbacks = get_progress_callbacks().lock().unwrap();
+            assert_eq!(callbacks.len(), 1024, "Should still have 1024 after rejection");
+            assert!(!callbacks.contains_key("cap_test_tool_new"), "New callback should be rejected");
+        }
+
+        // Clean up
+        if let Ok(mut callbacks) = get_progress_callbacks().lock() {
+            for i in 0..1024 {
+                callbacks.remove(&format!("cap_test_tool_{}", i));
+            }
+        }
+    }
+
+    #[test]
+    fn test_streaming_state_capacity_limit() {
+        // Clear existing test states
+        if let Ok(mut states) = get_streaming_states().lock() {
+            states.retain(|k, _| !k.starts_with("cap_stream_"));
+        }
+
+        // Fill up to MAX_STATES (1024)
+        for i in 0..1024 {
+            let token = ProgressToken::String(format!("cap_stream_{}", i));
+            init_streaming_state(&token, Some(100));
+        }
+
+        // Verify we have 1024 states
+        {
+            let states = get_streaming_states().lock().unwrap();
+            assert_eq!(states.len(), 1024, "Should have 1024 streaming states");
+        }
+
+        // Try to add one more - should be rejected (logged as warning)
+        let new_token = ProgressToken::String("cap_stream_new".to_string());
+        init_streaming_state(&new_token, Some(100));
+
+        // Verify the new state was NOT added (capacity limit enforced)
+        {
+            let states = get_streaming_states().lock().unwrap();
+            assert_eq!(states.len(), 1024, "Should still have 1024 after rejection");
+            assert!(!states.contains_key("cap_stream_new"), "New state should be rejected");
+        }
+
+        // Clean up
+        if let Ok(mut states) = get_streaming_states().lock() {
+            for i in 0..1024 {
+                states.remove(&format!("cap_stream_{}", i));
+            }
+        }
+    }
 }

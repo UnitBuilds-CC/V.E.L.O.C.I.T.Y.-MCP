@@ -181,6 +181,12 @@ pub fn load_plugins_from_directory(plugin_dir: &Path) -> Vec<LoadedPlugin> {
 ///
 /// The loaded plugin manifest or an error
 pub fn load_plugin_manifest(path: &Path) -> Result<PluginManifest, String> {
+    let meta = std::fs::metadata(path)
+        .map_err(|e| format!("Failed to stat plugin manifest: {}", e))?;
+    if meta.len() > 1_048_576 {
+        return Err("Plugin manifest exceeds 1MB limit".to_string());
+    }
+
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("Failed to read plugin manifest: {}", e))?;
 
@@ -225,10 +231,21 @@ pub fn execute_plugin_tool(tool: &PluginTool, arguments: &Value) -> Result<Strin
         return Err(format!("Unsupported executor type: {}", executor.executor_type));
     }
 
-    // Build command with template variable substitution
+    // Detect if the plugin invokes a shell interpreter — arguments become shell commands
+    let shell_interpreters = ["sh", "bash", "cmd", "cmd.exe", "/bin/sh", "/bin/bash", "powershell", "powershell.exe"];
+    let cmd_lower = executor.command.to_lowercase();
+    let is_shell_command = shell_interpreters.iter().any(|s| cmd_lower == *s || cmd_lower.ends_with(s))
+        || executor.args.iter().any(|a| a == "-c" || a == "/C");
+
+    // Build command with template variable substitution and validation
     let args: Vec<String> = executor.args.iter().map(|arg| {
         substitute_template_variables(arg, arguments)
     }).collect();
+
+    // Validate substituted arguments
+    for (i, arg) in args.iter().enumerate() {
+        validate_plugin_argument(arg, is_shell_command, i)?;
+    }
 
     let mut cmd = Command::new(&executor.command);
     cmd.args(&args);
@@ -322,6 +339,33 @@ fn substitute_template_variables(template: &str, arguments: &Value) -> String {
     }
 
     result
+}
+
+fn validate_plugin_argument(value: &str, is_shell_command: bool, index: usize) -> Result<(), String> {
+    if value.contains('\0') {
+        return Err(format!("Plugin argument {} contains null byte — rejected", index));
+    }
+
+    if value.len() > 10_000 {
+        return Err(format!("Plugin argument {} exceeds 10KB limit ({} bytes)", index, value.len()));
+    }
+
+    if is_shell_command {
+        let dangerous = [';', '|', '&', '`', '$', '\n', '\r', '(', ')', '{', '}', '<', '>'];
+        for ch in &dangerous {
+            if value.contains(*ch) {
+                tracing::warn!(arg_index = index, char = %ch, "Blocked shell metacharacter in plugin argument");
+                return Err(format!(
+                    "Plugin argument {} contains shell metacharacter '{}' — \
+                    plugins using shell interpreters cannot accept arguments with metacharacters. \
+                    Use a non-shell plugin executor or sanitize the input.",
+                    index, ch
+                ));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Convert plugin tools to registry tools.
@@ -476,7 +520,7 @@ mod tests {
                 executor_type: "process".to_string(),
                 command: if cfg!(windows) { "cmd".to_string() } else { "sleep".to_string() },
                 args: if cfg!(windows) {
-                    vec!["/C".to_string(), "ping -n 10 127.0.0.1 > nul".to_string()]
+                    vec!["/C".to_string(), "ping -n 10 127.0.0.1".to_string()]
                 } else {
                     vec!["10".to_string()]
                 },
@@ -612,6 +656,142 @@ mod tests {
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "tool_a");
         assert_eq!(tools[0].description, "Tool A");
+    }
+
+    #[test]
+    fn test_load_plugins_from_nonexistent_directory() {
+        let _t = test_timer("test_load_plugins_from_nonexistent_directory");
+        let plugins = load_plugins_from_directory(Path::new("/nonexistent/dir/that/does/not/exist"));
+        assert!(plugins.is_empty());
+    }
+
+    #[test]
+    fn test_load_plugins_from_file_not_directory() {
+        let _t = test_timer("test_load_plugins_from_file_not_directory");
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("not_a_dir.txt");
+        std::fs::write(&file_path, "hello").unwrap();
+        let plugins = load_plugins_from_directory(&file_path);
+        assert!(plugins.is_empty());
+    }
+
+    #[test]
+    fn test_load_plugin_manifest_oversized() {
+        let _t = test_timer("test_load_plugin_manifest_oversized");
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("huge.json");
+        let mut f = std::fs::File::create(&path).unwrap();
+        use std::io::Write;
+        let chunk = vec![b' '; 64 * 1024];
+        for _ in 0..17 {
+            f.write_all(&chunk).unwrap();
+        }
+        drop(f);
+        assert!(std::fs::metadata(&path).unwrap().len() > 1_048_576);
+        let result = load_plugin_manifest(&path);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("exceeds 1MB"));
+    }
+
+    #[test]
+    fn test_load_plugin_manifest_empty_tool_name() {
+        let _t = test_timer("test_load_plugin_manifest_empty_tool_name");
+        let dir = tempdir().unwrap();
+        let json = r#"{
+            "name": "test",
+            "version": "1.0.0",
+            "tools": [{"name": "", "description": "d", "inputSchema": {}, "executor": {"executor_type": "process", "command": "echo", "args": []}}]
+        }"#;
+        let path = dir.path().join("empty_tool_name.json");
+        std::fs::write(&path, json).unwrap();
+        let result = load_plugin_manifest(&path);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Tool name"));
+    }
+
+    #[test]
+    fn test_substitute_template_bool_and_other_types() {
+        let _t = test_timer("test_substitute_template_bool_and_other_types");
+        let template = "flag={{flag}}, list={{list}}";
+        let arguments = json!({
+            "flag": true,
+            "list": [1, 2, 3]
+        });
+        let result = substitute_template_variables(template, &arguments);
+        assert!(result.contains("true"), "Bool should serialize to 'true': {}", result);
+        assert!(result.contains("[1,2,3]"), "Array should serialize: {}", result);
+    }
+
+    #[test]
+    fn test_substitute_template_non_object_args() {
+        let _t = test_timer("test_substitute_template_non_object_args");
+        let template = "value={{x}}";
+        let arguments = json!("just a string");
+        let result = substitute_template_variables(template, &arguments);
+        assert_eq!(result, "value={{x}}", "Non-object args should not substitute");
+    }
+
+    #[test]
+    fn test_validate_plugin_argument_null_byte() {
+        let _t = test_timer("test_validate_plugin_argument_null_byte");
+        let result = validate_plugin_argument("hello\0world", false, 0);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("null byte"));
+    }
+
+    #[test]
+    fn test_validate_plugin_argument_length_limit() {
+        let _t = test_timer("test_validate_plugin_argument_length_limit");
+        let long_arg = "x".repeat(10_001);
+        let result = validate_plugin_argument(&long_arg, false, 0);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("10KB"));
+    }
+
+    #[test]
+    fn test_validate_plugin_argument_shell_metacharacter() {
+        let _t = test_timer("test_validate_plugin_argument_shell_metacharacter");
+        let result = validate_plugin_argument("hello; rm -rf /", true, 0);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("shell metacharacter"), "Expected shell metacharacter error, got: {}", err);
+    }
+
+    #[test]
+    fn test_validate_plugin_argument_safe_when_not_shell() {
+        let _t = test_timer("test_validate_plugin_argument_safe_when_not_shell");
+        let result = validate_plugin_argument("hello; world", false, 0);
+        assert!(result.is_ok(), "Semicolons should be allowed when not a shell command");
+    }
+
+    #[test]
+    fn test_execute_plugin_tool_with_working_dir_and_env() {
+        let _t = test_timer("test_execute_plugin_tool_with_working_dir_and_env");
+        let dir = tempdir().unwrap();
+        let tool = PluginTool {
+            name: "env_tool".to_string(),
+            description: "Env tool".to_string(),
+            input_schema: json!({"type": "object"}),
+            executor: PluginExecutor {
+                executor_type: "process".to_string(),
+                command: if cfg!(windows) { "cmd".to_string() } else { "echo".to_string() },
+                args: if cfg!(windows) {
+                    vec!["/C".to_string(), "echo".to_string(), "%MY_VAR%".to_string()]
+                } else {
+                    vec!["$MY_VAR".to_string()]
+                },
+                working_dir: Some(dir.path().to_string_lossy().to_string()),
+                env: {
+                    let mut m = HashMap::new();
+                    m.insert("MY_VAR".to_string(), "test_value_123".to_string());
+                    m
+                },
+                timeout: 5,
+            },
+        };
+
+        let result = execute_plugin_tool(&tool, &json!({}));
+        assert!(result.is_ok(), "Tool with working_dir and env should succeed: {:?}", result.err());
     }
 
 }
