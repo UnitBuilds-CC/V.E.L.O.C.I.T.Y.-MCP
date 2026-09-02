@@ -10,7 +10,7 @@
         "name": "velocity_mcp",
         "path": "./",
         "file_count": 30,
-        "role": "High-performance production-ready MCP server with 4 transport modes, 8 built-in tools, plugin marketplace, and enterprise-grade security"
+        "role": "High-performance production-ready MCP server with 4 transport modes, 16 built-in tools, plugin marketplace, and enterprise-grade security"
       },
       {
         "name": "velocity_mcp_macros",
@@ -23,10 +23,10 @@
     "key_constraints": [
       "Four transport modes: stdio JSON-RPC, HTTP/SSE/WebSocket, WebSocket, shared memory",
       "NDA binary protocol with auto-detection and Merkle integrity verification",
-      "8 built-in tools all native Rust — no external process required",
+      "16 built-in tools all native Rust — no external process required",
       "Capability-based sandbox with Linux seccomp and Windows Job Objects",
       "Cross-platform: Windows, Linux, macOS",
-      "284 passing tests (210 unit + 17 fuzz + 43 integration + 8 macro + 6 doc)",
+      "703 passing tests (unit + integration + fuzz + macro + doc)",
       "Plugin marketplace with dynamic loading",
       "Prometheus metrics, Grafana dashboards, OpenTelemetry tracing",
       "Client SDKs in 4 languages (Rust, Python, TypeScript, Go)",

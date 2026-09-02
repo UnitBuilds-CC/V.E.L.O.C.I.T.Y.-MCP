@@ -32,7 +32,7 @@ The project is a single binary crate with a proc-macro sub-crate (`macros/`):
 | `src/protocol/` | Protocol handlers (json_rpc, nmcp_binary, nda_native) |
 | `src/transport/` | Transport layer (http.rs — Axum HTTP/SSE/WebSocket) |
 | `src/ipc/` | IPC subsystem (shmem.rs — memory-mapped buffer) |
-| `src/registry.rs` | Tool registration and dispatch (8 built-in tools) |
+| `src/registry.rs` | Tool registration and dispatch (16 built-in tools) |
 | `src/sandbox.rs` + `src/sandbox/` | Capability sandbox + Linux seccomp |
 | `src/nda_converter.rs` | NDA binary document compiler |
 | `src/nda_document.rs` | NDA parser with Merkle/signature verification |

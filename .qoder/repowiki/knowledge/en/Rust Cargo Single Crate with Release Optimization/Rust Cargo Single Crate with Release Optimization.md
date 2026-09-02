@@ -56,7 +56,7 @@ cargo check                          # Fast typecheck (no codegen)
 cargo build                          # Debug build
 cargo build --release                # Release build (fully optimized)
 cargo build --release --all-features # Release with all features
-cargo test --all-features            # Run all 284 tests
+cargo test --all-features            # Run all 703 tests
 cargo bench                          # Criterion benchmarks
 cargo audit                          # Dependency vulnerability check
 cargo run --release -- --benchmark   # Run built-in benchmarks

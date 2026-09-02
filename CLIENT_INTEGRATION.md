@@ -486,7 +486,7 @@ VELOCITY-MCP includes built-in rate limiting (enabled by default):
 
 After successful integration:
 
-1. **Explore built-in tools** - Try all 8 built-in tools
+1. **Explore built-in tools** - Try all 16 built-in tools
 2. **Monitor performance** - Use `/performance` endpoint
 3. **Enable security** - API keys, TLS, CORS
 4. **Set up monitoring** - Integrate `/metrics` with your observability stack

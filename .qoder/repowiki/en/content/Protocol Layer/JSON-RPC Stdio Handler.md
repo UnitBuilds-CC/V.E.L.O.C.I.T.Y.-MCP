@@ -70,7 +70,7 @@ Delegates to `registry::get_tools()` and returns the array of registered Tool ob
   "jsonrpc": "2.0",
   "id": <id>,
   "result": {
-    "tools": [ /* 8 built-in Tool objects + dynamic tools */ ],
+    "tools": [ /* 16 built-in Tool objects + dynamic tools */ ],
     "nextCursor": "..."
   }
 }

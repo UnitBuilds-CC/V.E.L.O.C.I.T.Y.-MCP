@@ -11,7 +11,7 @@
 
 ## Overview
 
-The tool registry (`src/registry.rs`) defines the MCP tools available on this server and handles their execution. In v3.0, the server provides **8 built-in tools** — all implemented natively in Rust. No external process delegation is required for core operations.
+The tool registry (`src/registry.rs`) defines the MCP tools available on this server and handles their execution. In v3.0, the server provides **16 built-in tools** — all implemented natively in Rust. No external process delegation is required for core operations.
 
 ## Registered Tools
 
@@ -121,7 +121,7 @@ fn my_tool(path: String) -> Result<String, String> { ... }
 
 ### Native Dispatch
 
-All 8 built-in tools execute natively in Rust:
+All 16 built-in tools execute natively in Rust:
 
 ```rust
 pub fn call_tool(name: &str, arguments: &Value) -> Result<String, String> {

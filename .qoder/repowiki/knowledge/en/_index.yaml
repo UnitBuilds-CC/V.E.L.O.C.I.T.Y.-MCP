@@ -22,7 +22,7 @@ classification_summary:
           status: "Memory-mapped shared memory IPC with atomic state machine + Win32 events"
         - module: src/registry
           files: 1
-          status: "8 built-in tools, all native Rust, with plugin/C# dynamic hosting"
+          status: "16 built-in tools, all native Rust, with plugin/C# dynamic hosting"
         - module: src/sandbox
           files: 2
           status: "Capability sandbox + Linux seccomp-bpf syscall filtering"

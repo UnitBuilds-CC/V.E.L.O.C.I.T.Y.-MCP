@@ -27,7 +27,7 @@ V.E.L.O.C.I.T.Y. MCP Server v3.0.0 is a high-performance, production-ready Model
 3. **WebSocket Mode** — Dedicated bidirectional WebSocket transport for real-time applications.
 4. **Shared Memory Mode** — Zero-copy IPC via memory-mapped files with atomic-controlled state machine and NDA binary protocol support.
 
-The server provides **8 built-in tools** (4 general + 4 NDA), all implemented natively in Rust — no external process delegation required. It includes **15+ security layers**, **284 passing tests**, and **cross-platform support** (Windows, Linux, macOS).
+The server provides **16 built-in tools** (4 general + 4 NDA + 8 additional), all implemented natively in Rust — no external process delegation required. It includes **15+ security layers**, **703 passing tests**, and **cross-platform support** (Windows, Linux, macOS).
 
 ## Project Structure
 
@@ -147,7 +147,7 @@ graph TB
         NMCPBIN["NMCP Binary Loop<br/>shared memory"]
     end
     subgraph "Core Layer"
-        REG["Tool Registry<br/>8 built-in tools"]
+        REG["Tool Registry<br/>16 built-in tools"]
         SANDBOX["Capability Sandbox<br/>+ Linux seccomp"]
         NDA["NDA Operations<br/>compile/read/execute"]
         PLUGINS["Plugin System<br/>dynamic loading"]
@@ -265,11 +265,16 @@ Reference results (Intel Core i5-14400F):
 | NDA-native parse + Merkle + extract | 459.1 ns | 1.6x faster |
 | NDA shmem R/W (raw) | 12.6 ns | 57x faster |
 
-Rust vs Node.js MCP Server (stdio, 200 req/method):
+Rust vs Node.js MCP Server (stdio, 500 iterations × 3 rounds median, 2026-09-02):
 
 | Method | Node.js | Rust | Speedup |
 |--------|:---:|:---:|:---:|
-| **Overall** | 0.627 ms | 0.164 ms | **3.8x** |
+| ping | 0.029 ms | 0.017 ms | **1.7x** |
+| tools/list | 0.080 ms | 0.202 ms | 0.4x* |
+| tools/call | 0.029 ms | 0.023 ms | **1.3x** |
+| health/check | 0.030 ms | 0.020 ms | **1.5x** |
+
+*Node.js wins tools/list avg (static const array vs dynamic assembly); Rust is 1.4x faster at p99.
 
 ## Troubleshooting
 

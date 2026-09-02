@@ -42,11 +42,16 @@ The project includes two benchmarking systems:
 | NDA-native shmem R/W | 12.6 ns | 79.2M ops/s |
 | **NDA speedup** | | **3.1x** |
 
-**Rust vs Node.js (stdio, 200 req/method):**
+**Rust vs Node.js (stdio, 500 iterations × 3 rounds median, 2026-09-02):**
 
 | Method | Node.js | Rust | Speedup |
 |--------|:-------:|:----:|:-------:|
-| **Overall** | 0.627 ms | 0.164 ms | **3.8x** |
+| ping | 0.029 ms | 0.017 ms | **1.7x** |
+| tools/list | 0.080 ms | 0.202 ms | 0.4x* |
+| tools/call | 0.029 ms | 0.023 ms | **1.3x** |
+| health/check | 0.030 ms | 0.020 ms | **1.5x** |
+
+*Node.js wins tools/list avg (static const vs dynamic assembly); Rust 1.4x faster at p99.
 
 ## Methodology
 

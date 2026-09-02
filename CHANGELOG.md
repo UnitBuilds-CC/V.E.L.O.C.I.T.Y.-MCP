@@ -23,18 +23,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Compiler warnings eliminated**: Zero-warning build achieved. Cfg-gated `Arc` import, `tls_cert`/`tls_key` declarations and `--tls-cert`/`--tls-key` argument parsing behind `#[cfg(feature = "http")]`. Added `#[allow(unused)]` for oauth2-cfg variables (`method`, `body`, `timeout_secs` in `http_request`). Removed unused `error` import from `plugins/marketplace.rs`. Added `#[allow(unused)]` for `addr` variable only consumed by http match arm.
 
-### Performance (benchmarked 2026-09-01, release build)
+### Performance (benchmarked 2026-09-02, release build, 500 iter × 3 rounds median)
 
 All hardening changes have negligible performance impact — string-matching blocklist checks complete in nanoseconds, dominated by I/O costs.
 
 **NDA/shmem transport (primary path):**
 
-| Method | Latency (avg) | Throughput | vs stdio |
+| Method | Latency (avg) | Throughput | vs JSON/stdio |
 |--------|--------------|------------|----------|
-| ping | 0.001 ms (1µs) | 1,657,825 r/s | 34.3x faster |
-| tools/list (17 tools) | 0.006 ms | 165,981 r/s | 29.7x faster |
-| tools/call (64B) | 0.001 ms | 750,413 r/s | 18.3x faster |
-| health/check | 0.000 ms | 2,190,101 r/s | 46.3x faster |
+| ping | 0.002 ms (2µs) | 445,279 r/s | 7.8x faster |
+| tools/list (17 tools) | 0.007 ms | 136,983 r/s | 27.7x faster |
+| tools/call (64B) | 0.003 ms | 313,582 r/s | 7.3x faster |
+| health/check | 0.002 ms | 471,904 r/s | 9.6x faster |
 
 **Payload scaling (bench_echo):**
 
@@ -53,50 +53,37 @@ All hardening changes have negligible performance impact — string-matching blo
 | 81 | 0.035 ms | 0.235 ms | 6.7x |
 | 145 | 0.075 ms | 0.464 ms | 6.2x |
 
-**Overall: 27.7x faster average, 40.8x faster at p99** (NDA/shmem vs JSON/stdio).
+**Overall: 9.5x–27.7x faster across methods** (NDA/shmem vs JSON/stdio).
 
-**Node.js vs Rust (JSON/stdio, fair comparison — same 16 tools, 300 iterations):**
+**Node.js vs Rust (JSON/stdio, fair comparison — same 16 tools, 500 iterations, median of 3 rounds):**
 
-| Method | Node.js avg | Rust avg | Speedup | Node.js p99 | Rust p99 | p99 Speedup |
-|--------|------------|----------|---------|-------------|----------|-------------|
-| ping | 0.061 ms | 0.034 ms | 1.8x | 0.387 ms | 0.142 ms | 2.7x |
-| tools/list | 0.075 ms | 0.128 ms | 0.6x* | 0.380 ms | 0.281 ms | 1.4x |
-| tools/call | 0.039 ms | 0.018 ms | 2.2x | 0.121 ms | 0.068 ms | 1.8x |
-| health/check | 0.040 ms | 0.038 ms | 1.0x | 0.110 ms | 0.112 ms | 1.0x |
+| Method | Node.js avg | Rust avg | Speedup |
+|--------|------------|----------|---------|
+| ping | 0.029 ms | 0.017 ms | 1.7x |
+| tools/list | 0.080 ms | 0.202 ms | 0.4x* |
+| tools/call | 0.029 ms | 0.023 ms | 1.3x |
+| health/check | 0.030 ms | 0.020 ms | 1.5x |
 
-*tools/list avg: Node.js returns a static array (pre-built constant), Rust dynamically assembles with cache checks + hashset dedup + pagination. Rust wins at p99.
+*tools/list: Node.js returns a static array (pre-built constant), Rust dynamically assembles with cache checks + hashset dedup + pagination.
 
-**Payload scaling (bench_echo, Node.js vs Rust):**
-
-| Payload | Node.js avg | Rust avg | Speedup | Node.js p99 | Rust p99 | p99 Speedup |
-|---------|------------|----------|---------|-------------|----------|-------------|
-| 1 KB | 0.122 ms | 0.027 ms | 4.5x | 0.844 ms | 0.107 ms | 7.9x |
-| 100 KB | 0.339 ms | 0.075 ms | 4.5x | 0.786 ms | 0.308 ms | 2.5x |
-| 1 MB | 8.050 ms | 8.346 ms | 1.0x | 19.991 ms | 20.063 ms | 1.0x |
-| 5 MB | 129.911 ms | 90.774 ms | 1.4x | 226.940 ms | 111.584 ms | 2.0x |
-| 10 MB | 500.707 ms | 350.915 ms | 1.4x | 881.384 ms | 397.024 ms | 2.2x |
-
-**Overall: 1.0x avg (tied), 1.7x p99** (Rust wins on tail latency).
-
-**4-Pipeline Comparison (benchmarked 2026-09-01, release build):**
+**4-Pipeline Comparison (benchmarked 2026-09-02, release build):**
 
 Isolates service (Node.js vs Rust), tool format (JSON vs NDA), and transport (stdio vs shmem) differences.
 
 | Pipeline | Ping avg | tools/list avg | tools/call avg |
 |----------|----------|----------------|----------------|
-| Node.js JSON/stdio | 0.046 ms | 0.110 ms | 0.042 ms |
-| Rust JSON/stdio | 0.035 ms | 0.195 ms | 0.034 ms |
-| Rust NDA-wrapped JSON/stdio | 0.027 ms | 0.186 ms | 0.035 ms |
-| Rust NDA/shmem | 0.001 ms | 0.006 ms | 0.002 ms |
+| Node.js JSON/stdio | 0.029 ms | 0.080 ms | 0.029 ms |
+| Rust JSON/stdio | 0.017 ms | 0.202 ms | 0.023 ms |
+| Rust NDA/stdio | 0.025 ms | 0.164 ms | 0.032 ms |
+| Rust NDA/shmem | 0.002 ms | 0.007 ms | 0.003 ms |
 
 **Key findings:**
 
 | Comparison | Ping | tools/list | tools/call | Conclusion |
 |------------|------|------------|------------|------------|
-| Service (Node.js vs Rust, same JSON/stdio) | 1.3x | 0.6x* | 1.2x | Marginal — Rust faster on ping/call, Node.js faster on tools/list (static array) |
-| Tool format (JSON vs NDA-wrapped, same JSON/stdio) | — | — | 1.0x | Negligible — encoding is not the bottleneck when transport is the same |
-| Transport (JSON/stdio vs NDA/shmem) | 23.0x | 34.3x | 11.5x | **Dominant factor** — shmem transport is order-of-magnitude faster |
-| Full stack (Node.js JSON/stdio vs Rust NDA/shmem) | 46.1x | 18.3x | 21.1x | Combined effect of service + transport |
+| Service (Node.js vs Rust, same JSON/stdio) | 1.7x | 0.4x* | 1.3x | Marginal — Rust faster on ping/call, Node.js faster on tools/list (static array) |
+| Transport (JSON/stdio vs NDA/shmem) | 8.5x | 28.9x | 7.7x | **Dominant factor** — shmem transport is order-of-magnitude faster |
+| Full stack (Node.js JSON/stdio vs Rust NDA/shmem) | 14.5x | 11.4x | 9.7x | Combined effect of service + transport |
 
 *tools/list: Node.js returns pre-built `const TOOLS` array; Rust dynamically assembles from 5 sources with cache validation.
 

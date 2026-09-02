@@ -58,14 +58,16 @@ Invoked via `--benchmark` CLI flag. Covers 8 sections:
 | 4 | 7.01M req/s |
 | 8 | 12.7M req/s |
 
-**Rust vs Node.js MCP Server (stdio, 200 req/method):**
+**Rust vs Node.js MCP Server (stdio, 500 iterations × 3 rounds median, 2026-09-02):**
 
 | Method | Node.js avg | Rust avg | Speedup |
 |--------|:---:|:---:|:---:|
-| ping | 0.573 ms | 0.157 ms | **3.6x** |
-| tools/list | 1.050 ms | 0.154 ms | **6.8x** |
-| tools/call | 0.546 ms | 0.136 ms | **4.0x** |
-| **Overall** | 0.627 ms | 0.164 ms | **3.8x** |
+| ping | 0.029 ms | 0.017 ms | **1.7x** |
+| tools/list | 0.080 ms | 0.202 ms | 0.4x* |
+| tools/call | 0.029 ms | 0.023 ms | **1.3x** |
+| health/check | 0.030 ms | 0.020 ms | **1.5x** |
+
+*Node.js wins tools/list avg because it returns a static const array; Rust is 1.4x faster at p99.
 
 ## Criterion Benchmark Suite
 

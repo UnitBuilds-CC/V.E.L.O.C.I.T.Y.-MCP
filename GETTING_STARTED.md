@@ -6,7 +6,7 @@ Welcome! This guide will get you up and running with VELOCITY-MCP in under 5 min
 
 VELOCITY-MCP is a high-performance Model Context Protocol (MCP) server written in Rust. It's:
 
-- **3.8x faster** than Node.js MCP servers
+- **Up to 27.7x faster** than Node.js MCP servers (NDA/shmem transport)
 - **8x smaller** memory footprint
 - **Zero-config** - works out of the box
 - **Production-hardened** - timeouts, rate limiting, security built-in
@@ -54,7 +54,7 @@ Configure your MCP client (Claude Desktop, Cursor, etc.) to use VELOCITY-MCP:
 
 ## Built-in Tools
 
-VELOCITY-MCP comes with 8 powerful tools ready to use:
+VELOCITY-MCP comes with 16 powerful tools ready to use:
 
 ### File Operations
 

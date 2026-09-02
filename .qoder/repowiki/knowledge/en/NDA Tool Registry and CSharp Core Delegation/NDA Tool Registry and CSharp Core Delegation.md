@@ -7,7 +7,7 @@
 
 ## Summary
 
-The tool registry defines 8 built-in tools, all implemented natively in Rust. No external process delegation is required for core operations. The server can also discover additional tools from plugins and an optional C# backend engine.
+The tool registry defines 16 built-in tools, all implemented natively in Rust. No external process delegation is required for core operations. The server can also discover additional tools from plugins and an optional C# backend engine.
 
 ## Registered Tools
 

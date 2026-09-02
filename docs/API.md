@@ -108,7 +108,7 @@ Returns real-time performance metrics.
   },
   "vs_nodejs": {
     "estimated_nodejs_latency_us": 625.1,
-    "speed_multiplier": "3.8x",
+    "speed_multiplier": "Up to 27.7x",
     "total_time_saved_ms": 7023.5,
     "note": "Based on comparative benchmarks of identical MCP workloads"
   }
@@ -961,7 +961,7 @@ export VELOCITY_LOG_LEVEL=debug
 
 ## Built-in Tools
 
-VELOCITY-MCP includes 8 built-in tools.
+VELOCITY-MCP includes 16 built-in tools.
 
 ### file_read
 
@@ -1209,5 +1209,5 @@ curl -X POST http://localhost:3000/mcp \
 
 ---
 
-*Last updated: 2026-08-30*
+*Last updated: 2026-09-02*
 *Version: 3.0.0*

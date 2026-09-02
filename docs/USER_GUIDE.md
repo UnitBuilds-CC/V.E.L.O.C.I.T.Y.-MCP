@@ -49,7 +49,7 @@ cargo build --release
 ### Verifying the Build
 
 ```bash
-# Run the test suite (284 tests)
+# Run the test suite (703 tests)
 cargo test --all-features
 
 # Run the benchmark suite
@@ -163,7 +163,7 @@ Server → Client (stdout): {"jsonrpc":"2.0","id":1,"result":{...}}
 
 ### Built-in Tools
 
-The server provides eight built-in tools — four for general operations and four for NDA binary format operations. All tools run natively in Rust.
+The server provides 16 built-in tools — four for general operations, four for NDA binary format operations, and eight additional tools. All tools run natively in Rust.
 
 ### General Tools
 
@@ -298,7 +298,7 @@ Execute a runnable `.nda` container in a capability-based sandbox.
 
 The server can also discover additional tools from plugins or a C# backend engine. When a client sends a `tools/list` request:
 
-1. The server returns the 8 built-in tools (always available)
+1. The server returns the 16 built-in tools (always available)
 2. It loads any installed plugins and queries the C# engine (if present)
 3. Results are cached for subsequent requests
 4. Built-in and discovered tools are merged (deduplicated by name)
@@ -854,40 +854,38 @@ Run the built-in benchmark suite:
 ./target/release/velocity_mcp --benchmark
 ```
 
-### Reference Results (Intel Core i5-14400F, release build)
+### Reference Results (Intel Core i5-14400F, release build, 2026-09-02)
 
-**Protocol Parsing (same tool call, full field extraction):**
+**NDA/shmem Transport (ultra-low latency):**
 
-| Operation | Mean Latency | Throughput |
-|-----------|:------------:|:----------:|
-| JSON-RPC parse + extract | 722.6 ns | ~1.38M req/s |
-| NDA-native parse + Merkle + extract | 459.1 ns | ~2.18M req/s |
-| **NDA speedup** | | **1.6x faster** |
+| Method | Latency | Throughput | vs Node.js JSON/stdio |
+|--------|:-------:|:----------:|:---------------------:|
+| ping | 0.002 ms | 445K req/s | **7.8x** |
+| tools/list | 0.007 ms | 137K req/s | **27.7x** |
+| tools/call | 0.003 ms | 314K req/s | **7.3x** |
+| health/check | 0.002 ms | 472K req/s | **9.6x** |
 
-**Shared Memory Throughput:**
-
-| Operation | Mean Latency | Throughput |
-|-----------|:------------:|:----------:|
-| JSON-in-shmem R/W | 38.8 ns | 25.8M ops/s |
-| NDA-native shmem R/W | 12.6 ns | 79.2M ops/s |
-| **NDA speedup** | | **3.1x faster** |
-
-**Concurrency (NDA-native dispatch):**
-
-| Threads | Throughput |
-|:-------:|:----------:|
-| 1 | 2.86M req/s |
-| 4 | 7.01M req/s |
-| 8 | 12.7M req/s |
-
-**Rust vs Node.js MCP Server (stdio, 200 req/method):**
+**Fair Comparison (JSON/stdio, same 16 tools, 500 iterations):**
 
 | Method | Node.js avg | Rust avg | Speedup |
 |--------|:-----------:|:--------:|:-------:|
-| ping | 0.573 ms | 0.157 ms | **3.6x** |
-| tools/list | 1.050 ms | 0.154 ms | **6.8x** |
-| tools/call | 0.546 ms | 0.136 ms | **4.0x** |
-| **Overall** | 0.627 ms | 0.164 ms | **3.8x** |
+| ping | 0.029 ms | 0.017 ms | **1.7x** |
+| tools/list | 0.080 ms | 0.202 ms | 0.4x* |
+| tools/call | 0.029 ms | 0.023 ms | **1.3x** |
+| health/check | 0.030 ms | 0.020 ms | **1.5x** |
+
+*tools/list: Node.js returns a static array; Rust dynamically assembles with cache checks + dedup + pagination.
+
+**4-Pipeline Comparison:**
+
+| Pipeline | Ping avg | tools/list avg | tools/call avg |
+|----------|----------|----------------|----------------|
+| Node.js JSON/stdio | 0.029 ms | 0.080 ms | 0.029 ms |
+| Rust JSON/stdio | 0.017 ms | 0.202 ms | 0.023 ms |
+| Rust NDA/stdio | 0.025 ms | 0.164 ms | 0.032 ms |
+| Rust NDA/shmem | 0.002 ms | 0.007 ms | 0.003 ms |
+
+**Overall: 9.5x–27.7x faster** (NDA/shmem vs JSON/stdio), **1.3x–1.7x faster** (Rust vs Node.js, same JSON/stdio transport).
 
 ---
 
@@ -974,12 +972,12 @@ Token bucket rate limiter protects against abuse:
 
 ### Testing and Verification
 
-284 tests verify all security layers:
-- **210 unit tests**: Parser bounds checking, sandbox capabilities, signature verification, NDA-native protocol, MCP spec compliance, rate limiter, audit log, error sanitization
-- **43 integration tests**: 15 adversarial tests covering path traversal, network blocking, XML attacks, tamper detection, sandbox escape attempts
-- **17 property-based fuzz tests**: 3,400+ random cases proving parser never panics, signatures always verify, NDA frames resist tampering and truncation
-- **8 proc macro tests**: Type-safe tool registration, constraint validation
-- **6 enhanced tests**: Cross-platform path validation, timeout enforcement
+703 tests verify all security layers:
+- **Unit tests**: Parser bounds checking, sandbox capabilities, signature verification, NDA-native protocol, MCP spec compliance, rate limiter, audit log, error sanitization, transport layers, middleware, plugin system, marketplace
+- **Integration tests**: Adversarial tests covering path traversal, network blocking, XML attacks, tamper detection, sandbox escape attempts, HTTP transport, authentication, batch endpoints
+- **Property-based fuzz tests**: Random cases proving parser never panics, signatures always verify, NDA frames resist tampering and truncation
+- **Proc macro tests**: Type-safe tool registration, constraint validation
+- **Cross-platform tests**: Path validation, timeout enforcement
 
 ---
 
