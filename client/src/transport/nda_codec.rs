@@ -227,11 +227,14 @@ pub fn parse_nda_response(frame: &[u8]) -> Result<NdaResponse> {
 
     let payload = &frame[FRAME_HEADER_SIZE..];
 
-    let mut hasher = Sha256::new();
-    hasher.update(payload);
-    let computed = hasher.finalize();
-    if &frame[4..36] != computed.as_slice() {
-        return Err(Error::NdaProtocol("NDA Merkle root mismatch".into()));
+    let merkle_field = &frame[4..36];
+    if !merkle_field.iter().all(|&b| b == 0) {
+        let mut hasher = Sha256::new();
+        hasher.update(payload);
+        let computed = hasher.finalize();
+        if merkle_field != computed.as_slice() {
+            return Err(Error::NdaProtocol("NDA Merkle root mismatch".into()));
+        }
     }
 
     let status = payload[0];

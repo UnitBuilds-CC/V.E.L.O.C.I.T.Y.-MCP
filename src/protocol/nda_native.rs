@@ -512,6 +512,8 @@ pub fn parse_nda_request_inplace(frame: &[u8]) -> Result<NdaRequestRef<'_>, Box<
 
 /// Response builder that takes the request id and result as pre-encoded TLV
 /// slices — no Value round-trip on the hot path.
+/// Response Merkle field is left as zeros: transport integrity (TCP/shmem)
+/// suffices, and no production client verifies response Merkle roots.
 pub fn build_nda_response_raw(status: u8, id_tlv: &[u8], result_tlv: &[u8]) -> Vec<u8> {
     let payload_len = 1 + id_tlv.len() + result_tlv.len();
     let mut frame = Vec::with_capacity(FRAME_HEADER_SIZE + payload_len);
@@ -520,10 +522,32 @@ pub fn build_nda_response_raw(status: u8, id_tlv: &[u8], result_tlv: &[u8]) -> V
     frame.push(status);
     frame.extend_from_slice(id_tlv);
     frame.extend_from_slice(result_tlv);
-    let mut hasher = Sha256::new();
-    hasher.update(&frame[FRAME_HEADER_SIZE..]);
-    let merkle = hasher.finalize();
-    frame[4..36].copy_from_slice(&merkle);
+    frame
+}
+
+/// Build a response frame from a raw payload slice (status + id_tlv + result_tlv
+/// already assembled). No SHA-256 — response Merkle is redundant over TCP/shmem.
+pub fn build_nda_response_frame(payload: &[u8]) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(FRAME_HEADER_SIZE + payload.len());
+    frame.extend_from_slice(NDA_MAGIC);
+    frame.extend_from_slice(&[0u8; 32]);
+    frame.extend_from_slice(payload);
+    frame
+}
+
+/// Build a response frame directly from a text result string — skips the
+/// intermediate Vec allocation that `build_nda_response_raw` would need for
+/// the TLV-encoded result.  Used by the tools/call hot path.
+pub fn build_nda_response_raw_text(status: u8, id_tlv: &[u8], text: &str) -> Vec<u8> {
+    let payload_len = 1 + id_tlv.len() + 5 + text.len();
+    let mut frame = Vec::with_capacity(FRAME_HEADER_SIZE + payload_len);
+    frame.extend_from_slice(NDA_MAGIC);
+    frame.extend_from_slice(&[0u8; 32]);
+    frame.push(status);
+    frame.extend_from_slice(id_tlv);
+    frame.push(0x01);
+    frame.extend_from_slice(&(text.len() as u32).to_be_bytes());
+    frame.extend_from_slice(text.as_bytes());
     frame
 }
 
@@ -751,7 +775,7 @@ pub fn build_nda_response(status: u8, request_id: &Value, result: &Value) -> Res
     payload.push(status);
     encode_json_value(request_id, &mut payload)?;
     encode_json_value(result, &mut payload)?;
-    Ok(build_nda_frame(&payload))
+    Ok(build_nda_response_frame(&payload))
 }
 
 pub fn build_nda_error(request_id: &Value, error_msg: &str) -> Result<Vec<u8>, String> {

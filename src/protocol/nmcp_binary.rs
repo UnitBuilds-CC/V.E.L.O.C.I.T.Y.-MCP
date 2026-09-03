@@ -11,7 +11,13 @@ use std::time::Instant;
 use tracing::{info, warn, error, debug};
 
 fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        s.push(HEX[(b >> 4) as usize] as char);
+        s.push(HEX[(b & 0xf) as usize] as char);
+    }
+    s
 }
 
 /// Per-phase timing recorder for profiling the shmem loop. Enabled by
@@ -130,13 +136,6 @@ pub fn dispatch_nda_request(raw: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
 
     debug!(method = nda_native::method_name(req.method), "NDA-native request");
 
-    // Extract Merkle root from frame header (bytes 4..36) for audit trail
-    let merkle_root = if raw.len() >= 36 {
-        Some(hex_encode(&raw[4..36]))
-    } else {
-        None
-    };
-
     let response_frame = match req.method {
         nda_native::METHOD_PING => {
             if let Ok(delay) = std::env::var("VELOCITY_PING_DELAY_US") {
@@ -187,9 +186,14 @@ pub fn dispatch_nda_request(raw: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
             payload.push(nda_native::STATUS_OK);
             payload.extend_from_slice(req.id_tlv);
             payload.extend_from_slice(&nda_native::encoded_tools_list_result());
-            nda_native::build_nda_frame(&payload)
+            nda_native::build_nda_response_frame(&payload)
         }
         nda_native::METHOD_TOOLS_CALL => {
+            let merkle_root = if raw.len() >= 36 {
+                Some(hex_encode(&raw[4..36]))
+            } else {
+                None
+            };
             let (name_slice, args_slice) = nda_native::extract_tools_call_fields(req.data)
                 .unwrap_or((None, None));
             let name = name_slice.unwrap_or("");
@@ -200,22 +204,18 @@ pub fn dispatch_nda_request(raw: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
 
             if !rate_limit::check_rate_limit() {
                 warn!(tool = name, "Rate limit exceeded (NDA-native)");
-                audit::record_tool_call_with_merkle(name, Instant::now(), AuditOutcome::Rejected("rate limited".into()), merkle_root.clone());
+                audit::record_tool_call_with_merkle(name, Instant::now(), AuditOutcome::Rejected("rate limited".into()), merkle_root);
                 nda_native::build_nda_error_raw(req.id_tlv, &format!("Rate limit exceeded for tool '{}'.", name))
             } else {
                 let call_start = Instant::now();
                 match registry::call_tool(name, &arguments) {
                     Ok(res) => {
-                        audit::record_tool_call_with_merkle(name, call_start, AuditOutcome::Success, merkle_root.clone());
-                        let mut result_tlv = Vec::with_capacity(5 + res.len());
-                        result_tlv.push(0x01);
-                        result_tlv.extend_from_slice(&(res.len() as u32).to_be_bytes());
-                        result_tlv.extend_from_slice(res.as_bytes());
-                        nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, &result_tlv)
+                        audit::record_tool_call_with_merkle(name, call_start, AuditOutcome::Success, merkle_root);
+                        nda_native::build_nda_response_raw_text(nda_native::STATUS_OK, req.id_tlv, &res)
                     }
                     Err(e) => {
                         error!(tool = name, error = %e, "Tool execution failed (NDA-native)");
-                        audit::record_tool_call_with_merkle(name, call_start, AuditOutcome::Error(e.to_string()), merkle_root.clone());
+                        audit::record_tool_call_with_merkle(name, call_start, AuditOutcome::Error(e.to_string()), merkle_root);
                         nda_native::build_nda_error_raw(req.id_tlv, &sandbox::sanitize_error(&format!("Error running tool '{}': {}", name, e)))
                     }
                 }
