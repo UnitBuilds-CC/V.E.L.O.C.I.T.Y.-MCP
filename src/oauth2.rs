@@ -537,7 +537,7 @@ pub fn generate_authorize_url(connector_id: &str, state: &str, scopes: Option<Ve
     let mut url = format!("{}?response_type=code&client_id={}&state={}",
         oauth2_config.authorize_url,
         percent_encode(&oauth2_config.client_id),
-        percent_encode(&state)
+        percent_encode(state)
     );
 
     if let Some(redirect_uri) = &oauth2_config.redirect_uri {
@@ -853,7 +853,7 @@ pub fn call_connector(connector_id: &str, request: &ConnectorRequest) -> Result<
     if let Some(headers) = &request.headers {
         for (k, v) in headers {
             if k.contains('\r') || k.contains('\n') || k.contains(':') {
-                return Err(format!("Invalid header name: contains control characters or colon"));
+                return Err("Invalid header name: contains control characters or colon".to_string());
             }
             if v.contains('\r') || v.contains('\n') {
                 return Err(format!("Invalid header value for '{}': contains control characters", k));
@@ -867,7 +867,7 @@ pub fn call_connector(connector_id: &str, request: &ConnectorRequest) -> Result<
 
     // Send request
     let response = if let Some(body) = &request.body {
-        req_builder.send_json(&body).map_err(|e| format!("HTTP request failed: {}", e))?
+        req_builder.send_json(body).map_err(|e| format!("HTTP request failed: {}", e))?
     } else {
         req_builder.call().map_err(|e| format!("HTTP request failed: {}", e))?
     };

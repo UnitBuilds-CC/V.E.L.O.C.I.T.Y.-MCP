@@ -385,7 +385,7 @@ impl AuditRegistry {
         let mut all: Vec<AuditEntry> = sessions.values()
             .flat_map(|log| log.all())
             .collect();
-        all.sort_by(|a, b| b.sequence.cmp(&a.sequence));
+        all.sort_by_key(|a| std::cmp::Reverse(a.sequence));
         all
     }
 

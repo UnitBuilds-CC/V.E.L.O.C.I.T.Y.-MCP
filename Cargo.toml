@@ -60,12 +60,12 @@ lru = { version = "0.12", optional = true }
 # Optional: OAuth2 connectors
 ureq = { version = "2.9", features = ["json"], optional = true }
 
-# Optional: Database resources
-rusqlite = { version = "0.31", features = ["bundled"], optional = true }
-
-# Optional: Encrypted token storage
+# Optional: Encrypted token storage and NDA E2E encryption
 aes-gcm = { version = "0.10", optional = true }
 hmac = { version = "0.12", optional = true }
+
+# Optional: Database resources
+rusqlite = { version = "0.31", features = ["bundled"], optional = true }
 
 # Optional: Observability (OpenTelemetry)
 opentelemetry = { version = "0.22", optional = true }

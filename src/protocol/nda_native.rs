@@ -38,6 +38,12 @@ use sha2::{Sha256, Digest};
 use std::error::Error;
 use std::sync::{Mutex, OnceLock};
 
+// E2E Encryption support (optional, enabled by oauth2 feature)
+#[cfg(feature = "oauth2")]
+use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit, Nonce};
+#[cfg(feature = "oauth2")]
+use rand::RngCore;
+
 pub const METHOD_INITIALIZE: u8 = 0x01;
 pub const METHOD_TOOLS_LIST: u8 = 0x02;
 pub const METHOD_TOOLS_CALL: u8 = 0x03;
@@ -58,7 +64,46 @@ pub const STATUS_OK: u8 = 0;
 pub const STATUS_ERROR: u8 = 1;
 
 pub const NDA_MAGIC: &[u8; 4] = b"NMCP";
+pub const NDA_ENCRYPTED_MAGIC: &[u8; 4] = b"NMCE";
 pub const FRAME_HEADER_SIZE: usize = 36;
+
+// Encrypted frame flag - bit 0 of method byte indicates encryption (requires oauth2 feature)
+#[cfg(feature = "oauth2")]
+pub const FLAG_ENCRYPTED: u8 = 0x80;
+
+/// Session key storage for E2E encryption (requires oauth2 feature)
+#[cfg(feature = "oauth2")]
+static SESSION_KEY: OnceLock<Mutex<Option<[u8; 32]>>> = OnceLock::new();
+
+#[cfg(feature = "oauth2")]
+fn get_session_key() -> &'static Mutex<Option<[u8; 32]>> {
+    SESSION_KEY.get_or_init(|| Mutex::new(None))
+}
+
+/// Set the session encryption key for E2E encrypted transport.
+/// This key is used to encrypt/decrypt all NMCP frames.
+#[cfg(feature = "oauth2")]
+pub fn set_session_encryption_key(key: [u8; 32]) {
+    if let Ok(mut key_store) = get_session_key().lock() {
+        *key_store = Some(key);
+    }
+}
+
+/// Generate a random session encryption key.
+#[cfg(feature = "oauth2")]
+pub fn generate_session_key() -> [u8; 32] {
+    let mut key = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut key);
+    key
+}
+
+/// Clear the session encryption key.
+#[cfg(feature = "oauth2")]
+pub fn clear_session_key() {
+    if let Ok(mut key_store) = get_session_key().lock() {
+        *key_store = None;
+    }
+}
 
 pub fn is_nda_frame(data: &[u8]) -> bool {
     data.len() >= 4 && &data[0..4] == NDA_MAGIC
@@ -196,6 +241,7 @@ fn decode_json_value_inner(buf: &[u8], depth: u32) -> Result<(Value, usize), Box
     }
 }
 
+#[derive(Debug)]
 pub struct NdaRequest {
     pub method: u8,
     pub request_id: Value,
@@ -206,25 +252,70 @@ pub fn parse_nda_request(frame: &[u8]) -> Result<NdaRequest, Box<dyn Error>> {
     if frame.len() < FRAME_HEADER_SIZE {
         return Err("NDA frame too small for header".into());
     }
-    if &frame[0..4] != NDA_MAGIC {
+
+    let magic = &frame[0..4];
+    let stored_merkle = &frame[4..36];
+    let is_encrypted = magic == NDA_ENCRYPTED_MAGIC;
+    let is_plaintext = magic == NDA_MAGIC;
+
+    if !is_encrypted && !is_plaintext {
         return Err("Invalid NDA magic".into());
     }
 
-    let stored_merkle = &frame[4..36];
-    let payload = &frame[FRAME_HEADER_SIZE..];
-
-    let mut hasher = Sha256::new();
-    hasher.update(payload);
-    let computed = hasher.finalize();
-    if stored_merkle != computed.as_slice() {
-        return Err("NDA frame Merkle root mismatch".into());
+    // Encrypted frames require the oauth2 feature
+    #[cfg(not(feature = "oauth2"))]
+    if is_encrypted {
+        return Err("Encrypted frame received but oauth2 feature is not enabled".into());
     }
+
+    #[cfg(feature = "oauth2")]
+    let payload = if is_encrypted {
+        // Hard error on decryption failure — no plaintext fallback
+        let plaintext = decrypt_nda_frame_payload(frame)
+            .map_err(|e| -> Box<dyn Error> { format!("Encrypted frame decryption failed: {}", e).into() })?;
+
+        // Verify Merkle root matches decrypted plaintext
+        let mut hasher = Sha256::new();
+        hasher.update(&plaintext);
+        let computed = hasher.finalize();
+        if stored_merkle != computed.as_slice() {
+            return Err("NDA frame Merkle root mismatch after decryption".into());
+        }
+        plaintext
+    } else {
+        // Plaintext frame
+        let payload = &frame[FRAME_HEADER_SIZE..];
+        let mut hasher = Sha256::new();
+        hasher.update(payload);
+        let computed = hasher.finalize();
+        if stored_merkle != computed.as_slice() {
+            return Err("NDA frame Merkle root mismatch".into());
+        }
+        payload.to_vec()
+    };
+
+    #[cfg(not(feature = "oauth2"))]
+    let payload = {
+        let payload = &frame[FRAME_HEADER_SIZE..];
+        let mut hasher = Sha256::new();
+        hasher.update(payload);
+        let computed = hasher.finalize();
+        if stored_merkle != computed.as_slice() {
+            return Err("NDA frame Merkle root mismatch".into());
+        }
+        payload.to_vec()
+    };
 
     if payload.is_empty() {
         return Err("NDA payload is empty".into());
     }
 
+    #[cfg(feature = "oauth2")]
+    let method = payload[0] & !FLAG_ENCRYPTED;
+
+    #[cfg(not(feature = "oauth2"))]
     let method = payload[0];
+
     let mut offset = 1;
 
     let (request_id, consumed) = decode_json_value(&payload[offset..])?;
@@ -308,24 +399,85 @@ fn skip_tlv_value_inner(bytes: &[u8], depth: u32) -> Result<usize, Box<dyn Error
 /// Borrowed view of a parsed NDA request — no Value trees, no allocations
 /// beyond the frame hash. `id_tlv` is the request id TLV including its tag
 /// byte, so it can be echoed verbatim into the response.
+///
+/// For encrypted frames (with oauth2 feature), `owned_payload` holds the
+/// decrypted buffer and `id_tlv`/`data` borrow from it.
 pub struct NdaRequestRef<'a> {
     pub method: u8,
     pub id_tlv: &'a [u8],
     pub data: &'a [u8],
+    #[cfg(feature = "oauth2")]
+    #[allow(dead_code)]
+    owned_payload: Option<Vec<u8>>,
 }
 
 /// Zero-alloc counterpart of parse_nda_request. Validates magic + Merkle +
 /// a complete request-id TLV; the data subtree is validated lazily by the
 /// methods that actually consume it.
+///
+/// For encrypted frames (NMCE magic, requires oauth2 feature), decrypts into
+/// an owned buffer and returns references into it.
 pub fn parse_nda_request_inplace(frame: &[u8]) -> Result<NdaRequestRef<'_>, Box<dyn Error>> {
     if frame.len() < FRAME_HEADER_SIZE {
         return Err("NDA frame too small for header".into());
     }
-    if &frame[0..4] != NDA_MAGIC {
+
+    let magic = &frame[0..4];
+    let is_encrypted = magic == NDA_ENCRYPTED_MAGIC;
+    let is_plaintext = magic == NDA_MAGIC;
+
+    if !is_encrypted && !is_plaintext {
         return Err("Invalid NDA magic".into());
     }
 
+    #[cfg(not(feature = "oauth2"))]
+    if is_encrypted {
+        return Err("Encrypted frame received but oauth2 feature is not enabled".into());
+    }
+
     let stored_merkle = &frame[4..36];
+
+    #[cfg(feature = "oauth2")]
+    if is_encrypted {
+        // Decrypt into owned buffer
+        let plaintext = decrypt_nda_frame_payload(frame)
+            .map_err(|e| -> Box<dyn Error> { format!("Encrypted frame decryption failed: {}", e).into() })?;
+
+        // Verify Merkle root over decrypted plaintext
+        let mut hasher = Sha256::new();
+        hasher.update(&plaintext);
+        let computed = hasher.finalize();
+        if stored_merkle != computed.as_slice() {
+            return Err("NDA frame Merkle root mismatch after decryption".into());
+        }
+
+        if plaintext.len() < 2 {
+            return Err("NDA payload too small for method + id".into());
+        }
+
+        let method = plaintext[0] & !FLAG_ENCRYPTED;
+        let id_len = skip_tlv_value(&plaintext[1..])?;
+
+        // Safety: We create references into the `plaintext` Vec before moving it
+        // into the struct. The Vec's heap buffer is not reallocated during a move,
+        // so the references remain valid. The struct owns the Vec via `owned_payload`,
+        // so the buffer is not deallocated while the struct is alive. The lifetime
+        // `'a` is satisfied because the struct is returned and lives at least as long
+        // as the caller needs it.
+        let id_tlv_ptr = plaintext.as_ptr();
+        let id_tlv = unsafe { std::slice::from_raw_parts(id_tlv_ptr.add(1), id_len) };
+        let data_ptr = plaintext.as_ptr();
+        let data = unsafe { std::slice::from_raw_parts(data_ptr.add(1 + id_len), plaintext.len() - 1 - id_len) };
+
+        return Ok(NdaRequestRef {
+            method,
+            id_tlv,
+            data,
+            owned_payload: Some(plaintext),
+        });
+    }
+
+    // Plaintext frame
     let payload = &frame[FRAME_HEADER_SIZE..];
 
     let mut hasher = Sha256::new();
@@ -342,6 +494,15 @@ pub fn parse_nda_request_inplace(frame: &[u8]) -> Result<NdaRequestRef<'_>, Box<
     let method = payload[0];
     let id_len = skip_tlv_value(&payload[1..])?;
 
+    #[cfg(feature = "oauth2")]
+    return Ok(NdaRequestRef {
+        method,
+        id_tlv: &payload[1..1 + id_len],
+        data: &payload[1 + id_len..],
+        owned_payload: None,
+    });
+
+    #[cfg(not(feature = "oauth2"))]
     Ok(NdaRequestRef {
         method,
         id_tlv: &payload[1..1 + id_len],
@@ -352,11 +513,18 @@ pub fn parse_nda_request_inplace(frame: &[u8]) -> Result<NdaRequestRef<'_>, Box<
 /// Response builder that takes the request id and result as pre-encoded TLV
 /// slices — no Value round-trip on the hot path.
 pub fn build_nda_response_raw(status: u8, id_tlv: &[u8], result_tlv: &[u8]) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(1 + id_tlv.len() + result_tlv.len());
-    payload.push(status);
-    payload.extend_from_slice(id_tlv);
-    payload.extend_from_slice(result_tlv);
-    build_nda_frame(&payload)
+    let payload_len = 1 + id_tlv.len() + result_tlv.len();
+    let mut frame = Vec::with_capacity(FRAME_HEADER_SIZE + payload_len);
+    frame.extend_from_slice(NDA_MAGIC);
+    frame.extend_from_slice(&[0u8; 32]);
+    frame.push(status);
+    frame.extend_from_slice(id_tlv);
+    frame.extend_from_slice(result_tlv);
+    let mut hasher = Sha256::new();
+    hasher.update(&frame[FRAME_HEADER_SIZE..]);
+    let merkle = hasher.finalize();
+    frame[4..36].copy_from_slice(&merkle);
+    frame
 }
 
 pub fn build_nda_error_raw(id_tlv: &[u8], error_msg: &str) -> Vec<u8> {
@@ -402,6 +570,46 @@ pub fn extract_tools_call_fields(data: &[u8]) -> Result<(Option<&str>, Option<&[
     Ok((name, arguments))
 }
 
+/// Extract a single field's raw TLV bytes from a TLV-encoded object.
+/// Returns `None` if data is not an object or the key is not present.
+/// Does not allocate; returns a borrowed sub-slice of the input.
+pub fn extract_tlv_field<'a>(data: &'a [u8], target_key: &[u8]) -> Result<Option<&'a [u8]>, Box<dyn Error>> {
+    if data.is_empty() || data[0] != 0x06 {
+        return Ok(None);
+    }
+    if data.len() < 5 {
+        return Err("truncated object".into());
+    }
+    let count = u32::from_be_bytes(data[1..5].try_into()?) as usize;
+    let mut off = 5usize;
+
+    for _ in 0..count {
+        if data.len() < off + 2 {
+            return Err("truncated key length".into());
+        }
+        let klen = u16::from_be_bytes(data[off..off + 2].try_into()?) as usize;
+        off += 2;
+        if data.len() < off + klen {
+            return Err("truncated key".into());
+        }
+        let key = &data[off..off + klen];
+        off += klen;
+
+        let val_len = skip_tlv_value(&data[off..])?;
+        if data.len() < off + val_len {
+            return Err("truncated value".into());
+        }
+
+        if key == target_key {
+            return Ok(Some(&data[off..off + val_len]));
+        }
+
+        off += val_len;
+    }
+
+    Ok(None)
+}
+
 /// The TLV encoding of an empty JSON object `{}` — the result for ping,
 /// notifications, and other ack-only methods.
 pub const EMPTY_OBJECT_TLV: &[u8] = &[0x06, 0, 0, 0, 0];
@@ -417,7 +625,9 @@ pub fn health_result_tlv() -> &'static [u8] {
             "status": "healthy",
             "mode": "shmem-nda",
             "version": crate::VERSION
-        }), &mut buf).expect("static JSON keys fit in u16");
+        }), &mut buf).unwrap_or_else(|e| {
+            tracing::error!("health_result_tlv encode failed (static keys should always fit): {}", e);
+        });
         buf
     })
 }
@@ -432,6 +642,108 @@ pub fn build_nda_frame(payload: &[u8]) -> Vec<u8> {
     frame.extend_from_slice(&merkle);
     frame.extend_from_slice(payload);
     frame
+}
+
+/// Build an encrypted NMCP frame.
+/// 
+/// The payload is encrypted with AES-256-GCM using the session key.
+/// The Merkle root is computed over the plaintext for integrity verification.
+/// The method byte has FLAG_ENCRYPTED bit set to indicate encryption.
+///
+/// Frame format:
+/// ```text
+/// [4 bytes: magic "NMCP"]
+/// [32 bytes: merkle root (SHA-256 of plaintext payload)]
+/// [12 bytes: nonce]
+/// [N bytes: ciphertext (encrypted payload)]
+/// ```
+#[cfg(feature = "oauth2")]
+pub fn build_nda_encrypted_frame(method: u8, request_id: &Value, data: &Value) -> Result<Vec<u8>, String> {
+    // Build plaintext payload first
+    let mut plaintext = Vec::new();
+    plaintext.push(method | FLAG_ENCRYPTED); // Set encrypted flag
+    encode_json_value(request_id, &mut plaintext)?;
+    if !data.is_null() {
+        encode_json_value(data, &mut plaintext)?;
+    }
+
+    // Compute Merkle root over plaintext
+    let mut hasher = Sha256::new();
+    hasher.update(&plaintext);
+    let merkle = hasher.finalize();
+
+    // Get session key
+    let key_store = get_session_key().lock()
+        .map_err(|e| format!("Failed to lock session key: {}", e))?;
+    
+    let key_bytes = key_store.as_ref()
+        .ok_or("Session encryption key not set. Call set_session_encryption_key() first.")?;
+
+    // Create cipher and encrypt
+    let cipher = Aes256Gcm::new_from_slice(key_bytes)
+        .map_err(|e| format!("Failed to create cipher: {}", e))?;
+    
+    // Generate random nonce (12 bytes for AES-GCM)
+    let mut nonce_bytes = [0u8; 12];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    
+    // Encrypt the payload
+    let ciphertext = cipher.encrypt(nonce, plaintext.as_slice())
+        .map_err(|e| format!("Failed to encrypt payload: {}", e))?;
+    
+    // Build frame: magic + merkle + nonce + ciphertext
+    let mut frame = Vec::with_capacity(FRAME_HEADER_SIZE + 12 + ciphertext.len());
+    frame.extend_from_slice(NDA_ENCRYPTED_MAGIC);
+    frame.extend_from_slice(&merkle);
+    frame.extend_from_slice(&nonce_bytes);
+    frame.extend_from_slice(&ciphertext);
+    
+    Ok(frame)
+}
+
+/// Decrypt an NMCP frame payload.
+/// 
+/// Returns the decrypted plaintext payload.
+#[cfg(feature = "oauth2")]
+pub fn decrypt_nda_frame_payload(encrypted_frame: &[u8]) -> Result<Vec<u8>, String> {
+    if encrypted_frame.len() < FRAME_HEADER_SIZE + 12 {
+        return Err("Encrypted frame too short".to_string());
+    }
+
+    // Verify magic
+    if &encrypted_frame[0..4] != NDA_ENCRYPTED_MAGIC {
+        return Err("Invalid encrypted frame: bad magic".to_string());
+    }
+
+    // Extract nonce and ciphertext (after header)
+    let nonce_start = FRAME_HEADER_SIZE;
+    let nonce_end = nonce_start + 12;
+    let nonce = Nonce::from_slice(&encrypted_frame[nonce_start..nonce_end]);
+    let ciphertext = &encrypted_frame[nonce_end..];
+
+    // Get session key
+    let key_store = get_session_key().lock()
+        .map_err(|e| format!("Failed to lock session key: {}", e))?;
+    
+    let key_bytes = key_store.as_ref()
+        .ok_or("Session encryption key not set. Call set_session_encryption_key() first.")?;
+
+    // Create cipher and decrypt
+    let cipher = Aes256Gcm::new_from_slice(key_bytes)
+        .map_err(|e| format!("Failed to create cipher: {}", e))?;
+    
+    let plaintext = cipher.decrypt(nonce, ciphertext)
+        .map_err(|e| format!("Failed to decrypt payload: {}", e))?;
+    
+    Ok(plaintext)
+}
+
+/// Check if a frame is encrypted by examining the magic bytes.
+/// Returns true if the frame uses the NMCE (encrypted) magic.
+#[cfg(feature = "oauth2")]
+pub fn is_nda_frame_encrypted(frame: &[u8]) -> bool {
+    frame.len() >= 4 && &frame[0..4] == NDA_ENCRYPTED_MAGIC
 }
 
 pub fn build_nda_response(status: u8, request_id: &Value, result: &Value) -> Result<Vec<u8>, String> {
@@ -500,7 +812,9 @@ pub fn encoded_tools_list_result() -> Vec<u8> {
     }
     let tools = crate::registry::get_tools();
     let mut bytes = Vec::with_capacity(8 * 1024);
-    encode_tools_list_result(&mut bytes, &tools).expect("tool definition keys fit in u16");
+    encode_tools_list_result(&mut bytes, &tools).unwrap_or_else(|e| {
+        tracing::error!("tools_list_tlv encode failed: {}", e);
+    });
     // Only store if the generation was stable across the build: otherwise a
     // concurrent registration would be masked by pre-mutation bytes cached
     // under the post-mutation generation.
@@ -1919,6 +2233,239 @@ mod tests {
         frame[last] ^= 0xFF;
         let err = parse_flat_request(&frame).err().unwrap();
         assert!(err.to_string().contains("Merkle"));
+    }
+
+    // ── extract_tlv_field tests ───────────────────────────────────────────
+
+    #[test]
+    fn test_extract_tlv_field_missing_key() {
+        // Object with one key "foo", looking for "bar"
+        let mut buf = vec![0x06]; // object tag
+        buf.extend_from_slice(&1u32.to_be_bytes()); // count=1
+        buf.extend_from_slice(&3u16.to_be_bytes()); // key_len=3
+        buf.extend_from_slice(b"foo");
+        buf.push(0x02); // integer tag
+        buf.extend_from_slice(&42i64.to_be_bytes());
+
+        let result = extract_tlv_field(&buf, b"bar").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_tlv_field_found_int() {
+        let mut buf = vec![0x06];
+        buf.extend_from_slice(&2u32.to_be_bytes()); // count=2
+        buf.extend_from_slice(&3u16.to_be_bytes());
+        buf.extend_from_slice(b"foo");
+        buf.push(0x02);
+        buf.extend_from_slice(&42i64.to_be_bytes());
+        buf.extend_from_slice(&4u16.to_be_bytes());
+        buf.extend_from_slice(b"size");
+        buf.push(0x02);
+        buf.extend_from_slice(&128i64.to_be_bytes());
+
+        let result = extract_tlv_field(&buf, b"size").unwrap();
+        assert!(result.is_some());
+        let tlv = result.unwrap();
+        // Verify it's an integer tag with correct value
+        assert_eq!(tlv[0], 0x02);
+        assert_eq!(tlv.len(), 9);
+        let val = i64::from_be_bytes(tlv[1..9].try_into().unwrap());
+        assert_eq!(val, 128);
+    }
+
+    #[test]
+    fn test_extract_tlv_field_found_str() {
+        let mut buf = vec![0x06];
+        buf.extend_from_slice(&1u32.to_be_bytes());
+        buf.extend_from_slice(&4u16.to_be_bytes());
+        buf.extend_from_slice(b"path");
+        buf.push(0x01); // string tag
+        let path = "/test.txt";
+        buf.extend_from_slice(&(path.len() as u32).to_be_bytes());
+        buf.extend_from_slice(path.as_bytes());
+
+        let result = extract_tlv_field(&buf, b"path").unwrap();
+        assert!(result.is_some());
+        let tlv = result.unwrap();
+        // Verify it's a string tag with correct value
+        assert_eq!(tlv[0], 0x01);
+        let len = u32::from_be_bytes(tlv[1..5].try_into().unwrap()) as usize;
+        let s = std::str::from_utf8(&tlv[5..5+len]).unwrap();
+        assert_eq!(s, "/test.txt");
+    }
+
+    #[test]
+    fn test_extract_tlv_field_not_object() {
+        let buf = vec![0x02, 0, 0, 0, 0, 0, 0, 0, 42]; // just an integer
+        let result = extract_tlv_field(&buf, b"key").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_tlv_field_empty_object() {
+        let buf = vec![0x06, 0, 0, 0, 0]; // empty object
+        let result = extract_tlv_field(&buf, b"key").unwrap();
+        assert!(result.is_none());
+    }
+
+    // ─── E2E Encryption tests (require oauth2 feature) ─────────────────────
+
+    #[cfg(feature = "oauth2")]
+    mod encryption_tests {
+        use super::*;
+
+        fn setup_test_key() {
+            let key = generate_session_key();
+            set_session_encryption_key(key);
+        }
+
+        #[test]
+        fn test_encrypted_frame_round_trip() {
+            setup_test_key();
+            let req_id = json!(42);
+            let data = json!({"name": "test_tool", "arguments": {"size": 64}});
+            
+            let frame = build_nda_encrypted_frame(METHOD_TOOLS_CALL, &req_id, &data).unwrap();
+            
+            // Verify NMCE magic
+            assert_eq!(&frame[0..4], NDA_ENCRYPTED_MAGIC);
+            assert!(is_nda_frame_encrypted(&frame));
+            
+            // Parse should succeed
+            let parsed = parse_nda_request(&frame).unwrap();
+            assert_eq!(parsed.method, METHOD_TOOLS_CALL);
+            assert_eq!(parsed.request_id, json!(42));
+            assert_eq!(parsed.data["name"], "test_tool");
+        }
+
+        #[test]
+        fn test_encrypted_frame_wrong_key() {
+            setup_test_key();
+            let req_id = json!(1);
+            let data = json!({"test": "data"});
+            
+            let frame = build_nda_encrypted_frame(METHOD_PING, &req_id, &data).unwrap();
+            
+            // Change the key
+            let mut wrong_key = [0u8; 32];
+            wrong_key[0] = 0xFF;
+            set_session_encryption_key(wrong_key);
+            
+            // Parse should fail with decryption error
+            let result = parse_nda_request(&frame);
+            assert!(result.is_err());
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("decryption failed") || err.contains("Decrypt"));
+        }
+
+        #[test]
+        fn test_encrypted_frame_no_key() {
+            clear_session_key();
+            let req_id = json!(1);
+            let data = Value::Null;
+            
+            let result = build_nda_encrypted_frame(METHOD_PING, &req_id, &data);
+            assert!(result.is_err());
+            assert!(result.unwrap_err().contains("key not set"));
+        }
+
+        #[test]
+        fn test_encrypted_frame_tampered_ciphertext() {
+            setup_test_key();
+            let req_id = json!(1);
+            let data = json!({"test": "data"});
+            
+            let mut frame = build_nda_encrypted_frame(METHOD_PING, &req_id, &data).unwrap();
+            
+            // Tamper with ciphertext (last byte)
+            let last = frame.len() - 1;
+            frame[last] ^= 0xFF;
+            
+            // Should fail (either decryption or Merkle mismatch)
+            let result = parse_nda_request(&frame);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_encrypted_frame_no_plaintext_fallback() {
+            // This is the critical security test: encrypted frames that fail
+            // decryption must be rejected, NOT silently processed as plaintext.
+            setup_test_key();
+            
+            // Build a plaintext frame with NMCP magic but make it long enough
+            // to have triggered the old length-based heuristic
+            let req_id = json!(1);
+            let data = json!({"name": "bench_echo", "arguments": {"size": 1000}});
+            let plaintext_frame = build_nda_request(METHOD_TOOLS_CALL, &req_id, &data).unwrap();
+            
+            // This should parse fine as plaintext
+            assert_eq!(&plaintext_frame[0..4], NDA_MAGIC);
+            let parsed = parse_nda_request(&plaintext_frame).unwrap();
+            assert_eq!(parsed.method, METHOD_TOOLS_CALL);
+            
+            // Now build an encrypted frame with wrong key to force decryption failure
+            let mut wrong_key = [0u8; 32];
+            wrong_key[0] = 0xAA;
+            set_session_encryption_key(wrong_key);
+            
+            // Build with correct key first
+            let correct_key = generate_session_key();
+            set_session_encryption_key(correct_key);
+            let enc_frame = build_nda_encrypted_frame(METHOD_PING, &json!(1), &Value::Null).unwrap();
+            
+            // Now switch to wrong key and try to parse
+            set_session_encryption_key(wrong_key);
+            let result = parse_nda_request(&enc_frame);
+            assert!(result.is_err(), "Encrypted frame with wrong key MUST be rejected");
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("decryption failed") || err.contains("Decrypt"),
+                "Error should mention decryption failure, got: {}", err);
+        }
+
+        #[test]
+        fn test_parse_nda_request_inplace_encrypted() {
+            setup_test_key();
+            let req_id = json!(99);
+            let data = json!({"name": "file_read", "arguments": {"path": "/test.txt"}});
+            
+            let frame = build_nda_encrypted_frame(METHOD_TOOLS_CALL, &req_id, &data).unwrap();
+            
+            let parsed = parse_nda_request_inplace(&frame).unwrap();
+            assert_eq!(parsed.method, METHOD_TOOLS_CALL);
+            
+            // Verify id_tlv decodes correctly
+            let (id_val, _) = decode_json_value(parsed.id_tlv).unwrap();
+            assert_eq!(id_val, json!(99));
+        }
+
+        #[test]
+        fn test_is_nda_frame_encrypted() {
+            let plaintext = build_nda_request(METHOD_PING, &json!(1), &Value::Null).unwrap();
+            assert!(!is_nda_frame_encrypted(&plaintext));
+            
+            setup_test_key();
+            let encrypted = build_nda_encrypted_frame(METHOD_PING, &json!(1), &Value::Null).unwrap();
+            assert!(is_nda_frame_encrypted(&encrypted));
+            
+            // Too short
+            assert!(!is_nda_frame_encrypted(&[0u8; 3]));
+        }
+
+        #[test]
+        fn test_plaintext_frame_still_works_with_encryption_enabled() {
+            // When oauth2 feature is enabled, plaintext frames (NMCP magic)
+            // should still work normally — no decryption attempted.
+            setup_test_key();
+            
+            let frame = build_nda_request(METHOD_PING, &json!(1), &Value::Null).unwrap();
+            assert_eq!(&frame[0..4], NDA_MAGIC);
+            assert!(!is_nda_frame_encrypted(&frame));
+            
+            let parsed = parse_nda_request(&frame).unwrap();
+            assert_eq!(parsed.method, METHOD_PING);
+            assert_eq!(parsed.request_id, json!(1));
+        }
     }
 
 }

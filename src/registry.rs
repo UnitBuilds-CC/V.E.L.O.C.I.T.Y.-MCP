@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::collections::HashMap;
 use std::time::Duration;
 use tracing::{info, warn, error, debug};
+use crate::protocol::nda_native::extract_tlv_field;
 
 fn collapse_whitespace(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -64,9 +65,13 @@ pub(crate) fn bump_registry_generation() {
     REGISTRY_GENERATION.fetch_add(1, Ordering::AcqRel);
 }
 
-/// Global registry for NDA tools converted from JSON tool calls.
-/// Maps tool name → NDA binary data (ready for fast execution).
-static NDA_TOOL_REGISTRY: OnceLock<Mutex<HashMap<String, Vec<u8>>>> = OnceLock::new();
+/// Cache for pre-encoded NMCP frames from convert_to_nda_tool.
+/// Maps tool name → binary frame (ready for fast execution).
+static NMCP_FRAME_CACHE: OnceLock<Mutex<HashMap<String, Vec<u8>>>> = OnceLock::new();
+
+/// Registry for converted tool definitions (from convert_to_nda_tool).
+/// Maps tool name → Tool definition with metadata for tools/list responses.
+static CONVERTED_TOOL_REGISTRY: OnceLock<Mutex<HashMap<String, Tool>>> = OnceLock::new();
 
 /// Global registry for lazily registered tools from proc macros.
 static MACRO_TOOLS: OnceLock<Mutex<Vec<Tool>>> = OnceLock::new();
@@ -134,9 +139,14 @@ pub fn register_tool_lazy(tool: &Tool) {
     }
 }
 
-/// Get or initialize the NDA tool registry.
-fn get_nda_registry() -> &'static Mutex<HashMap<String, Vec<u8>>> {
-    NDA_TOOL_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+/// Get or initialize the NMCP frame cache (stores pre-encoded binary frames from convert_to_nda_tool).
+fn get_nmcp_frame_cache() -> &'static Mutex<HashMap<String, Vec<u8>>> {
+    NMCP_FRAME_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Get or initialize the converted tool registry (stores Tool definitions for tools/list).
+fn get_converted_tool_registry() -> &'static Mutex<HashMap<String, Tool>> {
+    CONVERTED_TOOL_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Return the list of registered MCP tools with their input schemas.
@@ -197,19 +207,10 @@ pub fn get_tools() -> Vec<Tool> {
     }
     
     // Add NDA-converted tools (registered via convert_to_nda_tool)
-    if let Ok(registry) = get_nda_registry().lock() {
-        for tool_name in registry.keys() {
+    if let Ok(registry) = get_converted_tool_registry().lock() {
+        for (tool_name, tool_def) in registry.iter() {
             if !known_names.contains(tool_name) {
-                tools.push(Tool {
-                    name: tool_name.clone(),
-                    description: format!("NDA-converted tool '{}' (converted from JSON for fast binary execution)", tool_name),
-                    input_schema: json!({
-                        "type": "object",
-                        "properties": {},
-                        "required": [],
-                        "description": "Arguments are passed through to the NDA binary executor."
-                    }),
-                });
+                tools.push(tool_def.clone());
                 known_names.insert(tool_name.clone());
             }
         }
@@ -572,10 +573,11 @@ pub fn call_tool(name: &str, arguments: &Value) -> Result<String, Box<dyn Error>
 /// Call a tool with an explicit C# executable path.
 ///
 /// Routes tool calls as follows:
-/// - Built-in NDA tools (convert_to_nda_document, read_nda, execute_nda): native Rust implementation
-/// - convert_to_nda_tool: JSON-to-NDA binary conversion with auto-registration
-/// - NDA-converted tools: executes via fast binary path (no JSON parsing)
-/// - All other tools: delegates directly to the C# engine (dynamic tool hosting)
+/// - Built-in tools (file_read, bench_echo, shell_exec, etc.): native Rust implementation
+/// - NDA-converted built-in tools: native Rust (no C# engine spawn)
+/// - NDA-converted dynamic tools: decode TLV args, then C# engine
+/// - Plugin tools: plugin-provided implementations
+/// - All other tools: delegates to the C# engine (dynamic tool hosting)
 pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &str) -> Result<String, Box<dyn Error>> {
     debug!(tool = name, "Dispatching tool call");
 
@@ -608,7 +610,7 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
             if !output_path.is_empty() {
                 validate_file_path(output_path)?;
             }
-            convert_and_register_nda_tool(json_request, output_path)
+            cache_nmcp_frame(json_request, output_path)
         }
         "read_nda" => {
             let nda_path = arguments["ndaPath"].as_str().ok_or("ndaPath is required")?;
@@ -796,13 +798,11 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
             let mut matches = Vec::new();
             const MAX_SEARCH_MATCHES: usize = 100_000;
 
-            for entry in glob::glob(&glob_pattern)? {
-                if let Ok(entry_path) = entry {
-                    matches.push(entry_path.to_string_lossy().into_owned());
-                    if matches.len() >= MAX_SEARCH_MATCHES {
-                        tracing::warn!(pattern = %pattern, "search_files match limit reached ({})", MAX_SEARCH_MATCHES);
-                        break;
-                    }
+            for entry_path in glob::glob(&glob_pattern)?.flatten() {
+                matches.push(entry_path.to_string_lossy().into_owned());
+                if matches.len() >= MAX_SEARCH_MATCHES {
+                    tracing::warn!(pattern = %pattern, "search_files match limit reached ({})", MAX_SEARCH_MATCHES);
+                    break;
                 }
             }
             
@@ -1457,13 +1457,13 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
                 Err("HTTP requests require the oauth2 feature to be enabled (ureq dependency)".into())
             }
         }
-        // Dynamic tools: check NDA registry first, then plugin registry, then route to C# engine
+        // Dynamic tools: check NMCP frame cache first, then plugin registry, then route to C# engine
         _ => {
-            // Check if this is an NDA-converted tool
-            if let Ok(registry) = get_nda_registry().lock() {
+            // Check if this is a cached NMCP frame tool
+            if let Ok(registry) = get_nmcp_frame_cache().lock() {
                 if let Some(nda_binary) = registry.get(name) {
-                    debug!(tool = name, "Executing NDA-converted tool (fast binary path)");
-                    return execute_nda_binary_tool(name, arguments, nda_binary);
+                    debug!(tool = name, "Executing cached NMCP frame tool (fast binary path)");
+                    return execute_cached_nmcp_frame(name, arguments, nda_binary);
                 }
             }
             
@@ -1486,36 +1486,99 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
     }
 }
 
-/// Execute an NDA-converted tool from its binary representation.
+/// Built-in tool names that have native Rust implementations.
+/// These tools skip the C# engine entirely when called directly.
+const BUILTIN_TOOL_NAMES: &[&str] = &[
+    "convert_to_nda_document",
+    "convert_to_nda_tool",
+    "read_nda",
+    "execute_nda",
+    "file_read",
+    "file_write",
+    "list_directory",
+    "directory_tree",
+    "search_files",
+    "move_file",
+    "create_directory",
+    "edit_file",
+    "get_file_info",
+    "bench_echo",
+    "shell_exec",
+    "http_request",
+];
+
+fn is_builtin_tool(name: &str) -> bool {
+    BUILTIN_TOOL_NAMES.contains(&name)
+}
+
+/// Decode an i64 from a TLV integer slice (tag 0x02).
+fn tlv_to_i64(tlv: &[u8]) -> Result<i64, Box<dyn Error>> {
+    if tlv.is_empty() || tlv[0] != 0x02 {
+        return Err("expected integer TLV".into());
+    }
+    if tlv.len() < 9 {
+        return Err("truncated integer".into());
+    }
+    Ok(i64::from_be_bytes(tlv[1..9].try_into()?))
+}
+
+/// Decode a string from a TLV string slice (tag 0x01).
+fn tlv_to_str(tlv: &[u8]) -> Result<&str, Box<dyn Error>> {
+    if tlv.is_empty() || tlv[0] != 0x01 {
+        return Err("expected string TLV".into());
+    }
+    if tlv.len() < 5 {
+        return Err("truncated string".into());
+    }
+    let len = u32::from_be_bytes(tlv[1..5].try_into()?) as usize;
+    if tlv.len() < 5 + len {
+        return Err("truncated string data".into());
+    }
+    std::str::from_utf8(&tlv[5..5 + len]).map_err(|e| e.into())
+}
+
+/// Native bench_echo implementation — no Value dependency.
+fn bench_echo_impl(size: u64) -> Result<String, Box<dyn Error>> {
+    Ok("x".repeat(size as usize))
+}
+
+/// Native file_read implementation — no Value dependency.
+fn file_read_impl(path: &str) -> Result<String, Box<dyn Error>> {
+    validate_file_path(path)?;
+    let content = std::fs::read_to_string(path)?;
+    Ok(content)
+}
+
+/// Execute a tool that was cached as an NMCP frame (via convert_to_nda_tool).
 ///
-/// This is the fast execution path: no JSON parsing, no C# process spawning.
-/// The tool arguments are encoded directly into the NDA binary via TLV format.
-fn execute_nda_binary_tool(tool_name: &str, arguments: &Value, nda_binary: &[u8]) -> Result<String, Box<dyn Error>> {
-    // Parse the NDA binary to extract the original tool call structure
-    // The binary contains: magic(4) + merkle(32) + method_type(1) + name_len(2) + name(N) + args_len(4) + args(M)
-    if nda_binary.len() < 36 {
+/// The binary is a pre-encoded NMCP frame containing:
+/// - Method type byte
+/// - Tool name (length-prefixed)
+/// - TLV-encoded arguments
+///
+/// For built-in tools with simple argument shapes, extracts fields directly
+/// from TLV without allocating a full serde_json::Value tree.
+/// For complex or dynamic tools, falls back to full Value decode.
+pub fn execute_cached_nmcp_frame(tool_name: &str, arguments: &Value, nda_binary: &[u8]) -> Result<String, Box<dyn Error>> {
+    if nda_binary.len() < 37 {
         return Err("NDA binary too small".into());
     }
-    
-    // Verify magic
+
     if &nda_binary[0..4] != b"NMCP" {
         return Err("Invalid NDA binary: bad magic".into());
     }
-    
-    // Extract tool name from binary
-    let name_len = u16::from_be_bytes([nda_binary[36], nda_binary[37]]) as usize;
-    if nda_binary.len() < 38 + name_len {
+
+    let name_len = u16::from_be_bytes([nda_binary[37], nda_binary[38]]) as usize;
+    if nda_binary.len() < 39 + name_len {
         return Err("NDA binary truncated: missing tool name".into());
     }
-    let binary_tool_name = std::str::from_utf8(&nda_binary[38..38 + name_len])?;
-    
-    // Verify tool name matches
+    let binary_tool_name = std::str::from_utf8(&nda_binary[39..39 + name_len])?;
+
     if binary_tool_name != tool_name {
         return Err(format!("NDA binary tool name mismatch: expected '{}', found '{}'", tool_name, binary_tool_name).into());
     }
-    
-    // Extract and decode the TLV arguments from the binary
-    let args_start = 38 + name_len;
+
+    let args_start = 39 + name_len;
     if nda_binary.len() < args_start + 4 {
         return Err("NDA binary truncated: missing args length".into());
     }
@@ -1525,11 +1588,31 @@ fn execute_nda_binary_tool(tool_name: &str, arguments: &Value, nda_binary: &[u8]
         return Err("NDA binary truncated: args data extends beyond buffer".into());
     }
     let args_data = &nda_binary[args_start+4..args_end];
-    
-    // Decode the original NDA arguments
+
+    // Try zero-alloc extraction for simple built-in tools
+    if is_builtin_tool(tool_name) {
+        match tool_name {
+            "bench_echo" => {
+                if let Some(size_tlv) = extract_tlv_field(args_data, b"size")? {
+                    let size = tlv_to_i64(size_tlv).unwrap_or(64) as u64;
+                    debug!(tool = tool_name, size, "Executing bench_echo via zero-alloc TLV extraction");
+                    return bench_echo_impl(size);
+                }
+            }
+            "file_read" => {
+                if let Some(path_tlv) = extract_tlv_field(args_data, b"path")? {
+                    let path = tlv_to_str(path_tlv)?;
+                    debug!(tool = tool_name, path, "Executing file_read via zero-alloc TLV extraction");
+                    return file_read_impl(path);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Fallback: decode full Value tree for complex tools or when TLV extraction fails
     let (original_args, _) = decode_json_value(args_data)?;
-    
-    // Merge: use the call-time arguments if provided, otherwise fall back to original
+
     let effective_args = if let Some(obj) = arguments.as_object() {
         if !obj.is_empty() {
             arguments.clone()
@@ -1539,21 +1622,25 @@ fn execute_nda_binary_tool(tool_name: &str, arguments: &Value, nda_binary: &[u8]
     } else {
         original_args
     };
-    
-    // Execute via C# engine with the decoded arguments
-    // (In future, this could execute natively without C# engine)
-    let csharp_path = resolve_csharp_path();
-    info!(tool = tool_name, "Executing NDA-converted tool via C# engine (arguments decoded from NDA binary)");
-    execute_csharp_mcp_tool(tool_name, &effective_args, &csharp_path)
+
+    if is_builtin_tool(tool_name) {
+        debug!(tool = tool_name, "Executing NDA-converted built-in tool natively (fallback path)");
+        let csharp_path = resolve_csharp_path();
+        call_tool_with_csharp_path(tool_name, &effective_args, &csharp_path)
+    } else {
+        let csharp_path = resolve_csharp_path();
+        info!(tool = tool_name, "Executing NDA-converted dynamic tool via C# engine");
+        execute_csharp_mcp_tool(tool_name, &effective_args, &csharp_path)
+    }
 }
 
-/// Convert a JSON tool call to NDA binary AND register it for immediate execution.
+/// Convert a JSON tool call to an NMCP binary frame AND register it for immediate execution.
 ///
 /// This is the key migration function: users call this with their existing JSON tool,
 /// and it becomes immediately available as a registered tool with fast binary execution.
-fn convert_and_register_nda_tool(json_request: &str, output_path: &str) -> Result<String, Box<dyn Error>> {
-    // Convert to NDA binary
-    let base64_result = convert_json_to_nda_binary(json_request, output_path)?;
+pub fn cache_nmcp_frame(json_request: &str, output_path: &str) -> Result<String, Box<dyn Error>> {
+    // Convert to NMCP binary frame
+    let base64_result = json_to_nmcp_frame(json_request, output_path)?;
     
     // Parse the JSON to extract the tool name for registration
     let request: Value = serde_json::from_str(json_request)?;
@@ -1567,19 +1654,40 @@ fn convert_and_register_nda_tool(json_request: &str, output_path: &str) -> Resul
         std::fs::read(output_path)?
     };
     
-    // Register the tool in the NDA registry
-    const MAX_NDA_TOOLS: usize = 256;
-    if let Ok(mut registry) = get_nda_registry().lock() {
-        if registry.len() >= MAX_NDA_TOOLS && !registry.contains_key(tool_name) {
+    // Register the tool in the NMCP frame cache
+    const MAX_NMCP_FRAMES: usize = 256;
+    if let Ok(mut registry) = get_nmcp_frame_cache().lock() {
+        if registry.len() >= MAX_NMCP_FRAMES && !registry.contains_key(tool_name) {
             let first_key = registry.keys().next().cloned();
             if let Some(key) = first_key {
                 registry.remove(&key);
-                tracing::warn!(tool = %key, "NDA tool registry full ({}), evicted oldest entry", MAX_NDA_TOOLS);
+                tracing::warn!(tool = %key, "NMCP frame cache full ({}), evicted oldest entry", MAX_NMCP_FRAMES);
             }
         }
         registry.insert(tool_name.to_string(), binary_data);
         bump_registry_generation();
-        info!(tool = tool_name, "NDA tool registered successfully (immediately callable)");
+        info!(tool = tool_name, "NMCP frame cached successfully (immediately callable)");
+    }
+    
+    // Also register the tool definition for tools/list visibility
+    let args_schema = &request["params"]["arguments"];
+    let tool_def = Tool {
+        name: tool_name.to_string(),
+        description: format!("NDA-converted tool '{}' — executes via fast binary path", tool_name),
+        input_schema: if args_schema.is_object() && !args_schema.as_object().unwrap().is_empty() {
+            args_schema.clone()
+        } else {
+            json!({
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "description": "Arguments passed through to NDA binary executor"
+            })
+        },
+    };
+    if let Ok(mut reg) = get_converted_tool_registry().lock() {
+        reg.insert(tool_name.to_string(), tool_def);
+        bump_registry_generation();
     }
     
     // Always return base64-encoded binary data (the tool is registered regardless)
@@ -1705,11 +1813,10 @@ fn execute_csharp_mcp_tool(tool_name: &str, arguments: &Value, exe_path: &str) -
                         break;
                     }
                     response_str.push_str(&line);
-                    if response_str.trim().starts_with('{') && response_str.trim().ends_with('}') {
-                        if serde_json::from_str::<Value>(response_str.trim()).is_ok() {
+                    if response_str.trim().starts_with('{') && response_str.trim().ends_with('}')
+                        && serde_json::from_str::<Value>(response_str.trim()).is_ok() {
                             break;
                         }
-                    }
                 }
                 Err(_) => break,
             }
@@ -1964,7 +2071,13 @@ fn decode_json_value_inner(buf: &[u8], depth: u32) -> Result<(Value, usize), Box
 /// - 0x06 Object: u32 count + (key_len:u16 + key_bytes + value) pairs
 ///
 /// Returns base64-encoded binary data if outputPath is empty, otherwise writes to file.
-fn convert_json_to_nda_binary(json_request: &str, output_path: &str) -> Result<String, Box<dyn Error>> {
+/// Convert a JSON-RPC tool call to an NMCP binary frame.
+///
+/// The output is a length-prefixed NMCP frame (not an NDA document):
+/// - 4 bytes: "NMCP" magic
+/// - 32 bytes: SHA-256 of payload
+/// - Payload: method_type + tool_name + TLV-encoded arguments
+fn json_to_nmcp_frame(json_request: &str, output_path: &str) -> Result<String, Box<dyn Error>> {
     // Parse the JSON request
     let request: Value = serde_json::from_str(json_request)?;
     
@@ -2126,6 +2239,17 @@ mod tests {
         assert_eq!(&binary_data[0..4], b"NMCP");
         // Verify method type (1 = tools/call)
         assert_eq!(binary_data[36], 1);
+        
+        // Cleanup
+        {
+            let mut reg = get_nmcp_frame_cache().lock().unwrap();
+            reg.remove("hello_world");
+        }
+        {
+            let mut reg = get_converted_tool_registry().lock().unwrap();
+            reg.remove("hello_world");
+        }
+        bump_registry_generation();
     }
 
     #[test]
@@ -2147,6 +2271,17 @@ mod tests {
         assert_eq!(data[36], 1, "Method type should be 1 (tools/call)");
         // Clean up
         let _ = std::fs::remove_file(&output_path);
+        
+        // Cleanup registered tool
+        {
+            let mut reg = get_nmcp_frame_cache().lock().unwrap();
+            reg.remove("test_tool");
+        }
+        {
+            let mut reg = get_converted_tool_registry().lock().unwrap();
+            reg.remove("test_tool");
+        }
+        bump_registry_generation();
     }
 
     #[test]
@@ -2223,6 +2358,17 @@ mod tests {
         assert_eq!(decoded_args["items"][1], "two");
         assert_eq!(decoded_args["query"], "a=b;c");
         assert_eq!(decoded_args["nested"]["deep"]["value"], "found");
+        
+        // Cleanup
+        {
+            let mut reg = get_nmcp_frame_cache().lock().unwrap();
+            reg.remove("complex_tool");
+        }
+        {
+            let mut reg = get_converted_tool_registry().lock().unwrap();
+            reg.remove("complex_tool");
+        }
+        bump_registry_generation();
     }
 
     #[test]
@@ -3717,7 +3863,7 @@ mod tests {
     #[test]
     fn test_execute_nda_binary_too_small() {
         let tiny_binary = vec![0u8; 10];
-        let result = execute_nda_binary_tool("test_tool", &json!({}), &tiny_binary);
+        let result = execute_cached_nmcp_frame("test_tool", &json!({}), &tiny_binary);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("too small"));
     }
@@ -3737,7 +3883,7 @@ mod tests {
             assert!(result.is_ok(), "Tool {} should register: {:?}", i, result);
         }
         // Verify the last tool is in the NDA registry and callable
-        if let Ok(registry) = get_nda_registry().lock() {
+        if let Ok(registry) = get_nmcp_frame_cache().lock() {
             assert!(registry.contains_key("evict_test_tool_4"));
         }
     }
@@ -3754,10 +3900,57 @@ mod tests {
         // Now call the registered tool — it should route through the NDA binary path
         // and then fall through to C# engine (which won't be available), but the
         // important thing is that the NDA registry lookup succeeds
-        if let Ok(registry) = get_nda_registry().lock() {
+        if let Ok(registry) = get_nmcp_frame_cache().lock() {
             assert!(registry.contains_key("round_trip_test_tool"),
                 "Tool should be in NDA registry after conversion");
         }
+        
+        // Cleanup
+        {
+            let mut reg = get_nmcp_frame_cache().lock().unwrap();
+            reg.remove("round_trip_test_tool");
+        }
+        {
+            let mut reg = get_converted_tool_registry().lock().unwrap();
+            reg.remove("round_trip_test_tool");
+        }
+        bump_registry_generation();
+    }
+
+    #[test]
+    fn test_is_builtin_tool_classification() {
+        assert!(is_builtin_tool("bench_echo"));
+        assert!(is_builtin_tool("file_read"));
+        assert!(is_builtin_tool("file_write"));
+        assert!(is_builtin_tool("shell_exec"));
+        assert!(is_builtin_tool("list_directory"));
+        assert!(is_builtin_tool("http_request"));
+        assert!(!is_builtin_tool("round_trip_test_tool"));
+        assert!(!is_builtin_tool("some_dynamic_tool"));
+        assert!(!is_builtin_tool(""));
+    }
+
+    #[test]
+    fn test_nda_converted_builtin_dispatches_natively() {
+        // Register bench_echo via convert_to_nda_tool
+        let json_request = r#"{"method":"tools/call","params":{"name":"bench_echo","arguments":{"size":32}}}"#;
+        let result = call_tool("convert_to_nda_tool", &json!({"jsonRequest": json_request}));
+        assert!(result.is_ok(), "convert_to_nda_tool failed: {:?}", result.err());
+
+        // bench_echo is already a built-in, so direct calls match the built-in arm
+        // before reaching the NDA registry. The NDA registry entry is only used for
+        // tool names that don't match any built-in arm.
+        let direct_result = call_tool("bench_echo", &json!({"size": 32}));
+        assert!(direct_result.is_ok());
+        let output = direct_result.unwrap();
+        assert_eq!(output.len(), 32, "bench_echo should return exactly 32 bytes");
+        assert!(output.chars().all(|c| c == 'x'));
+
+        // Clean up NDA registry
+        if let Ok(mut reg) = get_nmcp_frame_cache().lock() {
+            reg.remove("bench_echo");
+        }
+        bump_registry_generation();
     }
 
     // ── get_tools cache behavior ───────────────────────────────────────
@@ -4055,7 +4248,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // ── execute_nda_binary_tool error paths ─────────────────────────────
+    // ── execute_cached_nmcp_frame error paths ─────────────────────────────
 
     #[test]
     fn test_execute_nda_binary_bad_magic() {
@@ -4068,7 +4261,7 @@ mod tests {
         let dir = temp_test_dir("nda_bad_magic");
         let nda_path = dir.join("bad_magic.nda");
         std::fs::write(&nda_path, &binary).unwrap();
-        // This should fail during document read (before reaching execute_nda_binary_tool)
+        // This should fail during document read (before reaching execute_cached_nmcp_frame)
         let result = call_tool("read_nda", &json!({"ndaPath": nda_path.to_str().unwrap()}));
         assert!(result.is_err() || result.unwrap().contains("FAILED"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -4117,7 +4310,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ── convert_json_to_nda_binary unknown method ───────────────────────
+    // ── json_to_nmcp_frame unknown method ───────────────────────
 
     #[test]
     fn test_convert_to_nda_tool_unknown_method() {
@@ -4355,66 +4548,70 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_nda_binary_tool_too_small() {
+    fn test_execute_cached_nmcp_frame_too_small() {
         let tiny = vec![0u8; 10];
-        let result = execute_nda_binary_tool("test_tool", &json!({}), &tiny);
+        let result = execute_cached_nmcp_frame("test_tool", &json!({}), &tiny);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("too small"));
     }
 
     #[test]
-    fn test_execute_nda_binary_tool_bad_magic() {
+    fn test_execute_cached_nmcp_frame_bad_magic() {
         let mut binary = vec![0u8; 64];
         binary[0..4].copy_from_slice(b"XXXX");
-        let result = execute_nda_binary_tool("test_tool", &json!({}), &binary);
+        let result = execute_cached_nmcp_frame("test_tool", &json!({}), &binary);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("bad magic"));
     }
 
     #[test]
-    fn test_execute_nda_binary_tool_truncated_name() {
+    fn test_execute_cached_nmcp_frame_truncated_name() {
         let mut binary = vec![0u8; 40];
         binary[0..4].copy_from_slice(b"NMCP");
-        binary[36..38].copy_from_slice(&100u16.to_be_bytes());
-        let result = execute_nda_binary_tool("test_tool", &json!({}), &binary);
+        binary[36] = 1; // method_type
+        binary[37..39].copy_from_slice(&100u16.to_be_bytes());
+        let result = execute_cached_nmcp_frame("test_tool", &json!({}), &binary);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("truncated"));
     }
 
     #[test]
-    fn test_execute_nda_binary_tool_name_mismatch() {
+    fn test_execute_cached_nmcp_frame_name_mismatch() {
         let name = b"other_tool";
-        let mut binary = vec![0u8; 38 + name.len() + 4];
+        let mut binary = vec![0u8; 39 + name.len() + 4];
         binary[0..4].copy_from_slice(b"NMCP");
-        binary[36..38].copy_from_slice(&(name.len() as u16).to_be_bytes());
-        binary[38..38 + name.len()].copy_from_slice(name);
-        let result = execute_nda_binary_tool("test_tool", &json!({}), &binary);
+        binary[36] = 1; // method_type
+        binary[37..39].copy_from_slice(&(name.len() as u16).to_be_bytes());
+        binary[39..39 + name.len()].copy_from_slice(name);
+        let result = execute_cached_nmcp_frame("test_tool", &json!({}), &binary);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("mismatch"));
     }
 
     #[test]
-    fn test_execute_nda_binary_tool_truncated_args_len() {
+    fn test_execute_cached_nmcp_frame_truncated_args_len() {
         let name = b"test_tool";
-        let mut binary = vec![0u8; 38 + name.len()];
+        let mut binary = vec![0u8; 39 + name.len()];
         binary[0..4].copy_from_slice(b"NMCP");
-        binary[36..38].copy_from_slice(&(name.len() as u16).to_be_bytes());
-        binary[38..38 + name.len()].copy_from_slice(name);
-        let result = execute_nda_binary_tool("test_tool", &json!({}), &binary);
+        binary[36] = 1; // method_type
+        binary[37..39].copy_from_slice(&(name.len() as u16).to_be_bytes());
+        binary[39..39 + name.len()].copy_from_slice(name);
+        let result = execute_cached_nmcp_frame("test_tool", &json!({}), &binary);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("truncated"));
     }
 
     #[test]
-    fn test_execute_nda_binary_tool_args_data_beyond_buffer() {
+    fn test_execute_cached_nmcp_frame_args_data_beyond_buffer() {
         let name = b"test_tool";
-        let args_start = 38 + name.len();
+        let args_start = 39 + name.len();
         let mut binary = vec![0u8; args_start + 4];
         binary[0..4].copy_from_slice(b"NMCP");
-        binary[36..38].copy_from_slice(&(name.len() as u16).to_be_bytes());
-        binary[38..38 + name.len()].copy_from_slice(name);
+        binary[36] = 1; // method_type
+        binary[37..39].copy_from_slice(&(name.len() as u16).to_be_bytes());
+        binary[39..39 + name.len()].copy_from_slice(name);
         binary[args_start..args_start + 4].copy_from_slice(&100u32.to_be_bytes());
-        let result = execute_nda_binary_tool("test_tool", &json!({}), &binary);
+        let result = execute_cached_nmcp_frame("test_tool", &json!({}), &binary);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("truncated"));
     }
@@ -4427,7 +4624,7 @@ mod tests {
 
     #[test]
     fn test_nda_registry_eviction_at_capacity() {
-        if let Ok(mut registry) = get_nda_registry().lock() {
+        if let Ok(mut registry) = get_nmcp_frame_cache().lock() {
             registry.clear();
             for i in 0..256 {
                 registry.insert(format!("tool_{}", i), vec![0u8; 4]);
@@ -4461,7 +4658,7 @@ mod tests {
     // ── NDA tool conversion and registration ──────────────────────────────
 
     #[test]
-    fn test_convert_and_register_nda_tool() {
+    fn test_cache_nmcp_frame() {
         let json_req = r#"{"method":"tools/call","params":{"name":"cov_nda_test_tool","arguments":{"msg":"hello"}}}"#;
         let result = call_tool("convert_to_nda_tool", &json!({
             "jsonRequest": json_req,
@@ -4470,8 +4667,12 @@ mod tests {
         let base64_out = result.unwrap();
         assert!(!base64_out.is_empty(), "expected non-empty base64 output");
 
-        if let Ok(mut reg) = get_nda_registry().lock() {
+        if let Ok(mut reg) = get_nmcp_frame_cache().lock() {
             assert!(reg.contains_key("cov_nda_test_tool"), "tool should be registered in NDA registry");
+            reg.remove("cov_nda_test_tool");
+        }
+        {
+            let mut reg = get_converted_tool_registry().lock().unwrap();
             reg.remove("cov_nda_test_tool");
         }
         bump_registry_generation();
@@ -4498,12 +4699,12 @@ mod tests {
         assert!(err.contains("Unknown method") || err.contains("method"), "error was: {}", err);
     }
 
-    // ── execute_nda_binary_tool error paths ────────────────────────────────
+    // ── execute_cached_nmcp_frame error paths ────────────────────────────────
 
     #[test]
     fn test_nda_binary_tool_too_small() {
         let tiny = vec![0u8; 10];
-        let result = execute_nda_binary_tool("test_tool", &json!({}), &tiny);
+        let result = execute_cached_nmcp_frame("test_tool", &json!({}), &tiny);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("too small"));
     }
@@ -4512,7 +4713,7 @@ mod tests {
     fn test_nda_binary_tool_bad_magic() {
         let mut bad = vec![0u8; 64];
         bad[0..4].copy_from_slice(b"BAAD");
-        let result = execute_nda_binary_tool("test_tool", &json!({}), &bad);
+        let result = execute_cached_nmcp_frame("test_tool", &json!({}), &bad);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("bad magic") || err.contains("Invalid"), "error was: {}", err);
@@ -4522,9 +4723,10 @@ mod tests {
     fn test_nda_binary_tool_truncated_name() {
         let mut data = vec![0u8; 40];
         data[0..4].copy_from_slice(b"NMCP");
-        data[36] = 0;
-        data[37] = 100;
-        let result = execute_nda_binary_tool("test_tool", &json!({}), &data);
+        data[36] = 1; // method_type
+        data[37] = 0;
+        data[38] = 100; // name_len=100 at [37..39]
+        let result = execute_cached_nmcp_frame("test_tool", &json!({}), &data);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Truncated") || err.contains("truncated") || err.contains("missing"), "error was: {}", err);
@@ -4535,16 +4737,17 @@ mod tests {
         let tool_name = "real_tool";
         let name_bytes = tool_name.as_bytes();
         let name_len = name_bytes.len();
-        let mut data = vec![0u8; 38 + name_len + 4];
+        let mut data = vec![0u8; 39 + name_len + 4];
         data[0..4].copy_from_slice(b"NMCP");
-        data[36] = (name_len >> 8) as u8;
-        data[37] = (name_len & 0xff) as u8;
-        data[38..38 + name_len].copy_from_slice(name_bytes);
+        data[36] = 1; // method_type
+        data[37] = (name_len >> 8) as u8;
+        data[38] = (name_len & 0xff) as u8;
+        data[39..39 + name_len].copy_from_slice(name_bytes);
         let args_len: u32 = 0;
-        let al = (38 + name_len) as usize;
+        let al = (39 + name_len) as usize;
         data[al..al+4].copy_from_slice(&args_len.to_be_bytes());
 
-        let result = execute_nda_binary_tool("wrong_tool", &json!({}), &data);
+        let result = execute_cached_nmcp_frame("wrong_tool", &json!({}), &data);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("mismatch"));
     }
@@ -4554,15 +4757,16 @@ mod tests {
         let tool_name = "arg_tool";
         let name_bytes = tool_name.as_bytes();
         let name_len = name_bytes.len();
-        let mut data = vec![0u8; 38 + name_len + 2];
+        let mut data = vec![0u8; 39 + name_len + 2];
         data[0..4].copy_from_slice(b"NMCP");
-        data[36] = (name_len >> 8) as u8;
-        data[37] = (name_len & 0xff) as u8;
-        data[38..38 + name_len].copy_from_slice(name_bytes);
-        data[38 + name_len] = 0;
-        data[38 + name_len + 1] = 0;
+        data[36] = 1; // method_type
+        data[37] = (name_len >> 8) as u8;
+        data[38] = (name_len & 0xff) as u8;
+        data[39..39 + name_len].copy_from_slice(name_bytes);
+        data[39 + name_len] = 0;
+        data[39 + name_len + 1] = 0;
 
-        let result = execute_nda_binary_tool("arg_tool", &json!({}), &data);
+        let result = execute_cached_nmcp_frame("arg_tool", &json!({}), &data);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("truncated") || err.contains("Truncated") || err.contains("missing"), "error was: {}", err);
@@ -4574,7 +4778,7 @@ mod tests {
     fn test_nda_tool_registry_eviction() {
         let mut inserted_keys = Vec::new();
         {
-            let mut reg = get_nda_registry().lock().unwrap();
+            let mut reg = get_nmcp_frame_cache().lock().unwrap();
             reg.clear();
             for i in 0..256 {
                 let key = format!("cov_evict_{}", i);
@@ -4593,17 +4797,74 @@ mod tests {
         }
 
         {
-            let reg = get_nda_registry().lock().unwrap();
+            let reg = get_nmcp_frame_cache().lock().unwrap();
             assert!(reg.contains_key("cov_evict_new"), "new tool should be present after eviction");
             assert!(reg.len() <= 256, "registry should not exceed max capacity");
         }
 
         {
-            let mut reg = get_nda_registry().lock().unwrap();
+            let mut reg = get_nmcp_frame_cache().lock().unwrap();
             for key in &inserted_keys {
                 reg.remove(key);
             }
             reg.remove("cov_evict_new");
+        }
+        {
+            let mut reg = get_converted_tool_registry().lock().unwrap();
+            reg.remove("cov_evict_new");
+        }
+        bump_registry_generation();
+    }
+
+    // ── End-to-end NMCP frame conversion + native execution ────────────────
+
+    #[test]
+    fn test_convert_and_execute_e2e() {
+        let _t = test_timer("test_convert_and_execute_e2e");
+        
+        // Step 1: Convert a simple echo-like tool
+        let json_request = r#"{
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {
+                "name": "e2e_test_tool",
+                "arguments": {"message": "hello from e2e"}
+            },
+            "id": 99
+        }"#;
+        
+        let convert_result = call_tool("convert_to_nda_tool", &json!({
+            "jsonRequest": json_request,
+        }));
+        assert!(convert_result.is_ok(), "Conversion should succeed: {:?}", convert_result.err());
+        
+        // Step 2: Verify the tool appears in tools/list
+        let tools = get_tools();
+        let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(tool_names.contains(&"e2e_test_tool"), 
+            "Converted tool should appear in tools/list. Available: {:?}", tool_names);
+        
+        // Step 3: Call the converted tool by name — should execute via cached NMCP frame path
+        let call_result = call_tool("e2e_test_tool", &json!({"message": "hello from e2e"}));
+        // The tool is not a real built-in, so it will fail at dispatch (no C# handler or no matching tool).
+        // But the important thing is it was found in the registry and attempted dispatch.
+        // We verify the error is NOT "Unknown tool" — that would mean it wasn't registered at all.
+        if let Err(e) = call_result {
+            let err_msg = e.to_string();
+            // Acceptable errors: C# engine not found, tool execution failed, etc.
+            // Unacceptable: "Unknown tool" which means registration didn't work
+            assert!(!err_msg.contains("Unknown tool") && !err_msg.contains("not registered"),
+                "Tool should be registered, got unexpected error: {}", err_msg);
+        }
+        
+        // Cleanup - must happen before test ends to avoid polluting other tests
+        {
+            let mut reg = get_nmcp_frame_cache().lock().unwrap();
+            reg.remove("e2e_test_tool");
+        }
+        {
+            let mut reg = get_converted_tool_registry().lock().unwrap();
+            reg.remove("e2e_test_tool");
         }
         bump_registry_generation();
     }

@@ -83,6 +83,13 @@ fn to_wstring(s: &str) -> Vec<u16> {
         .collect()
 }
 
+fn trunc_str(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes { return s; }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) { end -= 1; }
+    &s[..end]
+}
+
 // ─── NDA Shmem Client ─────────────────────────────────────────────────────
 //
 // Uses auto-reset events so each SetEvent/WaitForSingleObject pair is
@@ -1444,7 +1451,7 @@ fn bench_stdio(client: &mut StdioClient, iterations: usize, method: &str, params
         }
 
         let resp: serde_json::Value = serde_json::from_str(&resp_str)
-            .expect(&format!("Invalid JSON response at iter {}: {}", i, &resp_str[..resp_str.len().min(100)]));
+            .expect(&format!("Invalid JSON response at iter {}: {}", i, trunc_str(&resp_str, 100)));
         assert!(resp.get("result").is_some() || resp.get("error").is_some(),
                 "Response missing result/error at iter {}", i);
         assert!(!resp_str.contains("Rate limit exceeded"),
@@ -1570,7 +1577,7 @@ fn bench_http(client: &mut HttpClient, iterations: usize, method: &str, params: 
         }
 
         let resp: serde_json::Value = serde_json::from_str(&resp_str)
-            .expect(&format!("Invalid JSON response at iter {}: {}", i, &resp_str[..resp_str.len().min(100)]));
+            .expect(&format!("Invalid JSON response at iter {}: {}", i, trunc_str(&resp_str, 100)));
         assert!(resp.get("result").is_some() || resp.get("error").is_some(),
                 "HTTP response missing result/error at iter {}", i);
     }
@@ -1613,7 +1620,7 @@ fn bench_node_stdio(client: &mut NodeJsStdioClient, iterations: usize, method: &
         }
 
         let resp: serde_json::Value = serde_json::from_str(&resp_str)
-            .expect(&format!("Invalid Node.js stdio response at iter {}: {}", i, &resp_str[..resp_str.len().min(100)]));
+            .expect(&format!("Invalid Node.js stdio response at iter {}: {}", i, trunc_str(&resp_str, 100)));
         assert!(resp.get("result").is_some() || resp.get("error").is_some(),
                 "Node.js stdio response missing result/error at iter {}", i);
     }
@@ -1656,7 +1663,7 @@ fn bench_node_http(client: &mut NodeJsHttpClient, iterations: usize, method: &st
         }
 
         let resp: serde_json::Value = serde_json::from_str(&resp_str)
-            .expect(&format!("Invalid Node.js HTTP response at iter {}: {}", i, &resp_str[..resp_str.len().min(100)]));
+            .expect(&format!("Invalid Node.js HTTP response at iter {}: {}", i, trunc_str(&resp_str, 100)));
         assert!(resp.get("result").is_some() || resp.get("error").is_some(),
                 "Node.js HTTP response missing result/error at iter {}", i);
     }
@@ -2321,6 +2328,314 @@ fn main() {
     drop(nda_http_client);
     let _ = nda_http_child.kill();
     let _ = nda_http_child.wait();
+
+    // ─── Phase 9b: Filesystem tools benchmark (all 8 pipelines) ─────────────
+    //
+    // Creates a temp directory with test files and benchmarks the four
+    // filesystem tools (list_directory, get_file_info, search_files,
+    // directory_tree) over all 8 pipelines.
+
+    println!();
+    println!("Running Filesystem tools benchmark (all 8 pipelines)...");
+
+    let fs_test_dir = std::env::temp_dir().join(format!("velocity_fs_bench_{}", ts));
+    std::fs::create_dir_all(fs_test_dir.join("subdir")).unwrap();
+    for i in 0..10 {
+        std::fs::write(fs_test_dir.join(format!("file_{}.txt", i)), format!("Content of file {}", i)).unwrap();
+    }
+    for i in 0..3 {
+        std::fs::write(fs_test_dir.join(format!("subdir/nested_{}.dat", i)), vec![0xABu8; 256 * (i + 1)]).unwrap();
+    }
+    let fs_test_path = fs_test_dir.to_str().unwrap().to_string();
+    let fs_file0 = format!("{}/file_0.txt", fs_test_path);
+
+    let fs_iterations = iterations.min(200);
+
+    // Helper: run all 4 filesystem tools for a given pipeline, returning
+    // (list_dir, file_info, search, tree) BenchResults.
+    // Each macro invocation handles server lifecycle internally.
+
+    // ── 1. NDA/shmem ──────────────────────────────────────────────────────
+    let fs_nda_shmem_buf = format!("nda_fs_bench_{}.bin", ts);
+    println!("  [1/8] Starting shmem server for NDA/shmem filesystem...");
+    let fs_nda_shmem_guard = spawn_shmem_server(&server_path, &fs_nda_shmem_buf, &[]);
+    wait_for_buffer_file(&fs_nda_shmem_buf);
+    let mut fs_nda_shmem = NdaShmemClient::new(&fs_nda_shmem_buf);
+    let fs_init = build_nda_request(METHOD_INITIALIZE, 0, &serde_json::json!({}));
+    fs_nda_shmem.send_request(&fs_init);
+    let fs_notif = build_nda_request(NOTIF_INITIALIZED, 1, &serde_json::Value::Null);
+    fs_nda_shmem.send_notification(&fs_notif);
+    for _ in 0..10 {
+        let f = build_nda_request(METHOD_PING, 99, &serde_json::Value::Null);
+        fs_nda_shmem.send_request(&f);
+    }
+    println!("  [1/8] Running NDA/shmem filesystem benchmarks... ({} rounds, median kept)", ROUNDS);
+    let _fs_warmup = bench_nda_ping(&mut fs_nda_shmem, 10);
+    let fs_nda_shmem_list = median_round(ROUNDS, || bench_nda_tools_call(&mut fs_nda_shmem, fs_iterations, "list_directory", &serde_json::json!({"path": fs_test_path})));
+    let fs_nda_shmem_info = median_round(ROUNDS, || bench_nda_tools_call(&mut fs_nda_shmem, fs_iterations, "get_file_info", &serde_json::json!({"path": &fs_file0})));
+    let fs_nda_shmem_search = median_round(ROUNDS, || bench_nda_tools_call(&mut fs_nda_shmem, fs_iterations, "search_files", &serde_json::json!({"path": &fs_test_path, "pattern": "*.txt"})));
+    let fs_nda_shmem_tree = median_round(ROUNDS, || bench_nda_tools_call(&mut fs_nda_shmem, fs_iterations, "directory_tree", &serde_json::json!({"path": &fs_test_path})));
+    println!("    [NDA/shmem] list_dir={:.3}ms  file_info={:.3}ms  search={:.3}ms  tree={:.3}ms",
+        fs_nda_shmem_list.avg_ms(), fs_nda_shmem_info.avg_ms(), fs_nda_shmem_search.avg_ms(), fs_nda_shmem_tree.avg_ms());
+    drop(fs_nda_shmem);
+    drop(fs_nda_shmem_guard);
+
+    // ── 2. JSON/shmem ─────────────────────────────────────────────────────
+    let fs_json_shmem_buf = format!("json_fs_bench_{}.bin", ts);
+    println!("  [2/8] Starting shmem server for JSON/shmem filesystem...");
+    let fs_json_shmem_guard = spawn_shmem_server(&server_path, &fs_json_shmem_buf, &[]);
+    wait_for_buffer_file(&fs_json_shmem_buf);
+    let mut fs_json_shmem = JsonShmemClient::new(&fs_json_shmem_buf);
+    let js_init = serde_json::json!({"jsonrpc":"2.0","method":"initialize","params":{},"id":0});
+    fs_json_shmem.send_json(&js_init);
+    let js_notif = serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{},"id":1});
+    fs_json_shmem.send_json(&js_notif);
+    for i in 0..10 {
+        let req = serde_json::json!({"jsonrpc":"2.0","method":"ping","params":{},"id":i+10});
+        fs_json_shmem.send_json(&req);
+    }
+    println!("  [2/8] Running JSON/shmem filesystem benchmarks... ({} rounds, median kept)", ROUNDS);
+    let fs_json_shmem_list = median_round(ROUNDS, || bench_json_shmem(&mut fs_json_shmem, fs_iterations, "tools/call",
+        &serde_json::json!({"name": "list_directory", "arguments": {"path": &fs_test_path}})));
+    let fs_json_shmem_info = median_round(ROUNDS, || bench_json_shmem(&mut fs_json_shmem, fs_iterations, "tools/call",
+        &serde_json::json!({"name": "get_file_info", "arguments": {"path": &fs_file0}})));
+    let fs_json_shmem_search = median_round(ROUNDS, || bench_json_shmem(&mut fs_json_shmem, fs_iterations, "tools/call",
+        &serde_json::json!({"name": "search_files", "arguments": {"path": &fs_test_path, "pattern": "*.txt"}})));
+    let fs_json_shmem_tree = median_round(ROUNDS, || bench_json_shmem(&mut fs_json_shmem, fs_iterations, "tools/call",
+        &serde_json::json!({"name": "directory_tree", "arguments": {"path": &fs_test_path}})));
+    println!("    [JSON/shmem] list_dir={:.3}ms  file_info={:.3}ms  search={:.3}ms  tree={:.3}ms",
+        fs_json_shmem_list.avg_ms(), fs_json_shmem_info.avg_ms(), fs_json_shmem_search.avg_ms(), fs_json_shmem_tree.avg_ms());
+    drop(fs_json_shmem);
+    drop(fs_json_shmem_guard);
+
+    // ── 3. NDA/stdio ─────────────────────────────────────────────────────
+    println!("  [3/8] Starting NDA/stdio server for filesystem...");
+    let mut fs_nda_stdio = NdaStdioClient::new(&server_path);
+    let nda_s_init = serde_json::json!({"jsonrpc":"2.0","method":"initialize","params":{},"id":0});
+    fs_nda_stdio.send_request(&nda_s_init);
+    for i in 0..10 {
+        let req = serde_json::json!({"jsonrpc":"2.0","method":"ping","params":{},"id":i+10});
+        fs_nda_stdio.send_request(&req);
+    }
+    println!("  [3/8] Running NDA/stdio filesystem benchmarks... ({} rounds, median kept)", ROUNDS);
+    let fs_nda_stdio_list = median_round(ROUNDS, || bench_nda_stdio(&mut fs_nda_stdio, fs_iterations, "tools/call",
+        &serde_json::json!({"name": "list_directory", "arguments": {"path": &fs_test_path}})));
+    let fs_nda_stdio_info = median_round(ROUNDS, || bench_nda_stdio(&mut fs_nda_stdio, fs_iterations, "tools/call",
+        &serde_json::json!({"name": "get_file_info", "arguments": {"path": &fs_file0}})));
+    let fs_nda_stdio_search = median_round(ROUNDS, || bench_nda_stdio(&mut fs_nda_stdio, fs_iterations, "tools/call",
+        &serde_json::json!({"name": "search_files", "arguments": {"path": &fs_test_path, "pattern": "*.txt"}})));
+    let fs_nda_stdio_tree = median_round(ROUNDS, || bench_nda_stdio(&mut fs_nda_stdio, fs_iterations, "tools/call",
+        &serde_json::json!({"name": "directory_tree", "arguments": {"path": &fs_test_path}})));
+    println!("    [NDA/stdio] list_dir={:.3}ms  file_info={:.3}ms  search={:.3}ms  tree={:.3}ms",
+        fs_nda_stdio_list.avg_ms(), fs_nda_stdio_info.avg_ms(), fs_nda_stdio_search.avg_ms(), fs_nda_stdio_tree.avg_ms());
+    drop(fs_nda_stdio);
+
+    // ── 4. JSON/stdio ────────────────────────────────────────────────────
+    println!("  [4/8] Starting JSON/stdio server for filesystem...");
+    let mut fs_stdio = StdioClient::new(&server_path);
+    let fs_j_init = serde_json::json!({"jsonrpc":"2.0","method":"initialize","params":{},"id":0});
+    fs_stdio.send_request(&fs_j_init);
+    let fs_j_notif_str = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}\n";
+    let stdin = fs_stdio.child.stdin.as_mut().unwrap();
+    stdin.write_all(fs_j_notif_str.as_bytes()).unwrap();
+    stdin.flush().unwrap();
+    for i in 0..5 {
+        let req = serde_json::json!({"jsonrpc":"2.0","method":"ping","params":{},"id":i+100});
+        fs_stdio.send_request(&req);
+    }
+    println!("  [4/8] Running JSON/stdio filesystem benchmarks... ({} rounds, median kept)", ROUNDS);
+    let fs_stdio_list = median_round(ROUNDS, || bench_stdio(&mut fs_stdio, fs_iterations, "tools/call",
+        &serde_json::json!({"name": "list_directory", "arguments": {"path": &fs_test_path}})));
+    let fs_stdio_info = median_round(ROUNDS, || bench_stdio(&mut fs_stdio, fs_iterations, "tools/call",
+        &serde_json::json!({"name": "get_file_info", "arguments": {"path": &fs_file0}})));
+    let fs_stdio_search = median_round(ROUNDS, || bench_stdio(&mut fs_stdio, fs_iterations, "tools/call",
+        &serde_json::json!({"name": "search_files", "arguments": {"path": &fs_test_path, "pattern": "*.txt"}})));
+    let fs_stdio_tree = median_round(ROUNDS, || bench_stdio(&mut fs_stdio, fs_iterations, "tools/call",
+        &serde_json::json!({"name": "directory_tree", "arguments": {"path": &fs_test_path}})));
+    println!("    [JSON/stdio] list_dir={:.3}ms  file_info={:.3}ms  search={:.3}ms  tree={:.3}ms",
+        fs_stdio_list.avg_ms(), fs_stdio_info.avg_ms(), fs_stdio_search.avg_ms(), fs_stdio_tree.avg_ms());
+    drop(fs_stdio);
+
+    // ── 5. JSON/HTTP ─────────────────────────────────────────────────────
+    let fs_http_port = 16000 + ((ts % 10000) as u16);
+    println!("  [5/8] Starting HTTP server on port {} for JSON/HTTP filesystem...", fs_http_port);
+    let mut fs_http_child = spawn_http_server(&server_path, fs_http_port);
+    let mut fs_http = HttpClient::new(fs_http_port);
+    let http_init = serde_json::json!({"jsonrpc":"2.0","method":"initialize","params":{},"id":0});
+    fs_http.send_request(&http_init);
+    let http_notif = serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}});
+    fs_http.send_request(&http_notif);
+    for i in 0..10 {
+        let req = serde_json::json!({"jsonrpc":"2.0","method":"ping","params":{},"id":i+10});
+        fs_http.send_request(&req);
+    }
+    println!("  [5/8] Running JSON/HTTP filesystem benchmarks... ({} rounds, median kept)", ROUNDS);
+    let fs_http_list = median_round(ROUNDS, || bench_http(&mut fs_http, fs_iterations, "tools/call",
+        &serde_json::json!({"name": "list_directory", "arguments": {"path": &fs_test_path}})));
+    let fs_http_info = median_round(ROUNDS, || bench_http(&mut fs_http, fs_iterations, "tools/call",
+        &serde_json::json!({"name": "get_file_info", "arguments": {"path": &fs_file0}})));
+    let fs_http_search = median_round(ROUNDS, || bench_http(&mut fs_http, fs_iterations, "tools/call",
+        &serde_json::json!({"name": "search_files", "arguments": {"path": &fs_test_path, "pattern": "*.txt"}})));
+    let fs_http_tree = median_round(ROUNDS, || bench_http(&mut fs_http, fs_iterations, "tools/call",
+        &serde_json::json!({"name": "directory_tree", "arguments": {"path": &fs_test_path}})));
+    println!("    [JSON/HTTP] list_dir={:.3}ms  file_info={:.3}ms  search={:.3}ms  tree={:.3}ms",
+        fs_http_list.avg_ms(), fs_http_info.avg_ms(), fs_http_search.avg_ms(), fs_http_tree.avg_ms());
+    drop(fs_http);
+    let _ = fs_http_child.kill();
+    let _ = fs_http_child.wait();
+
+    // ── 6. NDA/HTTP ──────────────────────────────────────────────────────
+    let fs_nda_http_port = 17000 + ((ts % 10000) as u16);
+    println!("  [6/8] Starting HTTP server on port {} for NDA/HTTP filesystem...", fs_nda_http_port);
+    let mut fs_nda_http_child = spawn_http_server(&server_path, fs_nda_http_port);
+    let mut fs_nda_http = NdaHttpClient::new(fs_nda_http_port);
+    {
+        let resp = fs_nda_http.send_nda_request(METHOD_INITIALIZE, 0, &serde_json::json!({}));
+        assert!(resp.len() >= FRAME_HEADER_SIZE + 1, "NDA/HTTP fs init response too small");
+    }
+    for i in 0..10u64 {
+        fs_nda_http.send_nda_request(METHOD_PING, i, &serde_json::Value::Null);
+    }
+    println!("  [6/8] Running NDA/HTTP filesystem benchmarks... ({} rounds, median kept)", ROUNDS);
+    let fs_nda_http_list = median_round(ROUNDS, || bench_nda_http_call(&mut fs_nda_http, fs_iterations, "list_directory", &serde_json::json!({"path": &fs_test_path})));
+    let fs_nda_http_info = median_round(ROUNDS, || bench_nda_http_call(&mut fs_nda_http, fs_iterations, "get_file_info", &serde_json::json!({"path": &fs_file0})));
+    let fs_nda_http_search = median_round(ROUNDS, || bench_nda_http_call(&mut fs_nda_http, fs_iterations, "search_files", &serde_json::json!({"path": &fs_test_path, "pattern": "*.txt"})));
+    let fs_nda_http_tree = median_round(ROUNDS, || bench_nda_http_call(&mut fs_nda_http, fs_iterations, "directory_tree", &serde_json::json!({"path": &fs_test_path})));
+    println!("    [NDA/HTTP] list_dir={:.3}ms  file_info={:.3}ms  search={:.3}ms  tree={:.3}ms",
+        fs_nda_http_list.avg_ms(), fs_nda_http_info.avg_ms(), fs_nda_http_search.avg_ms(), fs_nda_http_tree.avg_ms());
+    drop(fs_nda_http);
+    let _ = fs_nda_http_child.kill();
+    let _ = fs_nda_http_child.wait();
+
+    // ── 7. Node/stdio ────────────────────────────────────────────────────
+    println!("  [7/8] Starting Node.js/stdio server for filesystem...");
+    let mut fs_node_stdio = NodeJsStdioClient::new(&node_server_path);
+    let node_init = serde_json::json!({"jsonrpc":"2.0","method":"initialize","params":{},"id":0});
+    fs_node_stdio.send_request(&node_init);
+    let node_notif = serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}});
+    let node_notif_str = serde_json::to_string(&node_notif).unwrap() + "\n";
+    let stdin = fs_node_stdio.child.stdin.as_mut().unwrap();
+    stdin.write_all(node_notif_str.as_bytes()).unwrap();
+    stdin.flush().unwrap();
+    for i in 0..10 {
+        let req = serde_json::json!({"jsonrpc":"2.0","method":"ping","params":{},"id":i+10});
+        fs_node_stdio.send_request(&req);
+    }
+    println!("  [7/8] Running Node.js/stdio filesystem benchmarks... ({} rounds, median kept)", ROUNDS);
+    let fs_node_stdio_list = median_round(ROUNDS, || bench_node_stdio(&mut fs_node_stdio, fs_iterations, "tools/call",
+        &serde_json::json!({"name": "list_directory", "arguments": {"path": &fs_test_path}})));
+    let fs_node_stdio_info = median_round(ROUNDS, || bench_node_stdio(&mut fs_node_stdio, fs_iterations, "tools/call",
+        &serde_json::json!({"name": "get_file_info", "arguments": {"path": &fs_file0}})));
+    let fs_node_stdio_search = median_round(ROUNDS, || bench_node_stdio(&mut fs_node_stdio, fs_iterations, "tools/call",
+        &serde_json::json!({"name": "search_files", "arguments": {"path": &fs_test_path, "pattern": "*.txt"}})));
+    let fs_node_stdio_tree = median_round(ROUNDS, || bench_node_stdio(&mut fs_node_stdio, fs_iterations, "tools/call",
+        &serde_json::json!({"name": "directory_tree", "arguments": {"path": &fs_test_path}})));
+    println!("    [Node/stdio] list_dir={:.3}ms  file_info={:.3}ms  search={:.3}ms  tree={:.3}ms",
+        fs_node_stdio_list.avg_ms(), fs_node_stdio_info.avg_ms(), fs_node_stdio_search.avg_ms(), fs_node_stdio_tree.avg_ms());
+    drop(fs_node_stdio);
+
+    // ── 8. Node/HTTP ─────────────────────────────────────────────────────
+    let fs_node_http_port = 18000 + ((ts % 10000) as u16);
+    println!("  [8/8] Starting Node.js/HTTP server on port {} for filesystem...", fs_node_http_port);
+    let mut fs_node_http = NodeJsHttpClient::new(&node_server_path, fs_node_http_port);
+    let node_h_init = serde_json::json!({"jsonrpc":"2.0","method":"initialize","params":{},"id":0});
+    fs_node_http.send_request(&node_h_init);
+    let node_h_notif = serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}});
+    fs_node_http.send_request(&node_h_notif);
+    for i in 0..10 {
+        let req = serde_json::json!({"jsonrpc":"2.0","method":"ping","params":{},"id":i+10});
+        fs_node_http.send_request(&req);
+    }
+    println!("  [8/8] Running Node.js/HTTP filesystem benchmarks... ({} rounds, median kept)", ROUNDS);
+    let fs_node_http_list = median_round(ROUNDS, || bench_node_http(&mut fs_node_http, fs_iterations, "tools/call",
+        &serde_json::json!({"name": "list_directory", "arguments": {"path": &fs_test_path}})));
+    let fs_node_http_info = median_round(ROUNDS, || bench_node_http(&mut fs_node_http, fs_iterations, "tools/call",
+        &serde_json::json!({"name": "get_file_info", "arguments": {"path": &fs_file0}})));
+    let fs_node_http_search = median_round(ROUNDS, || bench_node_http(&mut fs_node_http, fs_iterations, "tools/call",
+        &serde_json::json!({"name": "search_files", "arguments": {"path": &fs_test_path, "pattern": "*.txt"}})));
+    let fs_node_http_tree = median_round(ROUNDS, || bench_node_http(&mut fs_node_http, fs_iterations, "tools/call",
+        &serde_json::json!({"name": "directory_tree", "arguments": {"path": &fs_test_path}})));
+    println!("    [Node/HTTP] list_dir={:.3}ms  file_info={:.3}ms  search={:.3}ms  tree={:.3}ms",
+        fs_node_http_list.avg_ms(), fs_node_http_info.avg_ms(), fs_node_http_search.avg_ms(), fs_node_http_tree.avg_ms());
+    drop(fs_node_http);
+
+    // ── Filesystem results table ──────────────────────────────────────────
+
+    println!();
+    println!("─── Filesystem Tools: All 8 Pipelines (median latency, ms) ──────────");
+    println!();
+    println!("  {:16} {:>10} {:>10} {:>10} {:>10}", "Pipeline", "list_dir", "file_info", "search", "tree");
+    println!("  {}", "─".repeat(60));
+
+    struct FsRow {
+        label: &'static str,
+        list: BenchResult,
+        info: BenchResult,
+        search: BenchResult,
+        tree: BenchResult,
+    }
+
+    let fs_rows: Vec<FsRow> = vec![
+        FsRow { label: "NDA/shmem",    list: fs_nda_shmem_list,  info: fs_nda_shmem_info,  search: fs_nda_shmem_search,  tree: fs_nda_shmem_tree  },
+        FsRow { label: "JSON/shmem",   list: fs_json_shmem_list, info: fs_json_shmem_info, search: fs_json_shmem_search, tree: fs_json_shmem_tree },
+        FsRow { label: "NDA/stdio",    list: fs_nda_stdio_list,  info: fs_nda_stdio_info,  search: fs_nda_stdio_search,  tree: fs_nda_stdio_tree  },
+        FsRow { label: "JSON/stdio",   list: fs_stdio_list,      info: fs_stdio_info,      search: fs_stdio_search,      tree: fs_stdio_tree      },
+        FsRow { label: "JSON/HTTP",    list: fs_http_list,       info: fs_http_info,       search: fs_http_search,       tree: fs_http_tree       },
+        FsRow { label: "NDA/HTTP",     list: fs_nda_http_list,   info: fs_nda_http_info,   search: fs_nda_http_search,   tree: fs_nda_http_tree   },
+        FsRow { label: "Node/stdio",   list: fs_node_stdio_list, info: fs_node_stdio_info, search: fs_node_stdio_search, tree: fs_node_stdio_tree },
+        FsRow { label: "Node/HTTP",    list: fs_node_http_list,  info: fs_node_http_info,  search: fs_node_http_search,  tree: fs_node_http_tree  },
+    ];
+
+    for row in &fs_rows {
+        println!("  {:16} {:>8.3} ms {:>8.3} ms {:>8.3} ms {:>8.3} ms",
+            row.label, row.list.avg_ms(), row.info.avg_ms(), row.search.avg_ms(), row.tree.avg_ms());
+    }
+
+    // Throughput table
+    println!();
+    println!("  {:16} {:>10} {:>10} {:>10} {:>10}", "Pipeline", "list_dir", "file_info", "search", "tree");
+    println!("  {}", "─".repeat(60));
+    println!("  (requests/sec)");
+    for row in &fs_rows {
+        println!("  {:16} {:>8.0} r/s {:>8.0} r/s {:>8.0} r/s {:>8.0} r/s",
+            row.label, row.list.throughput(), row.info.throughput(), row.search.throughput(), row.tree.throughput());
+    }
+
+    // p99 table
+    println!();
+    println!("  {:16} {:>10} {:>10} {:>10} {:>10}", "Pipeline", "list_dir", "file_info", "search", "tree");
+    println!("  {}", "─".repeat(60));
+    println!("  (p99 latency, ms)");
+    for row in &fs_rows {
+        println!("  {:16} {:>8.3} ms {:>8.3} ms {:>8.3} ms {:>8.3} ms",
+            row.label, row.list.percentile(99.0), row.info.percentile(99.0), row.search.percentile(99.0), row.tree.percentile(99.0));
+    }
+
+    // NDA/shmem speedup over each pipeline (>1 = NDA/shmem wins)
+    let nda_shmem_avgs = [
+        fs_rows[0].list.avg_ms(),
+        fs_rows[0].info.avg_ms(),
+        fs_rows[0].search.avg_ms(),
+        fs_rows[0].tree.avg_ms(),
+    ];
+    println!();
+    println!("  NDA/shmem speedup over each pipeline (>1 = NDA/shmem wins):");
+    println!("  {:16} {:>10} {:>10} {:>10} {:>10}", "Pipeline", "list_dir", "file_info", "search", "tree");
+    println!("  {}", "─".repeat(60));
+    for row in &fs_rows {
+        let avgs = [row.list.avg_ms(), row.info.avg_ms(), row.search.avg_ms(), row.tree.avg_ms()];
+        println!("  {:16} {:>8.1}x   {:>8.1}x   {:>8.1}x   {:>8.1}x",
+            row.label,
+            avgs[0] / nda_shmem_avgs[0],
+            avgs[1] / nda_shmem_avgs[1],
+            avgs[2] / nda_shmem_avgs[2],
+            avgs[3] / nda_shmem_avgs[3]);
+    }
+
+    println!();
+
+    // Clean up test directory
+    let _ = std::fs::remove_dir_all(&fs_test_dir);
 
     // ─── Phase 10: Merkle hashing cost isolation ───────────────────────────
     //

@@ -3,6 +3,142 @@
 // Uses raw JSON-RPC over stdio — no SDK, to match what a typical Node.js MCP server does.
 
 const readline = require('readline');
+const fs = require('fs');
+const pathMod = require('path');
+
+function validateFilePath(p) {
+  if (!p || p.length === 0) throw new Error('path is required');
+  if (p.includes('..')) throw new Error('path contains ".."');
+  if (!pathMod.isAbsolute(p)) throw new Error('path must be absolute');
+  let cur = p;
+  while (true) {
+    try {
+      const st = fs.lstatSync(cur);
+      if (st.isSymbolicLink()) throw new Error('path component is a symlink: ' + cur);
+    } catch (e) {
+      if (e.code === 'ENOENT') break;
+      if (e.message && e.message.startsWith('path component is a symlink')) throw e;
+      break;
+    }
+    const parent = pathMod.dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+}
+
+function listDirectory(args) {
+  const dirPath = args.path;
+  if (!dirPath) throw new Error('path is required');
+  validateFilePath(dirPath);
+  const raw = fs.readdirSync(dirPath, { withFileTypes: true });
+  const entries = [];
+  const MAX = 100000;
+  for (const entry of raw) {
+    if (entries.length >= MAX) break;
+    const name = entry.name;
+    const isDir = entry.isDirectory();
+    let size = 0;
+    if (!isDir) {
+      try { size = fs.statSync(pathMod.join(dirPath, name)).size; } catch (_) {}
+    }
+    entries.push({ name, type: isDir ? 'directory' : 'file', size });
+  }
+  return JSON.stringify(entries, null, 2);
+}
+
+function getFileInfo(args) {
+  const filePath = args.path;
+  if (!filePath) throw new Error('path is required');
+  validateFilePath(filePath);
+  const st = fs.statSync(filePath);
+  const modified = st.mtime.toISOString();
+  let created = null;
+  try { created = st.birthtime.toISOString(); } catch (_) {}
+  const info = {
+    path: filePath,
+    size: st.size,
+    isFile: st.isFile(),
+    isDirectory: st.isDirectory(),
+    modified,
+    created
+  };
+  return JSON.stringify(info, null, 2);
+}
+
+function globToRegex(pattern) {
+  let re = '^';
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i];
+    if (c === '*') re += '[^/\\\\]*';
+    else if (c === '?') re += '[^/\\\\]';
+    else if (c === '.') re += '\\.';
+    else re += c;
+  }
+  re += '$';
+  return new RegExp(re);
+}
+
+function searchFiles(args) {
+  const searchPath = args.path;
+  const pattern = args.pattern;
+  if (!searchPath) throw new Error('path is required');
+  if (!pattern) throw new Error('pattern is required');
+  validateFilePath(searchPath);
+  const re = globToRegex(pattern);
+  const matches = [];
+  const MAX = 100000;
+  function walk(dir) {
+    if (matches.length >= MAX) return;
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
+    for (const entry of entries) {
+      if (matches.length >= MAX) break;
+      const full = pathMod.join(dir, entry.name);
+      if (re.test(entry.name)) matches.push(full);
+      if (entry.isDirectory()) walk(full);
+    }
+  }
+  walk(searchPath);
+  return JSON.stringify(matches, null, 2);
+}
+
+function directoryTree(args) {
+  const treePath = args.path;
+  if (!treePath) throw new Error('path is required');
+  validateFilePath(treePath);
+  const maxDepth = Math.min(typeof args.maxDepth === 'number' ? args.maxDepth : 10, 20);
+  const excludePatterns = Array.isArray(args.excludePatterns) ? args.excludePatterns : [];
+  const excludeRes = excludePatterns.map(globToRegex);
+
+  function isExcluded(name) {
+    return excludeRes.some(re => re.test(name));
+  }
+
+  function buildTree(dirPath, prefix, depth, remaining) {
+    if (depth >= maxDepth || remaining[0] <= 0) return '';
+    let entries;
+    try { entries = fs.readdirSync(dirPath, { withFileTypes: true }); } catch (_) { return ''; }
+    let result = '';
+    for (let i = 0; i < entries.length; i++) {
+      if (remaining[0] <= 0) break;
+      remaining[0]--;
+      const entry = entries[i];
+      if (isExcluded(entry.name)) continue;
+      const isLast = i === entries.length - 1;
+      const connector = isLast ? '└── ' : '├── ';
+      result += prefix + connector + entry.name + '\n';
+      if (entry.isDirectory()) {
+        const extension = isLast ? '    ' : '│   ';
+        result += buildTree(pathMod.join(dirPath, entry.name), prefix + extension, depth + 1, remaining);
+      }
+    }
+    return result;
+  }
+
+  const rootName = pathMod.basename(treePath);
+  const remaining = [10000];
+  return rootName + '\n' + buildTree(treePath, '', 0, remaining);
+}
 
 const TOOLS = [
   {
@@ -223,24 +359,32 @@ function handleRequest(req) {
     case 'tools/call': {
       const name = params?.name || '';
       const args = params?.arguments || {};
-      if (name === 'bench_echo') {
-        const size = typeof args.size === 'number' ? args.size : 64;
-        const padding = 'x'.repeat(Math.max(0, size));
+      try {
+        let text;
+        if (name === 'bench_echo') {
+          const size = typeof args.size === 'number' ? args.size : 64;
+          text = 'x'.repeat(Math.max(0, size));
+        } else if (name === 'list_directory') {
+          text = listDirectory(args);
+        } else if (name === 'get_file_info') {
+          text = getFileInfo(args);
+        } else if (name === 'search_files') {
+          text = searchFiles(args);
+        } else if (name === 'directory_tree') {
+          text = directoryTree(args);
+        } else {
+          text = `Executed tool '${name}' with args: ${JSON.stringify(args)}`;
+        }
         return {
           jsonrpc: '2.0', id,
-          result: {
-            content: [{ type: 'text', text: padding }],
-            isError: false
-          }
+          result: { content: [{ type: 'text', text }], isError: false }
+        };
+      } catch (e) {
+        return {
+          jsonrpc: '2.0', id,
+          result: { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true }
         };
       }
-      return {
-        jsonrpc: '2.0', id,
-        result: {
-          content: [{ type: 'text', text: `Executed tool '${name}' with args: ${JSON.stringify(args)}` }],
-          isError: false
-        }
-      };
     }
 
     case 'health/check':

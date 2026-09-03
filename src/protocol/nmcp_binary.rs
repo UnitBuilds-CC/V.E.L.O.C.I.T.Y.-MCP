@@ -207,11 +207,10 @@ pub fn dispatch_nda_request(raw: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
                 match registry::call_tool(name, &arguments) {
                     Ok(res) => {
                         audit::record_tool_call_with_merkle(name, call_start, AuditOutcome::Success, merkle_root.clone());
-                        let result_val: Value = serde_json::from_str(&res).unwrap_or_else(|_| json!(res));
-                        let mut result_tlv = Vec::new();
-                        if let Err(e) = nda_native::encode_json_value(&result_val, &mut result_tlv) {
-                            return Ok(nda_native::build_nda_error_raw(req.id_tlv, &sandbox::sanitize_error(&format!("Result encoding error: {}", e))));
-                        }
+                        let mut result_tlv = Vec::with_capacity(5 + res.len());
+                        result_tlv.push(0x01);
+                        result_tlv.extend_from_slice(&(res.len() as u32).to_be_bytes());
+                        result_tlv.extend_from_slice(res.as_bytes());
                         nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, &result_tlv)
                     }
                     Err(e) => {

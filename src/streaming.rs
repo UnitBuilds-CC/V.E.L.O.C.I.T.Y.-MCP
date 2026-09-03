@@ -260,7 +260,7 @@ pub fn chunk_result(data: &Value, chunk_size: usize) -> Vec<StreamingChunk> {
                 chunks.push(StreamingChunk {
                     chunk_id: i as u64,
                     data: json!(chunk.iter().collect::<String>()),
-                    is_final: Some(i == (chars.len() + chunk_size - 1) / chunk_size - 1),
+                    is_final: Some(i == chars.len().div_ceil(chunk_size) - 1),
                 });
             }
         }
@@ -269,7 +269,7 @@ pub fn chunk_result(data: &Value, chunk_size: usize) -> Vec<StreamingChunk> {
                 chunks.push(StreamingChunk {
                     chunk_id: i as u64,
                     data: json!(chunk),
-                    is_final: Some(i == (arr.len() + chunk_size - 1) / chunk_size - 1),
+                    is_final: Some(i == arr.len().div_ceil(chunk_size) - 1),
                 });
             }
         }

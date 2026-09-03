@@ -234,11 +234,10 @@ impl Marketplace {
                 }
                 
                 // Tag filter
-                if !query.tags.is_empty() {
-                    if !query.tags.iter().all(|t| plugin.tags.contains(t)) {
+                if !query.tags.is_empty()
+                    && !query.tags.iter().all(|t| plugin.tags.contains(t)) {
                         return false;
                     }
-                }
                 
                 // Author filter
                 if let Some(author) = &query.author {
@@ -248,18 +247,14 @@ impl Marketplace {
                 }
                 
                 // Verified filter
-                if query.verified_only && !plugin.verified {
-                    return false;
-                }
-                
-                true
+                !(query.verified_only && !plugin.verified)
             })
             .cloned()
             .collect();
         
         // Sort results
         match query.sort_by.as_str() {
-            "downloads" => results.sort_by(|a, b| b.downloads.cmp(&a.downloads)),
+            "downloads" => results.sort_by_key(|a| std::cmp::Reverse(a.downloads)),
             "rating" => results.sort_by(|a, b| b.rating.partial_cmp(&a.rating).unwrap_or(std::cmp::Ordering::Equal)),
             "updated_at" => results.sort_by(|a, b| b.updated_at.cmp(&a.updated_at)),
             _ => {}
@@ -382,7 +377,7 @@ impl Marketplace {
     /// Submit a review for a plugin.
     pub fn submit_review(&mut self, plugin_id: &str, reviewer: &str, rating: u8, comment: String) -> Result<(), String> {
         // Validate rating
-        if rating < 1 || rating > 5 {
+        if !(1..=5).contains(&rating) {
             return Err("Rating must be between 1 and 5".to_string());
         }
         

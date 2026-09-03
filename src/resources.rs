@@ -207,7 +207,7 @@ impl ResourceStore {
 
         let subscribers = self.subscriptions
             .entry(uri.to_string())
-            .or_insert_with(HashSet::new);
+            .or_default();
 
         if subscribers.len() >= MAX_SUBSCRIBERS_PER_URI {
             return Err(format!("Too many subscribers for resource (max {})", MAX_SUBSCRIBERS_PER_URI));

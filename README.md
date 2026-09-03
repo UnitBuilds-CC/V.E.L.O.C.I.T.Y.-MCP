@@ -1,14 +1,14 @@
 # V.E.L.O.C.I.T.Y. MCP Server
 
 [![CI](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/actions/workflows/ci.yml/badge.svg)](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-3.0.0-blue.svg)](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/releases)
+[![Version](https://img.shields.io/badge/version-3.1.0-blue.svg)](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/releases)
 [![License](https://img.shields.io/badge/license-MIT%20|%20Apache%202.0-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-703%20passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-736%20passing-brightgreen.svg)]()
 [![Dependencies](https://img.shields.io/badge/dependencies-0%20vulns-brightgreen.svg)]()
 
 **The fastest, most secure, production-ready Model Context Protocol (MCP) server.**
 
-A high-performance MCP server written in Rust that replaces slow, bloated Node.js/Python MCP servers with a highly optimized, self-contained executable. **Up to 27.7x faster** than the Node.js reference implementation (NDA/shmem transport) with **enterprise-grade security** and **production-ready features**.
+A high-performance MCP server written in Rust that replaces slow, bloated Node.js/Python MCP servers with a highly optimized, self-contained executable. **3.4x–46.5x faster** than the Node.js reference implementation (NDA/shmem transport) with **enterprise-grade security** and **production-ready features**.
 
 ## 🚀 Quick Start
 
@@ -36,7 +36,7 @@ That's it! Your MCP server is running. Now configure your client.
 
 | Feature | Node.js MCP | VELOCITY-MCP | You Win |
 |---------|-------------|--------------|---------|
-| **Speed** | Baseline | **Up to 27.7x faster** | Lower latency, higher throughput |
+| **Speed** | Baseline | **3.4x–46.5x faster** | Lower latency, higher throughput |
 | **Memory** | ~120 MB | **~15 MB** | 8x smaller footprint |
 | **Startup** | ~500ms | **<50ms** | 10x faster startup |
 | **Security** | Basic | **Enterprise-grade** | 15+ security layers |
@@ -51,7 +51,7 @@ That's it! Your MCP server is running. Now configure your client.
 ## 🎯 Key Features
 
 ### 🚀 Performance
-- **Up to 27.7x faster** than Node.js MCP (NDA/shmem vs JSON/stdio, measured average)
+- **3.4x–46.5x faster** than Node.js MCP (NDA/shmem vs JSON/stdio, measured across methods)
 - **NDA binary protocol**: zero-copy TLV parsing with SHA-256 Merkle integrity
 - **Shared memory IPC**: 2µs round-trip latency via memory-mapped ring buffer
 - **8-pipeline benchmark matrix**: encoding (NDA/JSON) x transport (shmem/stdio/HTTP) x server (Rust/Node.js)
@@ -142,7 +142,7 @@ The NDA (Neural Document Archive) binary protocol uses zero-copy TLV parsing wit
 | Method | Latency | Throughput | vs JSON/stdio |
 |--------|---------|------------|---------------|
 | ping | 2µs | 445K req/s | 7.8x faster |
-| tools/list (17 tools) | 7µs | 137K req/s | 27.7x faster |
+| tools/list (17 tools) | 7µs | 137K req/s | 46.5x faster |
 | tools/call (64B) | 3µs | 314K req/s | 7.3x faster |
 
 ```
@@ -364,11 +364,11 @@ All numbers measured 2026-09-02 on i5-14400F, release build, 500 iterations × 3
 | Method | Latency (avg) | Throughput | vs JSON/stdio |
 |--------|---------------|------------|---------------|
 | ping | 0.002 ms (2µs) | 445,279 r/s | 7.8x faster |
-| tools/list (17 tools) | 0.007 ms (7µs) | 136,983 r/s | 27.7x faster |
+| tools/list (17 tools) | 0.007 ms (7µs) | 136,983 r/s | 46.5x faster |
 | tools/call (64B) | 0.003 ms (3µs) | 313,582 r/s | 7.3x faster |
 | health/check | 0.002 ms (2µs) | 471,904 r/s | 9.6x faster |
 
-**Overall: 7.3x–27.7x faster across methods** (NDA/shmem vs JSON/stdio, p99 speedup up to 30.4x)
+**Overall: 3.4x–46.5x faster across methods** (NDA/shmem vs JSON/stdio, i5-14400F release build, 200 iters × 3 rounds median)
 
 ### Node.js vs Rust (Fair Comparison — JSON/stdio)
 

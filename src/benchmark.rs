@@ -24,6 +24,8 @@ pub fn run_benchmarks() {
     bench_nda_native_shmem();
     bench_concurrent_dispatch();
     bench_e2e_tool_calls();
+    bench_cached_nmcp_frame();
+    bench_nmcp_conversion();
     bench_audit_multi_tenant();
     
     // v3.0 feature benchmarks
@@ -650,4 +652,174 @@ fn bench_audit_multi_tenant() {
     let flush_ms = flush_start.elapsed().as_millis() as f64;
     println!("\n  Flush {} sessions ({} entries):  {:.1} ms", 64, flushed, flush_ms);
     let _ = std::fs::remove_dir_all(flush_path);
+}
+
+fn bench_cached_nmcp_frame() {
+    println!("\n─── 9. Cached NMCP Frame Execution (Zero-Alloc TLV Extraction) ──");
+
+
+    // Benchmark 1: Direct native call (baseline)
+    let iterations = 1000;
+    println!("  Direct native call: bench_echo({{size: 64}}) ({} iterations)...", iterations);
+    let start = Instant::now();
+    let mut direct_successes = 0;
+    for _ in 0..iterations {
+        let args = json!({"size": 64});
+        match registry::call_tool("bench_echo", &args) {
+            Ok(_) => direct_successes += 1,
+            Err(e) => eprintln!("  Error: {}", e),
+        }
+    }
+    let direct_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
+    println!("  Mean: {:.1} μs ({}/{})", direct_ns / 1000.0, direct_successes, iterations);
+
+    // Benchmark 2: Convert to NMCP frame, then execute (cached path with zero-alloc)
+    println!("  Converting bench_echo to NMCP frame...");
+    let json_request = r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"bench_echo","arguments":{"size":64}},"id":1}"#;
+    let output_path = "temp_bench_echo_frame.bin";
+    
+    match registry::cache_nmcp_frame(json_request, output_path) {
+        Ok(_) => {
+            let cached_binary = std::fs::read(output_path).expect("read cached frame");
+            println!("  Executing cached NMCP frame ({} iterations)...", iterations);
+            let start = Instant::now();
+            let mut cached_successes = 0;
+            for _ in 0..iterations {
+                let args = json!({"size": 64});
+                match registry::execute_cached_nmcp_frame("bench_echo", &args, &cached_binary) {
+                    Ok(_) => cached_successes += 1,
+                    Err(e) => eprintln!("  Error: {}", e),
+                }
+            }
+            let cached_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
+            println!("  Mean: {:.1} μs ({}/{})", cached_ns / 1000.0, cached_successes, iterations);
+            
+            // Calculate speedup/overhead
+            if direct_ns > 0.0 {
+                if cached_ns < direct_ns {
+                    println!("  Improvement: {:.1}% faster than direct native call", 
+                        ((direct_ns - cached_ns) / direct_ns) * 100.0);
+                } else {
+                    println!("  Overhead: {:.1}% vs direct native call", 
+                        ((cached_ns - direct_ns) / direct_ns) * 100.0);
+                }
+            }
+            
+            let _ = std::fs::remove_file(output_path);
+        }
+        Err(e) => {
+            eprintln!("  Failed to convert bench_echo to NMCP frame: {}", e);
+        }
+    }
+
+    // Benchmark 3: File read tool (string argument extraction)
+    let test_file = std::env::current_dir().unwrap().join("temp_bench_cached_read.txt").to_string_lossy().to_string();
+    std::fs::write(&test_file, "Test content for cached NMCP frame benchmark.\n")
+        .expect("Failed to write test file");
+    
+    println!("\n  Direct native call: file_read ({} iterations)...", iterations);
+    let start = Instant::now();
+    let mut file_direct_successes = 0;
+    for _ in 0..iterations {
+        let args = json!({"path": &test_file});
+        match registry::call_tool("file_read", &args) {
+            Ok(_) => file_direct_successes += 1,
+            Err(e) => eprintln!("  Error: {}", e),
+        }
+    }
+    let file_direct_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
+    println!("  Mean: {:.1} μs ({}/{})", file_direct_ns / 1000.0, file_direct_successes, iterations);
+
+    println!("  Converting file_read to NMCP frame...");
+    let json_request = serde_json::to_string(&json!({
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+            "name": "file_read",
+            "arguments": {"path": &test_file}
+        },
+        "id": 2
+    })).unwrap();
+    let output_path = "temp_bench_file_read_frame.bin";
+    
+    match registry::cache_nmcp_frame(&json_request, output_path) {
+        Ok(_) => {
+            let cached_binary = std::fs::read(output_path).expect("read cached frame");
+            println!("  Executing cached NMCP frame ({} iterations)...", iterations);
+            let start = Instant::now();
+            let mut file_cached_successes = 0;
+            for _ in 0..iterations {
+                let args = json!({"path": &test_file});
+                match registry::execute_cached_nmcp_frame("file_read", &args, &cached_binary) {
+                    Ok(_) => file_cached_successes += 1,
+                    Err(e) => eprintln!("  Error: {}", e),
+                }
+            }
+            let file_cached_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
+            println!("  Mean: {:.1} μs ({}/{})", file_cached_ns / 1000.0, file_cached_successes, iterations);
+            
+            if file_direct_ns > 0.0 {
+                if file_cached_ns < file_direct_ns {
+                    println!("  Improvement: {:.1}% faster than direct native call", 
+                        ((file_direct_ns - file_cached_ns) / file_direct_ns) * 100.0);
+                } else {
+                    println!("  Overhead: {:.1}% vs direct native call", 
+                        ((file_cached_ns - file_direct_ns) / file_direct_ns) * 100.0);
+                }
+            }
+            
+            let _ = std::fs::remove_file(output_path);
+        }
+        Err(e) => {
+            eprintln!("  Failed to convert file_read to NMCP frame: {}", e);
+        }
+    }
+
+    let _ = std::fs::remove_file(test_file);
+}
+
+// ─── NMCP Frame Conversion Benchmark ─────────────────────────────────────────
+
+fn bench_nmcp_conversion() {
+    println!("\n─── 12. NMCP Frame Conversion (json_to_nmcp_frame) ──────────────");
+    
+    use crate::registry;
+    use std::time::Instant;
+    
+    let iterations = 200;
+    
+    // Simple tool with basic arguments
+    let simple_request = r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"simple_tool","arguments":{"x":42,"y":"hello"}},"id":1}"#;
+    
+    println!("  Converting simple tool ({} iterations)...", iterations);
+    let start = Instant::now();
+    let mut successes = 0;
+    for _ in 0..iterations {
+        match registry::cache_nmcp_frame(simple_request, "") {
+            Ok(_) => successes += 1,
+            Err(e) => eprintln!("  Error: {}", e),
+        }
+    }
+    let simple_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
+    println!("  Mean: {:.1} μs ({}/{})", simple_ns / 1000.0, successes, iterations);
+    
+    // Complex tool with nested objects and arrays
+    let complex_request = r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"complex_tool","arguments":{"config":{"timeout":30,"retries":3},"items":[1,"two",true,null],"query":"a=b;c","nested":{"deep":{"value":"found"}}}},"id":2}"#;
+    
+    println!("  Converting complex tool ({} iterations)...", iterations);
+    let start = Instant::now();
+    let mut successes = 0;
+    for _ in 0..iterations {
+        match registry::cache_nmcp_frame(complex_request, "") {
+            Ok(_) => successes += 1,
+            Err(e) => eprintln!("  Error: {}", e),
+        }
+    }
+    let complex_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
+    println!("  Mean: {:.1} μs ({}/{})", complex_ns / 1000.0, successes, iterations);
+    
+    if simple_ns > 0.0 {
+        println!("  Complexity overhead: {:.1}% larger payload", 
+            ((complex_ns - simple_ns) / simple_ns) * 100.0);
+    }
 }
