@@ -46,6 +46,8 @@ pub mod middleware;
 pub mod observability;
 /// Plugin system for dynamic tool loading.
 pub mod plugins;
+/// WASM runtime for cross-language tool execution (QuickJS, MicroPython, Lua via Wasmer).
+pub mod wasm_runtime;
 
 /// Server version string.
 pub const VERSION: &str = "3.1.0";

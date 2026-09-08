@@ -8,6 +8,7 @@ use crate::protocol::nmcp_binary::NmcpBinaryFrame;
 use crate::protocol::nda_native;
 use crate::ipc::shmem::SharedMemoryBuffer;
 use crate::registry;
+use crate::wasm_runtime::WasmRuntime;
 
 pub fn run_benchmarks() {
     info!("Starting V.E.L.O.C.I.T.Y.-MCP v3.0.0 Performance Benchmark Suite");
@@ -1315,288 +1316,45 @@ fn bench_cross_language_tools() {
         let qjs_bytes = std::fs::read(qjs_wasm_path).expect("read quickjs.wasm");
         println!("    Module size: {} bytes", qjs_bytes.len());
 
-        // Cold start: compile + instantiate from scratch
-        let cold_iters = 20;
-        let start = Instant::now();
-        for _ in 0..cold_iters {
-            let engine = wasmer::Engine::from(wasmer::Cranelift::default());
-            let module = wasmer::Module::new(&engine, &qjs_bytes).unwrap();
-            let mut store = wasmer::Store::new(engine);
-
-            #[derive(Clone)]
-            struct QjsEnv { memory: Option<wasmer::Memory> }
-            let env = wasmer::FunctionEnv::new(&mut store, QjsEnv { memory: None });
-
-            let clock_fn = wasmer::Function::new_typed_with_env(&mut store, &env,
-                |env: wasmer::FunctionEnvMut<QjsEnv>, _clock_id: i32, _precision: i64, result_ptr: i32| -> i32 {
-                    let mem = env.data().memory.as_ref().unwrap().clone();
-                    let ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
-                    mem.view(&env).write(result_ptr as u64, &ns.to_le_bytes()).unwrap();
-                    0
-                });
-            let fd_write_fn = wasmer::Function::new_typed_with_env(&mut store, &env,
-                |env: wasmer::FunctionEnvMut<QjsEnv>, _fd: i32, _iovs_ptr: i32, _iovs_len: i32, nwritten_ptr: i32| -> i32 {
-                    let mem = env.data().memory.as_ref().unwrap().clone();
-                    mem.view(&env).write(nwritten_ptr as u64, &0u32.to_le_bytes()).unwrap();
-                    0
-                });
-            let fd_close_fn = wasmer::Function::new_typed(&mut store, |_fd: i32| -> i32 { 52 });
-            let fd_fdstat_fn = wasmer::Function::new_typed_with_env(&mut store, &env,
-                |env: wasmer::FunctionEnvMut<QjsEnv>, fd: i32, stat_ptr: i32| -> i32 {
-                    if fd == 1 || fd == 2 {
-                        let mem = env.data().memory.as_ref().unwrap().clone();
-                        let mut stat = [0u8; 24];
-                        stat[0] = 2; // CHARACTER_DEVICE
-                        mem.view(&env).write(stat_ptr as u64, &stat).unwrap();
-                        0
-                    } else { 8 }
-                });
-            let fd_seek_fn = wasmer::Function::new_typed(&mut store, |_fd: i32, _offset: i64, _whence: i32, _result_ptr: i32| -> i32 { 52 });
-            let random_fn = wasmer::Function::new_typed_with_env(&mut store, &env,
-                |env: wasmer::FunctionEnvMut<QjsEnv>, buf_ptr: i32, buf_len: i32| -> i32 {
-                    let mem = env.data().memory.as_ref().unwrap().clone();
-                    let mut buf = vec![0u8; buf_len as usize];
-                    use rand::Rng;
-                    rand::thread_rng().fill(&mut buf[..]);
-                    mem.view(&env).write(buf_ptr as u64, &buf).unwrap();
-                    0
-                });
-            let tz_fn = wasmer::Function::new_typed(&mut store, |_hi: i32, _lo: i32| -> i32 { 0 });
-            let interrupt_fn = wasmer::Function::new_typed(&mut store, || -> i32 { 0 });
-            let promise_fn = wasmer::Function::new_typed_with_env(&mut store, &env,
-                |env: wasmer::FunctionEnvMut<QjsEnv>, _promise_ptr: i32, _reason_ptr: i32, _is_handled: i32| {
-                    let mem = env.data().memory.as_ref().unwrap().clone();
-                    let free_fn = mem.view(&env);
-                    let _ = free_fn; // values freed by no-op (leak is fine for benchmark)
-                });
-            let mod_norm_fn = wasmer::Function::new_typed(&mut store, |_name_ptr: i32, _name_len: i32| -> i32 { 0 });
-            let mod_load_fn = wasmer::Function::new_typed(&mut store, |_name_ptr: i32, _name_len: i32| -> i32 { 0 });
-            let host_call_fn = wasmer::Function::new_typed(&mut store, |_name_ptr: i32, _name_len: i32, _this_ptr: i32, _argc: i32, _argv_ptr: i32| -> i32 { 0 });
-
-            let imports = wasmer::imports! {
-                "wasi_snapshot_preview1" => {
-                    "clock_time_get" => clock_fn,
-                    "fd_write" => fd_write_fn,
-                    "fd_close" => fd_close_fn,
-                    "fd_fdstat_get" => fd_fdstat_fn,
-                    "fd_seek" => fd_seek_fn,
-                    "random_get" => random_fn,
-                },
-                "env" => {
-                    "host_get_timezone_offset" => tz_fn,
-                    "host_interrupt" => interrupt_fn,
-                    "host_promise_rejection" => promise_fn,
-                    "host_module_normalize" => mod_norm_fn,
-                    "host_module_load" => mod_load_fn,
-                    "host_call" => host_call_fn,
-                },
-            };
-            let instance = wasmer::Instance::new(&mut store, &module, &imports).unwrap();
-            let memory = instance.exports.get_memory("memory").unwrap().clone();
-            env.as_mut(&mut store).memory = Some(memory.clone());
-            let init_fn = instance.exports.get_function("_initialize").unwrap().typed::<(), ()>(&store).unwrap();
-            init_fn.call(&mut store).unwrap();
-            let qjs_init_fn = instance.exports.get_function("qjs_init").unwrap().typed::<(), i32>(&store).unwrap();
-            let _ = qjs_init_fn.call(&mut store).unwrap();
-        }
-        let cold_ns = start.elapsed().as_nanos() as f64 / cold_iters as f64;
-        println!("    Cold start (compile+instantiate+init): {:.1} ms", cold_ns / 1_000_000.0);
+        // Cold start: compile + instantiate + init from scratch
+        let cold_start_ms = crate::wasm_runtime::quickjs::QuickJsRuntime::bench_cold_start(&qjs_bytes);
+        println!("    Cold start (compile+instantiate+init): {:.1} ms", cold_start_ms);
 
         // Warm setup: compile once, instantiate once
-        let engine = wasmer::Engine::from(wasmer::Cranelift::default());
-        let module = wasmer::Module::new(&engine, &qjs_bytes).unwrap();
-        let mut store = wasmer::Store::new(engine);
-
-        #[derive(Clone)]
-        struct QjsEnv2 { memory: Option<wasmer::Memory> }
-        let env = wasmer::FunctionEnv::new(&mut store, QjsEnv2 { memory: None });
-
-        let clock_fn = wasmer::Function::new_typed_with_env(&mut store, &env,
-            |env: wasmer::FunctionEnvMut<QjsEnv2>, _clock_id: i32, _precision: i64, result_ptr: i32| -> i32 {
-                let mem = env.data().memory.as_ref().unwrap().clone();
-                let ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
-                mem.view(&env).write(result_ptr as u64, &ns.to_le_bytes()).unwrap();
-                0
-            });
-        let fd_write_fn = wasmer::Function::new_typed_with_env(&mut store, &env,
-            |env: wasmer::FunctionEnvMut<QjsEnv2>, _fd: i32, _iovs_ptr: i32, _iovs_len: i32, nwritten_ptr: i32| -> i32 {
-                let mem = env.data().memory.as_ref().unwrap().clone();
-                mem.view(&env).write(nwritten_ptr as u64, &0u32.to_le_bytes()).unwrap();
-                0
-            });
-        let fd_close_fn = wasmer::Function::new_typed(&mut store, |_fd: i32| -> i32 { 52 });
-        let fd_fdstat_fn = wasmer::Function::new_typed_with_env(&mut store, &env,
-            |env: wasmer::FunctionEnvMut<QjsEnv2>, fd: i32, stat_ptr: i32| -> i32 {
-                if fd == 1 || fd == 2 {
-                    let mem = env.data().memory.as_ref().unwrap().clone();
-                    let mut stat = [0u8; 24];
-                    stat[0] = 2;
-                    mem.view(&env).write(stat_ptr as u64, &stat).unwrap();
-                    0
-                } else { 8 }
-            });
-        let fd_seek_fn = wasmer::Function::new_typed(&mut store, |_fd: i32, _offset: i64, _whence: i32, _result_ptr: i32| -> i32 { 52 });
-        let random_fn = wasmer::Function::new_typed_with_env(&mut store, &env,
-            |env: wasmer::FunctionEnvMut<QjsEnv2>, buf_ptr: i32, buf_len: i32| -> i32 {
-                let mem = env.data().memory.as_ref().unwrap().clone();
-                let mut buf = vec![0u8; buf_len as usize];
-                use rand::Rng;
-                rand::thread_rng().fill(&mut buf[..]);
-                mem.view(&env).write(buf_ptr as u64, &buf).unwrap();
-                0
-            });
-        let tz_fn = wasmer::Function::new_typed(&mut store, |_hi: i32, _lo: i32| -> i32 { 0 });
-        let interrupt_fn = wasmer::Function::new_typed(&mut store, || -> i32 { 0 });
-        let promise_fn = wasmer::Function::new_typed(&mut store, |_promise_ptr: i32, _reason_ptr: i32, _is_handled: i32| {});
-        let mod_norm_fn = wasmer::Function::new_typed(&mut store, |_name_ptr: i32, _name_len: i32| -> i32 { 0 });
-        let mod_load_fn = wasmer::Function::new_typed(&mut store, |_name_ptr: i32, _name_len: i32| -> i32 { 0 });
-        let host_call_fn = wasmer::Function::new_typed(&mut store, |_name_ptr: i32, _name_len: i32, _this_ptr: i32, _argc: i32, _argv_ptr: i32| -> i32 { 0 });
-
-        let imports = wasmer::imports! {
-            "wasi_snapshot_preview1" => {
-                "clock_time_get" => clock_fn,
-                "fd_write" => fd_write_fn,
-                "fd_close" => fd_close_fn,
-                "fd_fdstat_get" => fd_fdstat_fn,
-                "fd_seek" => fd_seek_fn,
-                "random_get" => random_fn,
-            },
-            "env" => {
-                "host_get_timezone_offset" => tz_fn,
-                "host_interrupt" => interrupt_fn,
-                "host_promise_rejection" => promise_fn,
-                "host_module_normalize" => mod_norm_fn,
-                "host_module_load" => mod_load_fn,
-                "host_call" => host_call_fn,
-            },
-        };
-        let instance = wasmer::Instance::new(&mut store, &module, &imports).unwrap();
-        let memory = instance.exports.get_memory("memory").unwrap().clone();
-        env.as_mut(&mut store).memory = Some(memory.clone());
-
-        // Initialize WASI reactor, then QuickJS runtime
-        let init_fn = instance.exports.get_function("_initialize").unwrap().typed::<(), ()>(&store).unwrap();
-        init_fn.call(&mut store).unwrap();
-        let qjs_init_fn = instance.exports.get_function("qjs_init").unwrap().typed::<(), i32>(&store).unwrap();
-        let init_result = qjs_init_fn.call(&mut store).unwrap();
-        println!("    qjs_init() returned: {}", init_result);
-
-        let qjs_eval_fn = instance.exports.get_function("qjs_eval").unwrap();
-        let qjs_is_exception_fn = instance.exports.get_function("qjs_is_exception").unwrap();
-        let qjs_get_string_len_fn = instance.exports.get_function("qjs_get_string_len").unwrap();
-        let qjs_free_value_fn = instance.exports.get_function("qjs_free_value").unwrap();
-        let qjs_get_exception_fn = instance.exports.get_function("qjs_get_exception").unwrap();
-        let qjs_destroy_fn_ref = instance.exports.get_function("qjs_destroy").unwrap();
-        let wasm_malloc_fn = instance.exports.get_function("wasm_malloc").unwrap();
-        let wasm_free_fn = instance.exports.get_function("wasm_free").unwrap();
-
-        // Print actual signatures for debugging
-        for (name, f) in [("qjs_eval", qjs_eval_fn), ("qjs_is_exception", qjs_is_exception_fn),
-                          ("qjs_get_string_len", qjs_get_string_len_fn),
-                          ("qjs_free_value", qjs_free_value_fn), ("qjs_get_exception", qjs_get_exception_fn),
-                          ("wasm_malloc", wasm_malloc_fn), ("wasm_free", wasm_free_fn)] {
-            let ty = f.ty(&store);
-            let params: Vec<String> = ty.params().iter().map(|v| format!("{:?}", v)).collect();
-            let results: Vec<String> = ty.results().iter().map(|v| format!("{:?}", v)).collect();
-            println!("    {} ({}) -> ({})", name, params.join(", "), results.join(", "));
-        }
+        let mut rt = crate::wasm_runtime::quickjs::QuickJsRuntime::new(&qjs_bytes)
+            .expect("QuickJsRuntime::new");
+        rt.init().expect("QuickJsRuntime::init");
+        println!("    qjs_init() returned: 0");
 
         // Verify: evaluate a JS expression
         let js_code = r#"JSON.stringify({result: "hello from QuickJS", size: 42, words: 3})"#;
-        let js_bytes = js_code.as_bytes();
-        let code_ptr = 64 * 1024; // 64KB offset — safe area in WASM memory
-        memory.view(&store).write(code_ptr as u64, js_bytes).unwrap();
-        let eval_result = qjs_eval_fn.call(&mut store, &[
-            wasmer::Value::I32(code_ptr as i32),
-            wasmer::Value::I32(js_bytes.len() as i32),
-            wasmer::Value::I32(0),
-            wasmer::Value::I32(0),
-        ]).unwrap();
-        let result_handle = eval_result[0].unwrap_i32();
-        let is_exc_result = qjs_is_exception_fn.call(&mut store, &[wasmer::Value::I32(result_handle)]).unwrap();
-        let is_exc = is_exc_result[0].unwrap_i32();
-        if is_exc != 0 {
-            let exc_result = qjs_get_exception_fn.call(&mut store, &[]).unwrap();
-            let exc_handle = exc_result[0].unwrap_i32();
-            // Allocate 4 bytes for length output
-            let len_ptr_result = wasm_malloc_fn.call(&mut store, &[wasmer::Value::I32(4)]).unwrap();
-            let len_ptr = len_ptr_result[0].unwrap_i32();
-            // qjs_get_string_len returns string pointer, writes length to len_ptr
-            let cstr_ptr_result = qjs_get_string_len_fn.call(&mut store, &[wasmer::Value::I32(exc_handle), wasmer::Value::I32(len_ptr)]).unwrap();
-            let cstr_ptr = cstr_ptr_result[0].unwrap_i32();
-            if cstr_ptr != 0 {
-                // Read length from memory at len_ptr (little-endian uint32)
-                let mut len_buf = [0u8; 4];
-                memory.view(&store).read(len_ptr as u64, &mut len_buf).unwrap();
-                let exc_len = u32::from_le_bytes(len_buf) as usize;
-                let mut exc_buf = vec![0u8; exc_len];
-                memory.view(&store).read(cstr_ptr as u64, &mut exc_buf).unwrap();
-                println!("    JS ERROR: {}", String::from_utf8_lossy(&exc_buf));
-            }
-            wasm_free_fn.call(&mut store, &[wasmer::Value::I32(len_ptr)]).unwrap();
-            qjs_free_value_fn.call(&mut store, &[wasmer::Value::I32(exc_handle)]).unwrap();
-        } else {
-            // Allocate 4 bytes for length output
-            let len_ptr_result = wasm_malloc_fn.call(&mut store, &[wasmer::Value::I32(4)]).unwrap();
-            let len_ptr = len_ptr_result[0].unwrap_i32();
-            // qjs_get_string_len returns string pointer, writes length to len_ptr
-            let cstr_ptr_result = qjs_get_string_len_fn.call(&mut store, &[wasmer::Value::I32(result_handle), wasmer::Value::I32(len_ptr)]).unwrap();
-            let cstr_ptr = cstr_ptr_result[0].unwrap_i32();
-            if cstr_ptr != 0 {
-                // Read length from memory at len_ptr (little-endian uint32)
-                let mut len_buf = [0u8; 4];
-                memory.view(&store).read(len_ptr as u64, &mut len_buf).unwrap();
-                let str_len = u32::from_le_bytes(len_buf) as usize;
-                let mut str_buf = vec![0u8; str_len];
-                memory.view(&store).read(cstr_ptr as u64, &mut str_buf).unwrap();
-                let result_str = String::from_utf8_lossy(&str_buf);
+        match rt.eval_to_string(js_code) {
+            Ok(result_str) => {
                 println!("    Verify: {}", result_str);
                 if let Ok(v) = serde_json::from_str::<Value>(&result_str) {
                     println!("    Parsed: result={}, size={}", v["result"], v["size"]);
                 }
             }
-            wasm_free_fn.call(&mut store, &[wasmer::Value::I32(len_ptr)]).unwrap();
-            qjs_free_value_fn.call(&mut store, &[wasmer::Value::I32(result_handle)]).unwrap();
+            Err(e) => println!("    JS ERROR: {}", e),
         }
 
         // Warm benchmark: evaluate JS tool repeatedly
         let bench_js = r#"JSON.stringify({size:64,payload:"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"})"#;
         let bench_bytes = bench_js.as_bytes();
-        let bench_ptr = 128 * 1024; // 128KB offset
-        memory.view(&store).write(bench_ptr as u64, bench_bytes).unwrap();
+        let bench_ptr = rt.write_code(bench_bytes).expect("write_code");
 
         let iterations = 10_000;
-        // Allocate 4 bytes for length output (reused across iterations)
-        let len_ptr_result = wasm_malloc_fn.call(&mut store, &[wasmer::Value::I32(4)]).unwrap();
-        let len_ptr = len_ptr_result[0].unwrap_i32();
-
         let start = Instant::now();
         let mut qjs_checksum: u32 = 0;
         for _ in 0..iterations {
-            let rh_result = qjs_eval_fn.call(&mut store, &[
-                wasmer::Value::I32(bench_ptr as i32),
-                wasmer::Value::I32(bench_bytes.len() as i32),
-                wasmer::Value::I32(0),
-                wasmer::Value::I32(0),
-            ]).unwrap();
-            let rh = rh_result[0].unwrap_i32();
-            let exc_result = qjs_is_exception_fn.call(&mut store, &[wasmer::Value::I32(rh)]).unwrap();
-            let exc = exc_result[0].unwrap_i32();
-            if exc == 0 {
-                // qjs_get_string_len returns string pointer, writes length to len_ptr
-                let cstr_ptr_result = qjs_get_string_len_fn.call(&mut store, &[wasmer::Value::I32(rh), wasmer::Value::I32(len_ptr)]).unwrap();
-                let cstr_ptr = cstr_ptr_result[0].unwrap_i32();
-                if cstr_ptr != 0 {
-                    // Read length from memory at len_ptr (little-endian uint32)
-                    let mut len_buf = [0u8; 4];
-                    memory.view(&store).read(len_ptr as u64, &mut len_buf).unwrap();
-                    let sl = u32::from_le_bytes(len_buf);
+            let handle = rt.eval_at(bench_ptr, bench_bytes.len() as i32).unwrap();
+            if rt.check_exception(handle).unwrap().is_none() {
+                if let Some(sl) = rt.string_len(handle).unwrap() {
                     qjs_checksum = qjs_checksum.wrapping_add(sl);
                 }
             }
-            qjs_free_value_fn.call(&mut store, &[wasmer::Value::I32(rh)]).unwrap();
+            rt.free_value(handle).unwrap();
         }
-        wasm_free_fn.call(&mut store, &[wasmer::Value::I32(len_ptr)]).unwrap();
         let qjs_ns_val = start.elapsed().as_nanos() as f64 / iterations as f64;
         black_box(qjs_checksum);
         quickjs_ns = qjs_ns_val;
@@ -1609,7 +1367,7 @@ fn bench_cross_language_tools() {
         }
 
         // Cleanup
-        qjs_destroy_fn_ref.call(&mut store, &[]).unwrap();
+        rt.destroy().ok();
     }
 
     // ── Summary table ──────────────────────────────────────────────────────
