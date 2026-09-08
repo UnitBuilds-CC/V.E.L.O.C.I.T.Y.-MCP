@@ -83,7 +83,7 @@ impl MicroPythonRuntime {
         Ok(String::from_utf8_lossy(&buf).to_string())
     }
 
-    fn exec_and_get_output(&mut self, src: &str) -> Result<String, Box<dyn Error>> {
+    pub fn exec_and_get_output(&mut self, src: &str) -> Result<String, Box<dyn Error>> {
         let rc = self.exec(src)?;
         let output = self.get_output()?;
         if rc != 0 {
@@ -109,6 +109,31 @@ impl MicroPythonRuntime {
             let _ = init_fn.call(&mut store, PYSTACK_SIZE, HEAP_SIZE).unwrap();
         }
         start.elapsed().as_nanos() as f64 / cold_iters as f64 / 1_000_000.0
+    }
+
+    /// Write source to a fixed slot and call exec+get_output `iters` times.
+    /// Returns (ns_per_call, checksum).
+    pub fn bench_exec_repeated(&mut self, src: &str, iters: usize) -> (f64, u32) {
+        let data = src.as_bytes();
+        let slot = 64 * 1024;
+        self.memory.view(&self.store).write(slot as u64, data).unwrap();
+        let ptr = slot as i32;
+        let len = data.len() as i32;
+
+        let exec_fn = self.instance.exports.get_function("mp_wasi_exec").unwrap();
+        let get_len_fn = self.instance.exports.get_function("mp_wasi_get_output_len").unwrap();
+
+        let start = std::time::Instant::now();
+        let mut checksum: u32 = 0;
+        for _ in 0..iters {
+            let rc = exec_fn.call(&mut self.store, &[Value::I32(ptr), Value::I32(len)]).unwrap();
+            if rc[0].unwrap_i32() == 0 {
+                let out_len = get_len_fn.call(&mut self.store, &[]).unwrap()[0].unwrap_i32();
+                checksum = checksum.wrapping_add(out_len as u32);
+            }
+        }
+        let ns = start.elapsed().as_nanos() as f64 / iters as f64;
+        (ns, checksum)
     }
 }
 

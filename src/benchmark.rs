@@ -857,6 +857,8 @@ fn bench_cross_language_tools() {
     let mut sdk_available = false;
     let mut quickjs_ns: f64 = 0.0;
     let mut quickjs_available = false;
+    let mut micropython_ns: f64 = 0.0;
+    let mut micropython_available = false;
 
     // ── 1. Native Rust (baseline) ──────────────────────────────────────────
     println!("\n  [1] Native Rust (direct function call):");
@@ -1370,6 +1372,50 @@ fn bench_cross_language_tools() {
         rt.destroy().ok();
     }
 
+    // ── 6. Python via MicroPython/WASM (in-process) ─────────────────────────
+    println!("\n  [6] Python via MicroPython/WASM (Wasmer, in-process):");
+
+    let mp_wasm_path = "bench_tools/micropython_wasm/micropython-1.24.1/ports/webassembly/build-wasi/micropython.wasm";
+    if !std::path::Path::new(mp_wasm_path).exists() {
+        println!("    SKIP — micropython.wasm not found.");
+        println!("    Build with: cd bench_tools/micropython_wasm && bash build.sh");
+    } else {
+        let mp_bytes = std::fs::read(mp_wasm_path).expect("read micropython.wasm");
+        println!("    Module size: {} bytes", mp_bytes.len());
+
+        let cold_start_ms = crate::wasm_runtime::micropython::MicroPythonRuntime::bench_cold_start(&mp_bytes);
+        println!("    Cold start (compile+instantiate+init): {:.1} ms", cold_start_ms);
+
+        let mut mp_rt = crate::wasm_runtime::micropython::MicroPythonRuntime::new(&mp_bytes)
+            .expect("MicroPythonRuntime::new");
+        mp_rt.init().expect("MicroPythonRuntime::init");
+        println!("    mp_wasi_init() returned: 0");
+
+        let py_verify = "print('hello from MicroPython')";
+        match mp_rt.exec_and_get_output(py_verify) {
+            Ok(output) => println!("    Verify: {}", output.trim()),
+            Err(e) => println!("    PY ERROR: {}", e),
+        }
+
+        let bench_py = "print('x' * 64)";
+        let iterations = 1000;
+        let (mp_ns_val, mp_checksum) = mp_rt.bench_exec_repeated(bench_py, iterations);
+        black_box(mp_checksum);
+        micropython_ns = mp_ns_val;
+        micropython_available = true;
+        println!("    {:>10} iterations:  {:.1} ns/call  ({:.0}K calls/s)",
+            iterations, micropython_ns, 1_000_000.0 / micropython_ns);
+        println!("    Overhead vs native Rust: {:.0}x", micropython_ns / native_ns);
+        if wasm_available {
+            println!("    vs WASM (Rust tool):   {:.0}x", micropython_ns / wasm_ns);
+        }
+        if quickjs_available {
+            println!("    vs QuickJS/WASM:       {:.1}x", micropython_ns / quickjs_ns);
+        }
+
+        mp_rt.destroy().ok();
+    }
+
     // ── Summary table ──────────────────────────────────────────────────────
     println!("\n  ┌──────────────────────────┬──────────────┬───────────┐");
     println!("  │ Flavor                   │ Per-call     │ vs Native │");
@@ -1380,6 +1426,9 @@ fn bench_cross_language_tools() {
     }
     if quickjs_available {
         println!("  │ JS via QuickJS/WASM       │ {:>6.0} ns    │   {:>5.1}x   │", quickjs_ns, quickjs_ns / native_ns);
+    }
+    if micropython_available {
+        println!("  │ Py via MicroPython/WASM   │ {:>6.0} ns    │   {:>5.0}x   │", micropython_ns, micropython_ns / native_ns);
     }
     if node_available {
         println!("  │ Node.js child proc       │ {:>6.0} μs    │  {:>5.0}x   │", node_ns / 1000.0, node_ns / native_ns);
