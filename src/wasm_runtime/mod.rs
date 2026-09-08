@@ -4,6 +4,7 @@
 //! and runs in-process via Wasmer. The `WasmRuntime` trait provides a uniform interface
 //! for registering and calling tools written in any supported language.
 
+pub mod micropython;
 pub mod quickjs;
 pub mod wasi;
 
