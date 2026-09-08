@@ -859,6 +859,8 @@ fn bench_cross_language_tools() {
     let mut quickjs_available = false;
     let mut micropython_ns: f64 = 0.0;
     let mut micropython_available = false;
+    let mut lua_ns: f64 = 0.0;
+    let mut lua_available = false;
 
     // ── 1. Native Rust (baseline) ──────────────────────────────────────────
     println!("\n  [1] Native Rust (direct function call):");
@@ -1416,6 +1418,53 @@ fn bench_cross_language_tools() {
         mp_rt.destroy().ok();
     }
 
+    // ── 7. Lua via Lua/WASM (in-process) ────────────────────────────────────
+    println!("\n  [7] Lua via Lua/WASM (Wasmer, in-process):");
+
+    let lua_wasm_path = "bench_tools/lua_wasm/lua.wasm";
+    if !std::path::Path::new(lua_wasm_path).exists() {
+        println!("    SKIP — lua.wasm not found.");
+        println!("    Build with: cd bench_tools/lua_wasm && bash build.sh");
+    } else {
+        let lua_bytes = std::fs::read(lua_wasm_path).expect("read lua.wasm");
+        println!("    Module size: {} bytes", lua_bytes.len());
+
+        let cold_start_ms = crate::wasm_runtime::lua::LuaRuntime::bench_cold_start(&lua_bytes);
+        println!("    Cold start (compile+instantiate+init): {:.1} ms", cold_start_ms);
+
+        let mut lua_rt = crate::wasm_runtime::lua::LuaRuntime::new(&lua_bytes)
+            .expect("LuaRuntime::new");
+        lua_rt.init().expect("LuaRuntime::init");
+        println!("    lua_wasi_init() returned: 0");
+
+        let lua_verify = "print('hello from Lua')";
+        match lua_rt.exec_and_get_output(lua_verify) {
+            Ok(output) => println!("    Verify: {}", output.trim()),
+            Err(e) => println!("    LUA ERROR: {}", e),
+        }
+
+        let bench_lua = "print(string.rep('x', 64))";
+        let lua_iterations = 1000;
+        let (lua_ns_val, lua_checksum) = lua_rt.bench_exec_repeated(bench_lua, lua_iterations);
+        black_box(lua_checksum);
+        lua_ns = lua_ns_val;
+        lua_available = true;
+        println!("    {:>10} iterations:  {:.1} ns/call  ({:.0}K calls/s)",
+            lua_iterations, lua_ns, 1_000_000.0 / lua_ns);
+        println!("    Overhead vs native Rust: {:.0}x", lua_ns / native_ns);
+        if wasm_available {
+            println!("    vs WASM (Rust tool):   {:.0}x", lua_ns / wasm_ns);
+        }
+        if quickjs_available {
+            println!("    vs QuickJS/WASM:       {:.1}x", lua_ns / quickjs_ns);
+        }
+        if micropython_available {
+            println!("    vs MicroPython/WASM:   {:.1}x", lua_ns / micropython_ns);
+        }
+
+        lua_rt.destroy().ok();
+    }
+
     // ── Summary table ──────────────────────────────────────────────────────
     println!("\n  ┌──────────────────────────┬──────────────┬───────────┐");
     println!("  │ Flavor                   │ Per-call     │ vs Native │");
@@ -1429,6 +1478,9 @@ fn bench_cross_language_tools() {
     }
     if micropython_available {
         println!("  │ Py via MicroPython/WASM   │ {:>6.0} ns    │   {:>5.0}x   │", micropython_ns, micropython_ns / native_ns);
+    }
+    if lua_available {
+        println!("  │ Lua via Lua/WASM          │ {:>6.0} ns    │   {:>5.0}x   │", lua_ns, lua_ns / native_ns);
     }
     if node_available {
         println!("  │ Node.js child proc       │ {:>6.0} μs    │  {:>5.0}x   │", node_ns / 1000.0, node_ns / native_ns);
