@@ -27,6 +27,7 @@ pub fn run_benchmarks() {
     bench_cached_nmcp_frame();
     bench_nmcp_conversion();
     bench_audit_multi_tenant();
+    bench_cross_language_tools();
     
     // v3.0 feature benchmarks
     #[cfg(feature = "oauth2")]
@@ -822,4 +823,811 @@ fn bench_nmcp_conversion() {
         println!("  Complexity overhead: {:.1}% larger payload", 
             ((complex_ns - simple_ns) / simple_ns) * 100.0);
     }
+}
+
+// ─── Cross-Language Tool Execution Benchmark ─────────────────────────────────
+//
+// Same text analysis tool, three execution flavors:
+//   1. Native Rust   — direct in-process function call (baseline)
+//   2. WASM (Wasmer)   — compiled to wasm32-unknown-unknown, loaded in-process
+//   3. Node.js child process — JSON-RPC over stdin/stdout
+//
+// Measures cold start, warm per-call latency, and throughput for each.
+
+fn bench_cross_language_tools() {
+    use std::io::{BufRead, BufReader, Write as _};
+    use std::process::{Command, Stdio};
+
+    println!("\n─── 14. Cross-Language Tool Execution ──────────────────────────");
+    println!("  Same tool (text_analyze), four flavors");
+
+    let wasm_input = serde_json::to_string(&json!({
+        "text": "The quick brown fox jumps over the lazy dog. \
+                 Pack my box with five dozen liquor jugs. \
+                 How vexingly quick daft zebras jump. \
+                 Bright vixens jump; dozy fowl quack."
+    })).unwrap();
+
+    let mut wasm_ns: f64 = 0.0;
+    let mut node_ns: f64 = 0.0;
+    let mut wasm_available = false;
+    let mut node_available = false;
+    let mut sdk_ns: f64 = 0.0;
+    let mut sdk_available = false;
+    let mut quickjs_ns: f64 = 0.0;
+    let mut quickjs_available = false;
+
+    // ── 1. Native Rust (baseline) ──────────────────────────────────────────
+    println!("\n  [1] Native Rust (direct function call):");
+
+    fn native_text_analyze(text: &str) -> Value {
+        json!({
+            "word_count": text.split_whitespace().count(),
+            "char_count": text.len(),
+            "line_count": if text.is_empty() { 0 } else { text.split('\n').count() }
+        })
+    }
+
+    let iterations = 100_000;
+    let start = Instant::now();
+    let mut native_checksum: u32 = 0;
+    for _ in 0..iterations {
+        let result = native_text_analyze(black_box(
+            "The quick brown fox jumps over the lazy dog. \
+             Pack my box with five dozen liquor jugs. \
+             How vexingly quick daft zebras jump. \
+             Bright vixens jump; dozy fowl quack."
+        ));
+        if let Some(wc) = result["word_count"].as_u64() {
+            native_checksum = native_checksum.wrapping_add(wc as u32);
+        }
+    }
+    let native_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
+    black_box(native_checksum);
+    println!("    {:>10} iterations:  {:.1} ns/call  ({:.2}M calls/s)",
+        iterations, native_ns, 1000.0 / native_ns);
+
+    // ── 2. WASM via Wasmer ─────────────────────────────────────────────────
+    println!("\n  [2] WASM (Wasmer, in-process):");
+
+    let wasm_path = std::path::Path::new("bench_tools/wasm_tool/target/wasm32-unknown-unknown/release/wasm_text_tool.wasm");
+    if !wasm_path.exists() {
+        println!("    SKIP — WASM file not found.");
+        println!("    Build with: cd bench_tools/wasm_tool && cargo build --target wasm32-unknown-unknown --release");
+    } else {
+        let wasm_bytes = std::fs::read(wasm_path).expect("read wasm file");
+        println!("    Module size: {} bytes", wasm_bytes.len());
+
+        // Cold start: compile + instantiate from scratch
+        let cold_iters = 100;
+        let start = Instant::now();
+        for _ in 0..cold_iters {
+            let engine = wasmer::Engine::from(wasmer::Cranelift::default());
+            let module = wasmer::Module::new(&engine, &wasm_bytes).unwrap();
+            let mut store = wasmer::Store::new(engine);
+            let imports = wasmer::imports!{};
+            let _instance = wasmer::Instance::new(&mut store, &module, &imports).unwrap();
+        }
+        let cold_ns = start.elapsed().as_nanos() as f64 / cold_iters as f64;
+        println!("    Cold start (compile+instantiate): {:.1} μs", cold_ns / 1000.0);
+
+        // Warm setup: compile once, instantiate once
+        let engine = wasmer::Engine::from(wasmer::Cranelift::default());
+        let module = wasmer::Module::new(&engine, &wasm_bytes).unwrap();
+        let mut store = wasmer::Store::new(engine);
+        let imports = wasmer::imports!{};
+        let instance = wasmer::Instance::new(&mut store, &module, &imports).unwrap();
+
+        let memory = instance.exports.get_memory("memory").expect("memory export");
+        let prepare_fn = instance.exports.get_function("prepare_call")
+            .expect("prepare_call export")
+            .typed::<(), ()>(&store)
+            .expect("prepare_call typed");
+        let execute_fn = instance.exports.get_function("tool_execute")
+            .expect("tool_execute export")
+            .typed::<(i32, i32), i64>(&store)
+            .expect("tool_execute typed");
+
+        // Warm-up call + verify correctness
+        let input_bytes = wasm_input.as_bytes();
+        let input_ptr = 1024;
+        let input_len = input_bytes.len() as i32;
+        memory.view(&store).write(input_ptr as u64, input_bytes).unwrap();
+        let result = execute_fn.call(&mut store, input_ptr as i32, input_len).unwrap();
+        let result_ptr = (result >> 32) as u32;
+        let result_len = (result & 0xFFFF_FFFF) as u32;
+        let mut result_buf = vec![0u8; result_len as usize];
+        memory.view(&store).read(result_ptr as u64, &mut result_buf).unwrap();
+        let result_str = String::from_utf8(result_buf).unwrap();
+        let result_val: Value = serde_json::from_str(&result_str).unwrap();
+        println!("    Verify: word_count={}, char_count={}, line_count={}",
+            result_val["word_count"], result_val["char_count"], result_val["line_count"]);
+
+        // Warm benchmark: reset alloc + write input + call per iteration
+        let iterations = 50_000;
+        let start = Instant::now();
+        let mut wasm_checksum: u32 = 0;
+        for _ in 0..iterations {
+            prepare_fn.call(&mut store).unwrap();
+            memory.view(&store).write(input_ptr as u64, input_bytes).unwrap();
+            let r = execute_fn.call(&mut store, input_ptr as i32, input_len).unwrap();
+            let rp = (r >> 32) as u32;
+            let rl = (r & 0xFFFF_FFFF) as u32;
+            let mut buf = vec![0u8; rl as usize];
+            memory.view(&store).read(rp as u64, &mut buf).unwrap();
+            if let Ok(v) = serde_json::from_slice::<Value>(&buf) {
+                if let Some(wc) = v["word_count"].as_u64() {
+                    wasm_checksum = wasm_checksum.wrapping_add(wc as u32);
+                }
+            }
+        }
+        let wasm_ns_val = start.elapsed().as_nanos() as f64 / iterations as f64;
+        black_box(wasm_checksum);
+        wasm_ns = wasm_ns_val;
+        wasm_available = true;
+        println!("    {:>10} iterations:  {:.1} ns/call  ({:.2}M calls/s)",
+            iterations, wasm_ns, 1000.0 / wasm_ns);
+        println!("    Overhead vs native: {:.1}x", wasm_ns / native_ns);
+    }
+
+    // ── 3. Node.js child process ───────────────────────────────────────────
+    println!("\n  [3] Node.js child process (JSON-RPC over stdin/stdout):");
+
+    let node_path = "bench_tools/node_tool.js";
+    if !std::path::Path::new(node_path).exists() {
+        println!("    SKIP — node_tool.js not found");
+    } else if Command::new("node").arg("--version").output().is_err() {
+        println!("    SKIP — node not found in PATH");
+    } else {
+        let node_request = r#"{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"bench_echo","arguments":{"size":64}}}"#;
+
+        // Cold start: spawn a fresh process for one call
+        let cold_iters = 20;
+        let start = Instant::now();
+        for _ in 0..cold_iters {
+            let mut child = Command::new("node")
+                .arg(node_path)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            {
+                let stdin = child.stdin.as_mut().unwrap();
+                let req = format!("{}\n", node_request);
+                stdin.write_all(req.as_bytes()).unwrap();
+                stdin.flush().unwrap();
+            }
+            let mut line = String::new();
+            BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+            let _ = child.wait();
+        }
+        let cold_ns = start.elapsed().as_nanos() as f64 / cold_iters as f64;
+        println!("    Cold start (spawn + 1 call): {:.1} ms", cold_ns / 1_000_000.0);
+
+        // Warm: persistent process, many calls
+        let mut child = Command::new("node")
+            .arg(node_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        // Warm-up call
+        {
+            let stdin = child.stdin.as_mut().unwrap();
+            let req = format!("{}\n", node_request);
+            stdin.write_all(req.as_bytes()).unwrap();
+            stdin.flush().unwrap();
+        }
+        let mut warmup_line = String::new();
+        let stdout = child.stdout.take().unwrap();
+        let mut reader = BufReader::new(stdout);
+        reader.read_line(&mut warmup_line).unwrap();
+        let warmup_val: Value = serde_json::from_str(warmup_line.trim()).unwrap();
+        println!("    Verify: size={}, payload_len={}",
+            warmup_val["result"]["size"],
+            warmup_val["result"]["payload"].as_str().map(|s| s.len()).unwrap_or(0));
+
+        // Need to put stdout back for subsequent reads — BufReader consumed it.
+        // Re-create the child for the actual benchmark.
+        drop(reader);
+        child.kill().ok();
+        let _ = child.wait();
+
+        let mut child = Command::new("node")
+            .arg(node_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let iterations = 2_000;
+        let req_line = format!("{}\n", node_request);
+        let start = Instant::now();
+        let mut node_checksum: u32 = 0;
+        let stdin = child.stdin.as_mut().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let mut reader = BufReader::new(stdout);
+        for _ in 0..iterations {
+            stdin.write_all(req_line.as_bytes()).unwrap();
+            stdin.flush().unwrap();
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if let Ok(v) = serde_json::from_str::<Value>(line.trim()) {
+                if let Some(sz) = v["result"]["size"].as_u64() {
+                    node_checksum = node_checksum.wrapping_add(sz as u32);
+                }
+            }
+            line.clear();
+        }
+        let node_ns_val = start.elapsed().as_nanos() as f64 / iterations as f64;
+        black_box(node_checksum);
+        node_ns = node_ns_val;
+        node_available = true;
+        println!("    {:>10} iterations:  {:.1} μs/call  ({:.0}K calls/s)",
+            iterations, node_ns / 1000.0, 1_000_000.0 / node_ns);
+        println!("    Overhead vs native: {:.0}x", node_ns / native_ns);
+
+        child.kill().ok();
+        let _ = child.wait();
+    }
+
+    // ── 4. Node.js MCP SDK server (full-featured, 16 tools) ────────────────
+    println!("\n  [4] Node.js MCP SDK server (16 tools, official @modelcontextprotocol/sdk):");
+
+    let sdk_server_path = "bench_nodejs/sdk_server.mjs";
+    if !std::path::Path::new(sdk_server_path).exists() {
+        println!("    SKIP — sdk_server.mjs not found");
+    } else if Command::new("node").arg("--version").output().is_err() {
+        println!("    SKIP — node not found in PATH");
+    } else {
+        let init_request = serde_json::to_string(&json!({
+            "jsonrpc": "2.0", "method": "initialize", "id": 1,
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "bench", "version": "1.0" }
+            }
+        })).unwrap();
+        let init_notify = serde_json::to_string(&json!({
+            "jsonrpc": "2.0", "method": "notifications/initialized"
+        })).unwrap();
+        let sdk_echo_request = serde_json::to_string(&json!({
+            "jsonrpc": "2.0", "method": "tools/call", "id": 1,
+            "params": { "name": "bench_echo", "arguments": { "size": 64 } }
+        })).unwrap();
+        let sdk_list_request = serde_json::to_string(&json!({
+            "jsonrpc": "2.0", "method": "tools/list", "id": 2
+        })).unwrap();
+
+        // Cold start: spawn fresh process, do handshake + one tools/call
+        let cold_iters = 10;
+        let start = Instant::now();
+        for _ in 0..cold_iters {
+            let mut child = Command::new("node")
+                .arg(sdk_server_path)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            {
+                let stdin = child.stdin.as_mut().unwrap();
+                stdin.write_all(format!("{}\n", init_request).as_bytes()).unwrap();
+                stdin.flush().unwrap();
+            }
+            let stdout = child.stdout.take().unwrap();
+            let mut reader = BufReader::new(stdout);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            line.clear();
+            {
+                let stdin = child.stdin.as_mut().unwrap();
+                stdin.write_all(format!("{}\n", init_notify).as_bytes()).unwrap();
+                stdin.flush().unwrap();
+            }
+            {
+                let stdin = child.stdin.as_mut().unwrap();
+                stdin.write_all(format!("{}\n", sdk_echo_request).as_bytes()).unwrap();
+                stdin.flush().unwrap();
+            }
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            let _ = child.wait();
+        }
+        let cold_ns = start.elapsed().as_nanos() as f64 / cold_iters as f64;
+        println!("    Cold start (spawn + handshake + 1 call): {:.1} ms", cold_ns / 1_000_000.0);
+
+        // Warm: persistent process — verify correctness
+        let mut child = Command::new("node")
+            .arg(sdk_server_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        {
+            let stdin = child.stdin.as_mut().unwrap();
+            stdin.write_all(format!("{}\n", init_request).as_bytes()).unwrap();
+            stdin.flush().unwrap();
+        }
+        let stdout = child.stdout.take().unwrap();
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        line.clear();
+        {
+            let stdin = child.stdin.as_mut().unwrap();
+            stdin.write_all(format!("{}\n", init_notify).as_bytes()).unwrap();
+            stdin.flush().unwrap();
+        }
+
+        // Verify tools/list returns 16 tools
+        {
+            let stdin = child.stdin.as_mut().unwrap();
+            stdin.write_all(format!("{}\n", sdk_list_request).as_bytes()).unwrap();
+            stdin.flush().unwrap();
+        }
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        if let Ok(v) = serde_json::from_str::<Value>(line.trim()) {
+            if let Some(tools) = v["result"]["tools"].as_array() {
+                println!("    tools/list: {} tools registered", tools.len());
+            }
+        }
+
+        // Verify bench_echo correctness
+        {
+            let stdin = child.stdin.as_mut().unwrap();
+            stdin.write_all(format!("{}\n", sdk_echo_request).as_bytes()).unwrap();
+            stdin.flush().unwrap();
+        }
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        if let Ok(v) = serde_json::from_str::<Value>(line.trim()) {
+            if let Some(text) = v["result"]["content"][0]["text"].as_str() {
+                if let Ok(inner) = serde_json::from_str::<Value>(text) {
+                    println!("    Verify bench_echo: size={}, payload_len={}",
+                        inner["size"],
+                        inner["payload"].as_str().map(|s| s.len()).unwrap_or(0));
+                }
+            }
+        }
+
+        drop(reader);
+        child.kill().ok();
+        let _ = child.wait();
+
+        // Warm benchmark: tools/call (bench_echo)
+        let mut child = Command::new("node")
+            .arg(sdk_server_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        {
+            let stdin = child.stdin.as_mut().unwrap();
+            stdin.write_all(format!("{}\n", init_request).as_bytes()).unwrap();
+            stdin.flush().unwrap();
+        }
+        let stdout = child.stdout.take().unwrap();
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        line.clear();
+        {
+            let stdin = child.stdin.as_mut().unwrap();
+            stdin.write_all(format!("{}\n", init_notify).as_bytes()).unwrap();
+            stdin.flush().unwrap();
+        }
+
+        let iterations = 1_000;
+        let req_line = format!("{}\n", sdk_echo_request);
+        let start = Instant::now();
+        let mut sdk_checksum: u32 = 0;
+        let stdin = child.stdin.as_mut().unwrap();
+        for _ in 0..iterations {
+            stdin.write_all(req_line.as_bytes()).unwrap();
+            stdin.flush().unwrap();
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            if let Ok(v) = serde_json::from_str::<Value>(line.trim()) {
+                if let Some(text) = v["result"]["content"][0]["text"].as_str() {
+                    if let Ok(inner) = serde_json::from_str::<Value>(text) {
+                        if let Some(sz) = inner["size"].as_u64() {
+                            sdk_checksum = sdk_checksum.wrapping_add(sz as u32);
+                        }
+                    }
+                }
+            }
+        }
+        let sdk_ns_val = start.elapsed().as_nanos() as f64 / iterations as f64;
+        black_box(sdk_checksum);
+        sdk_ns = sdk_ns_val;
+        sdk_available = true;
+        println!("    tools/call (bench_echo):");
+        println!("      {:>10} iterations:  {:.1} μs/call  ({:.0}K calls/s)",
+            iterations, sdk_ns / 1000.0, 1_000_000.0 / sdk_ns);
+        println!("      Overhead vs native: {:.0}x", sdk_ns / native_ns);
+
+        child.kill().ok();
+        let _ = child.wait();
+
+        // Warm benchmark: tools/list (16 tools)
+        let mut child = Command::new("node")
+            .arg(sdk_server_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        {
+            let stdin = child.stdin.as_mut().unwrap();
+            stdin.write_all(format!("{}\n", init_request).as_bytes()).unwrap();
+            stdin.flush().unwrap();
+        }
+        let stdout = child.stdout.take().unwrap();
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        line.clear();
+        {
+            let stdin = child.stdin.as_mut().unwrap();
+            stdin.write_all(format!("{}\n", init_notify).as_bytes()).unwrap();
+            stdin.flush().unwrap();
+        }
+
+        let list_iters = 500;
+        let list_req = format!("{}\n", sdk_list_request);
+        let start = Instant::now();
+        let mut list_checksum: u32 = 0;
+        let stdin = child.stdin.as_mut().unwrap();
+        for _ in 0..list_iters {
+            stdin.write_all(list_req.as_bytes()).unwrap();
+            stdin.flush().unwrap();
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            if let Ok(v) = serde_json::from_str::<Value>(line.trim()) {
+                if let Some(tools) = v["result"]["tools"].as_array() {
+                    list_checksum = list_checksum.wrapping_add(tools.len() as u32);
+                }
+            }
+        }
+        let list_ns = start.elapsed().as_nanos() as f64 / list_iters as f64;
+        black_box(list_checksum);
+        println!("    tools/list (16 tools):");
+        println!("      {:>10} iterations:  {:.1} μs/call  ({:.0}K calls/s)",
+            list_iters, list_ns / 1000.0, 1_000_000.0 / list_ns);
+
+        child.kill().ok();
+        let _ = child.wait();
+    }
+
+    // ── 5. JavaScript via QuickJS/WASM (in-process) ────────────────────────
+    println!("\n  [5] JavaScript via QuickJS/WASM (Wasmer, in-process):");
+
+    let qjs_wasm_path = "bench_tools/quickjs_wasm/quickjs.wasm";
+    if !std::path::Path::new(qjs_wasm_path).exists() {
+        println!("    SKIP — quickjs.wasm not found.");
+        println!("    Install with: cd bench_tools/quickjs_wasm && npm install");
+    } else {
+        let qjs_bytes = std::fs::read(qjs_wasm_path).expect("read quickjs.wasm");
+        println!("    Module size: {} bytes", qjs_bytes.len());
+
+        // Cold start: compile + instantiate from scratch
+        let cold_iters = 20;
+        let start = Instant::now();
+        for _ in 0..cold_iters {
+            let engine = wasmer::Engine::from(wasmer::Cranelift::default());
+            let module = wasmer::Module::new(&engine, &qjs_bytes).unwrap();
+            let mut store = wasmer::Store::new(engine);
+
+            #[derive(Clone)]
+            struct QjsEnv { memory: Option<wasmer::Memory> }
+            let env = wasmer::FunctionEnv::new(&mut store, QjsEnv { memory: None });
+
+            let clock_fn = wasmer::Function::new_typed_with_env(&mut store, &env,
+                |env: wasmer::FunctionEnvMut<QjsEnv>, _clock_id: i32, _precision: i64, result_ptr: i32| -> i32 {
+                    let mem = env.data().memory.as_ref().unwrap().clone();
+                    let ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
+                    mem.view(&env).write(result_ptr as u64, &ns.to_le_bytes()).unwrap();
+                    0
+                });
+            let fd_write_fn = wasmer::Function::new_typed_with_env(&mut store, &env,
+                |env: wasmer::FunctionEnvMut<QjsEnv>, _fd: i32, _iovs_ptr: i32, _iovs_len: i32, nwritten_ptr: i32| -> i32 {
+                    let mem = env.data().memory.as_ref().unwrap().clone();
+                    mem.view(&env).write(nwritten_ptr as u64, &0u32.to_le_bytes()).unwrap();
+                    0
+                });
+            let fd_close_fn = wasmer::Function::new_typed(&mut store, |_fd: i32| -> i32 { 52 });
+            let fd_fdstat_fn = wasmer::Function::new_typed_with_env(&mut store, &env,
+                |env: wasmer::FunctionEnvMut<QjsEnv>, fd: i32, stat_ptr: i32| -> i32 {
+                    if fd == 1 || fd == 2 {
+                        let mem = env.data().memory.as_ref().unwrap().clone();
+                        let mut stat = [0u8; 24];
+                        stat[0] = 2; // CHARACTER_DEVICE
+                        mem.view(&env).write(stat_ptr as u64, &stat).unwrap();
+                        0
+                    } else { 8 }
+                });
+            let fd_seek_fn = wasmer::Function::new_typed(&mut store, |_fd: i32, _offset: i64, _whence: i32, _result_ptr: i32| -> i32 { 52 });
+            let random_fn = wasmer::Function::new_typed_with_env(&mut store, &env,
+                |env: wasmer::FunctionEnvMut<QjsEnv>, buf_ptr: i32, buf_len: i32| -> i32 {
+                    let mem = env.data().memory.as_ref().unwrap().clone();
+                    let mut buf = vec![0u8; buf_len as usize];
+                    use rand::Rng;
+                    rand::thread_rng().fill(&mut buf[..]);
+                    mem.view(&env).write(buf_ptr as u64, &buf).unwrap();
+                    0
+                });
+            let tz_fn = wasmer::Function::new_typed(&mut store, |_hi: i32, _lo: i32| -> i32 { 0 });
+            let interrupt_fn = wasmer::Function::new_typed(&mut store, || -> i32 { 0 });
+            let promise_fn = wasmer::Function::new_typed_with_env(&mut store, &env,
+                |env: wasmer::FunctionEnvMut<QjsEnv>, _promise_ptr: i32, _reason_ptr: i32, _is_handled: i32| {
+                    let mem = env.data().memory.as_ref().unwrap().clone();
+                    let free_fn = mem.view(&env);
+                    let _ = free_fn; // values freed by no-op (leak is fine for benchmark)
+                });
+            let mod_norm_fn = wasmer::Function::new_typed(&mut store, |_name_ptr: i32, _name_len: i32| -> i32 { 0 });
+            let mod_load_fn = wasmer::Function::new_typed(&mut store, |_name_ptr: i32, _name_len: i32| -> i32 { 0 });
+            let host_call_fn = wasmer::Function::new_typed(&mut store, |_name_ptr: i32, _name_len: i32, _this_ptr: i32, _argc: i32, _argv_ptr: i32| -> i32 { 0 });
+
+            let imports = wasmer::imports! {
+                "wasi_snapshot_preview1" => {
+                    "clock_time_get" => clock_fn,
+                    "fd_write" => fd_write_fn,
+                    "fd_close" => fd_close_fn,
+                    "fd_fdstat_get" => fd_fdstat_fn,
+                    "fd_seek" => fd_seek_fn,
+                    "random_get" => random_fn,
+                },
+                "env" => {
+                    "host_get_timezone_offset" => tz_fn,
+                    "host_interrupt" => interrupt_fn,
+                    "host_promise_rejection" => promise_fn,
+                    "host_module_normalize" => mod_norm_fn,
+                    "host_module_load" => mod_load_fn,
+                    "host_call" => host_call_fn,
+                },
+            };
+            let instance = wasmer::Instance::new(&mut store, &module, &imports).unwrap();
+            let memory = instance.exports.get_memory("memory").unwrap().clone();
+            env.as_mut(&mut store).memory = Some(memory.clone());
+            let init_fn = instance.exports.get_function("_initialize").unwrap().typed::<(), ()>(&store).unwrap();
+            init_fn.call(&mut store).unwrap();
+            let qjs_init_fn = instance.exports.get_function("qjs_init").unwrap().typed::<(), i32>(&store).unwrap();
+            let _ = qjs_init_fn.call(&mut store).unwrap();
+        }
+        let cold_ns = start.elapsed().as_nanos() as f64 / cold_iters as f64;
+        println!("    Cold start (compile+instantiate+init): {:.1} ms", cold_ns / 1_000_000.0);
+
+        // Warm setup: compile once, instantiate once
+        let engine = wasmer::Engine::from(wasmer::Cranelift::default());
+        let module = wasmer::Module::new(&engine, &qjs_bytes).unwrap();
+        let mut store = wasmer::Store::new(engine);
+
+        #[derive(Clone)]
+        struct QjsEnv2 { memory: Option<wasmer::Memory> }
+        let env = wasmer::FunctionEnv::new(&mut store, QjsEnv2 { memory: None });
+
+        let clock_fn = wasmer::Function::new_typed_with_env(&mut store, &env,
+            |env: wasmer::FunctionEnvMut<QjsEnv2>, _clock_id: i32, _precision: i64, result_ptr: i32| -> i32 {
+                let mem = env.data().memory.as_ref().unwrap().clone();
+                let ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
+                mem.view(&env).write(result_ptr as u64, &ns.to_le_bytes()).unwrap();
+                0
+            });
+        let fd_write_fn = wasmer::Function::new_typed_with_env(&mut store, &env,
+            |env: wasmer::FunctionEnvMut<QjsEnv2>, _fd: i32, _iovs_ptr: i32, _iovs_len: i32, nwritten_ptr: i32| -> i32 {
+                let mem = env.data().memory.as_ref().unwrap().clone();
+                mem.view(&env).write(nwritten_ptr as u64, &0u32.to_le_bytes()).unwrap();
+                0
+            });
+        let fd_close_fn = wasmer::Function::new_typed(&mut store, |_fd: i32| -> i32 { 52 });
+        let fd_fdstat_fn = wasmer::Function::new_typed_with_env(&mut store, &env,
+            |env: wasmer::FunctionEnvMut<QjsEnv2>, fd: i32, stat_ptr: i32| -> i32 {
+                if fd == 1 || fd == 2 {
+                    let mem = env.data().memory.as_ref().unwrap().clone();
+                    let mut stat = [0u8; 24];
+                    stat[0] = 2;
+                    mem.view(&env).write(stat_ptr as u64, &stat).unwrap();
+                    0
+                } else { 8 }
+            });
+        let fd_seek_fn = wasmer::Function::new_typed(&mut store, |_fd: i32, _offset: i64, _whence: i32, _result_ptr: i32| -> i32 { 52 });
+        let random_fn = wasmer::Function::new_typed_with_env(&mut store, &env,
+            |env: wasmer::FunctionEnvMut<QjsEnv2>, buf_ptr: i32, buf_len: i32| -> i32 {
+                let mem = env.data().memory.as_ref().unwrap().clone();
+                let mut buf = vec![0u8; buf_len as usize];
+                use rand::Rng;
+                rand::thread_rng().fill(&mut buf[..]);
+                mem.view(&env).write(buf_ptr as u64, &buf).unwrap();
+                0
+            });
+        let tz_fn = wasmer::Function::new_typed(&mut store, |_hi: i32, _lo: i32| -> i32 { 0 });
+        let interrupt_fn = wasmer::Function::new_typed(&mut store, || -> i32 { 0 });
+        let promise_fn = wasmer::Function::new_typed(&mut store, |_promise_ptr: i32, _reason_ptr: i32, _is_handled: i32| {});
+        let mod_norm_fn = wasmer::Function::new_typed(&mut store, |_name_ptr: i32, _name_len: i32| -> i32 { 0 });
+        let mod_load_fn = wasmer::Function::new_typed(&mut store, |_name_ptr: i32, _name_len: i32| -> i32 { 0 });
+        let host_call_fn = wasmer::Function::new_typed(&mut store, |_name_ptr: i32, _name_len: i32, _this_ptr: i32, _argc: i32, _argv_ptr: i32| -> i32 { 0 });
+
+        let imports = wasmer::imports! {
+            "wasi_snapshot_preview1" => {
+                "clock_time_get" => clock_fn,
+                "fd_write" => fd_write_fn,
+                "fd_close" => fd_close_fn,
+                "fd_fdstat_get" => fd_fdstat_fn,
+                "fd_seek" => fd_seek_fn,
+                "random_get" => random_fn,
+            },
+            "env" => {
+                "host_get_timezone_offset" => tz_fn,
+                "host_interrupt" => interrupt_fn,
+                "host_promise_rejection" => promise_fn,
+                "host_module_normalize" => mod_norm_fn,
+                "host_module_load" => mod_load_fn,
+                "host_call" => host_call_fn,
+            },
+        };
+        let instance = wasmer::Instance::new(&mut store, &module, &imports).unwrap();
+        let memory = instance.exports.get_memory("memory").unwrap().clone();
+        env.as_mut(&mut store).memory = Some(memory.clone());
+
+        // Initialize WASI reactor, then QuickJS runtime
+        let init_fn = instance.exports.get_function("_initialize").unwrap().typed::<(), ()>(&store).unwrap();
+        init_fn.call(&mut store).unwrap();
+        let qjs_init_fn = instance.exports.get_function("qjs_init").unwrap().typed::<(), i32>(&store).unwrap();
+        let init_result = qjs_init_fn.call(&mut store).unwrap();
+        println!("    qjs_init() returned: {}", init_result);
+
+        let qjs_eval_fn = instance.exports.get_function("qjs_eval").unwrap();
+        let qjs_is_exception_fn = instance.exports.get_function("qjs_is_exception").unwrap();
+        let qjs_get_string_len_fn = instance.exports.get_function("qjs_get_string_len").unwrap();
+        let qjs_free_value_fn = instance.exports.get_function("qjs_free_value").unwrap();
+        let qjs_get_exception_fn = instance.exports.get_function("qjs_get_exception").unwrap();
+        let qjs_destroy_fn_ref = instance.exports.get_function("qjs_destroy").unwrap();
+        let wasm_malloc_fn = instance.exports.get_function("wasm_malloc").unwrap();
+        let wasm_free_fn = instance.exports.get_function("wasm_free").unwrap();
+
+        // Print actual signatures for debugging
+        for (name, f) in [("qjs_eval", qjs_eval_fn), ("qjs_is_exception", qjs_is_exception_fn),
+                          ("qjs_get_string_len", qjs_get_string_len_fn),
+                          ("qjs_free_value", qjs_free_value_fn), ("qjs_get_exception", qjs_get_exception_fn),
+                          ("wasm_malloc", wasm_malloc_fn), ("wasm_free", wasm_free_fn)] {
+            let ty = f.ty(&store);
+            let params: Vec<String> = ty.params().iter().map(|v| format!("{:?}", v)).collect();
+            let results: Vec<String> = ty.results().iter().map(|v| format!("{:?}", v)).collect();
+            println!("    {} ({}) -> ({})", name, params.join(", "), results.join(", "));
+        }
+
+        // Verify: evaluate a JS expression
+        let js_code = r#"JSON.stringify({result: "hello from QuickJS", size: 42, words: 3})"#;
+        let js_bytes = js_code.as_bytes();
+        let code_ptr = 64 * 1024; // 64KB offset — safe area in WASM memory
+        memory.view(&store).write(code_ptr as u64, js_bytes).unwrap();
+        let eval_result = qjs_eval_fn.call(&mut store, &[
+            wasmer::Value::I32(code_ptr as i32),
+            wasmer::Value::I32(js_bytes.len() as i32),
+            wasmer::Value::I32(0),
+            wasmer::Value::I32(0),
+        ]).unwrap();
+        let result_handle = eval_result[0].unwrap_i32();
+        let is_exc_result = qjs_is_exception_fn.call(&mut store, &[wasmer::Value::I32(result_handle)]).unwrap();
+        let is_exc = is_exc_result[0].unwrap_i32();
+        if is_exc != 0 {
+            let exc_result = qjs_get_exception_fn.call(&mut store, &[]).unwrap();
+            let exc_handle = exc_result[0].unwrap_i32();
+            // Allocate 4 bytes for length output
+            let len_ptr_result = wasm_malloc_fn.call(&mut store, &[wasmer::Value::I32(4)]).unwrap();
+            let len_ptr = len_ptr_result[0].unwrap_i32();
+            // qjs_get_string_len returns string pointer, writes length to len_ptr
+            let cstr_ptr_result = qjs_get_string_len_fn.call(&mut store, &[wasmer::Value::I32(exc_handle), wasmer::Value::I32(len_ptr)]).unwrap();
+            let cstr_ptr = cstr_ptr_result[0].unwrap_i32();
+            if cstr_ptr != 0 {
+                // Read length from memory at len_ptr (little-endian uint32)
+                let mut len_buf = [0u8; 4];
+                memory.view(&store).read(len_ptr as u64, &mut len_buf).unwrap();
+                let exc_len = u32::from_le_bytes(len_buf) as usize;
+                let mut exc_buf = vec![0u8; exc_len];
+                memory.view(&store).read(cstr_ptr as u64, &mut exc_buf).unwrap();
+                println!("    JS ERROR: {}", String::from_utf8_lossy(&exc_buf));
+            }
+            wasm_free_fn.call(&mut store, &[wasmer::Value::I32(len_ptr)]).unwrap();
+            qjs_free_value_fn.call(&mut store, &[wasmer::Value::I32(exc_handle)]).unwrap();
+        } else {
+            // Allocate 4 bytes for length output
+            let len_ptr_result = wasm_malloc_fn.call(&mut store, &[wasmer::Value::I32(4)]).unwrap();
+            let len_ptr = len_ptr_result[0].unwrap_i32();
+            // qjs_get_string_len returns string pointer, writes length to len_ptr
+            let cstr_ptr_result = qjs_get_string_len_fn.call(&mut store, &[wasmer::Value::I32(result_handle), wasmer::Value::I32(len_ptr)]).unwrap();
+            let cstr_ptr = cstr_ptr_result[0].unwrap_i32();
+            if cstr_ptr != 0 {
+                // Read length from memory at len_ptr (little-endian uint32)
+                let mut len_buf = [0u8; 4];
+                memory.view(&store).read(len_ptr as u64, &mut len_buf).unwrap();
+                let str_len = u32::from_le_bytes(len_buf) as usize;
+                let mut str_buf = vec![0u8; str_len];
+                memory.view(&store).read(cstr_ptr as u64, &mut str_buf).unwrap();
+                let result_str = String::from_utf8_lossy(&str_buf);
+                println!("    Verify: {}", result_str);
+                if let Ok(v) = serde_json::from_str::<Value>(&result_str) {
+                    println!("    Parsed: result={}, size={}", v["result"], v["size"]);
+                }
+            }
+            wasm_free_fn.call(&mut store, &[wasmer::Value::I32(len_ptr)]).unwrap();
+            qjs_free_value_fn.call(&mut store, &[wasmer::Value::I32(result_handle)]).unwrap();
+        }
+
+        // Warm benchmark: evaluate JS tool repeatedly
+        let bench_js = r#"JSON.stringify({size:64,payload:"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"})"#;
+        let bench_bytes = bench_js.as_bytes();
+        let bench_ptr = 128 * 1024; // 128KB offset
+        memory.view(&store).write(bench_ptr as u64, bench_bytes).unwrap();
+
+        let iterations = 10_000;
+        // Allocate 4 bytes for length output (reused across iterations)
+        let len_ptr_result = wasm_malloc_fn.call(&mut store, &[wasmer::Value::I32(4)]).unwrap();
+        let len_ptr = len_ptr_result[0].unwrap_i32();
+
+        let start = Instant::now();
+        let mut qjs_checksum: u32 = 0;
+        for _ in 0..iterations {
+            let rh_result = qjs_eval_fn.call(&mut store, &[
+                wasmer::Value::I32(bench_ptr as i32),
+                wasmer::Value::I32(bench_bytes.len() as i32),
+                wasmer::Value::I32(0),
+                wasmer::Value::I32(0),
+            ]).unwrap();
+            let rh = rh_result[0].unwrap_i32();
+            let exc_result = qjs_is_exception_fn.call(&mut store, &[wasmer::Value::I32(rh)]).unwrap();
+            let exc = exc_result[0].unwrap_i32();
+            if exc == 0 {
+                // qjs_get_string_len returns string pointer, writes length to len_ptr
+                let cstr_ptr_result = qjs_get_string_len_fn.call(&mut store, &[wasmer::Value::I32(rh), wasmer::Value::I32(len_ptr)]).unwrap();
+                let cstr_ptr = cstr_ptr_result[0].unwrap_i32();
+                if cstr_ptr != 0 {
+                    // Read length from memory at len_ptr (little-endian uint32)
+                    let mut len_buf = [0u8; 4];
+                    memory.view(&store).read(len_ptr as u64, &mut len_buf).unwrap();
+                    let sl = u32::from_le_bytes(len_buf);
+                    qjs_checksum = qjs_checksum.wrapping_add(sl);
+                }
+            }
+            qjs_free_value_fn.call(&mut store, &[wasmer::Value::I32(rh)]).unwrap();
+        }
+        wasm_free_fn.call(&mut store, &[wasmer::Value::I32(len_ptr)]).unwrap();
+        let qjs_ns_val = start.elapsed().as_nanos() as f64 / iterations as f64;
+        black_box(qjs_checksum);
+        quickjs_ns = qjs_ns_val;
+        quickjs_available = true;
+        println!("    {:>10} iterations:  {:.1} ns/call  ({:.2}M calls/s)",
+            iterations, quickjs_ns, 1000.0 / quickjs_ns);
+        println!("    Overhead vs native Rust: {:.1}x", quickjs_ns / native_ns);
+        if wasm_available {
+            println!("    vs WASM (Rust tool):   {:.1}x", quickjs_ns / wasm_ns);
+        }
+
+        // Cleanup
+        qjs_destroy_fn_ref.call(&mut store, &[]).unwrap();
+    }
+
+    // ── Summary table ──────────────────────────────────────────────────────
+    println!("\n  ┌──────────────────────────┬──────────────┬───────────┐");
+    println!("  │ Flavor                   │ Per-call     │ vs Native │");
+    println!("  ├──────────────────────────┼──────────────┼───────────┤");
+    println!("  │ Native Rust              │ {:>6.0} ns    │    1.0x   │", native_ns);
+    if wasm_available {
+        println!("  │ WASM (Wasmer, Rust tool) │ {:>6.0} ns    │   {:>5.1}x   │", wasm_ns, wasm_ns / native_ns);
+    }
+    if quickjs_available {
+        println!("  │ JS via QuickJS/WASM       │ {:>6.0} ns    │   {:>5.1}x   │", quickjs_ns, quickjs_ns / native_ns);
+    }
+    if node_available {
+        println!("  │ Node.js child proc       │ {:>6.0} μs    │  {:>5.0}x   │", node_ns / 1000.0, node_ns / native_ns);
+    }
+    if sdk_available {
+        println!("  │ Node.js MCP SDK          │ {:>6.0} μs    │  {:>5.0}x   │", sdk_ns / 1000.0, sdk_ns / native_ns);
+    }
+    println!("  └──────────────────────────┴──────────────┴───────────┘");
 }

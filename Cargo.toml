@@ -14,7 +14,7 @@ readme = "README.md"
 
 [workspace]
 members = [".", "macros", "client"]
-exclude = ["bench_nda"]
+exclude = ["bench_nda", "bench_tools"]
 
 [features]
 default = []
@@ -86,6 +86,9 @@ chrono = { version = "0.4", features = ["serde"] }
 glob = "0.3"
 diffy = "0.4"
 
+# WebAssembly runtime (for cross-language tool execution)
+wasmer = "5"
+
 # Linux-specific sandboxing
 [target.'cfg(target_os = "linux")'.dependencies]
 seccompiler = "0.4"
@@ -96,6 +99,7 @@ proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
 serial_test = "3.0"
 tempfile = "3.10"
+wasmtime = "29"
 
 [[bench]]
 name = "protocol_bench"
@@ -103,6 +107,10 @@ harness = false
 
 [[bench]]
 name = "nda_bench"
+harness = false
+
+[[bench]]
+name = "wasm_isolation"
 harness = false
 
 [profile.release]
