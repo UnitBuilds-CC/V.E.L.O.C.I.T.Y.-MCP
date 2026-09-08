@@ -16,3 +16,6 @@ desktop.ini
 # Test artifacts
 *.bin
 *.exe
+
+# MicroPython WASI (extracted from tarball by build.sh)
+bench_tools/micropython_wasm/micropython-1.24.1/

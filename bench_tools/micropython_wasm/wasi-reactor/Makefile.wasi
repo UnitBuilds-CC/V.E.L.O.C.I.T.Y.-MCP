@@ -1,0 +1,105 @@
+# Makefile.wasi — Build MicroPython as a WASI reactor for embedding in Wasmer.
+#
+# Usage:
+#   make -f Makefile.wasi
+#
+# Requires wasi-sdk installed at /c/wasi-sdk (override with WASI_SDK=...)
+# Produces: build-wasi/micropython.wasm
+
+WASI_SDK ?= /c/wasi-sdk
+WASI_SDK_WIN = $(shell cygpath -m $(WASI_SDK))
+WASI_CC = $(WASI_SDK)/bin/clang
+WASI_AR = $(WASI_SDK)/bin/ar
+WASI_LD = $(WASI_SDK)/bin/clang
+
+# MicroPython root is two levels up from this file's original location,
+# but since we run from ports/webassembly/, it's ../../
+TOP = ../..
+
+VARIANT = wasi
+VARIANT_DIR = variants/$(VARIANT)
+BUILD = build-wasi
+
+# Override compiler and linker before including py.mk
+# (actual overrides are after includes, since mkenv.mk sets its own defaults)
+
+INC += -I.
+INC += -I$(TOP)
+INC += -I$(BUILD)
+INC += -I$(VARIANT_DIR)
+
+CFLAGS += -std=c99 -Wall -Werror -Wdouble-promotion -Wfloat-conversion
+CFLAGS += -Os -DNDEBUG -D_POSIX_C_SOURCE=200809L
+CFLAGS += $(INC)
+CFLAGS += --target=wasm32-unknown-wasip1
+CFLAGS += -mllvm -wasm-enable-sjlj
+CFLAGS += -D__WASI_RTLD_DEFAULT=0
+
+LDFLAGS += --target=wasm32-unknown-wasip1
+LDFLAGS += -Wl,--no-entry
+LDFLAGS += -Wl,--allow-undefined
+LDFLAGS += -Wl,--export=mp_wasi_init
+LDFLAGS += -Wl,--export=mp_wasi_exec
+LDFLAGS += -Wl,--export=mp_wasi_exec_expr
+LDFLAGS += -Wl,--export=mp_wasi_get_output
+LDFLAGS += -Wl,--export=mp_wasi_get_output_len
+LDFLAGS += -Wl,--export=mp_wasi_destroy
+LDFLAGS += -Wl,--export=malloc
+LDFLAGS += -Wl,--export=free
+LDFLAGS += -Wl,--export=__heap_base
+LDFLAGS += -Wl,--export=__data_end
+LDFLAGS += -Wl,-z,stack-size=8192
+LDFLAGS += -Wl,--initial-memory=524288
+
+# Qstr definitions
+QSTR_DEFS = qstrdefsport.h
+
+# No frozen manifest for minimal build
+FROZEN_MANIFEST ?=
+
+# Include MicroPython core make definitions
+include $(TOP)/py/mkenv.mk
+include $(VARIANT_DIR)/mpconfigvariant.mk
+include $(TOP)/py/py.mk
+include $(TOP)/extmod/extmod.mk
+
+# Override toolchain after includes — mkenv.mk sets CC=gcc, LD=ld, etc.
+# CPP uses Windows-native path so Python's subprocess (makeqstrdefs.py) can find it.
+CC = $(WASI_CC)
+LD = $(WASI_SDK_WIN)/bin/clang.exe
+AR = $(WASI_AR)
+CPP = $(WASI_SDK_WIN)/bin/clang.exe -E
+
+# Source files — minimal set for WASI (no JS proxy, no modjs, no modjsffi)
+SRC_SHARED = $(addprefix shared/,\
+	runtime/interrupt_char.c \
+	runtime/stdout_helpers.c \
+	runtime/pyexec.c \
+	readline/readline.c \
+	timeutils/timeutils.c \
+	)
+
+SRC_C += \
+	lexer_dedent.c \
+	wasi_main.c \
+
+# List of sources for qstr extraction
+SRC_QSTR += $(SRC_C) $(SRC_SHARED)
+
+OBJ += $(PY_O)
+OBJ += $(addprefix $(BUILD)/, $(SRC_SHARED:.c=.o))
+OBJ += $(addprefix $(BUILD)/, $(SRC_C:.c=.o))
+
+.PHONY: all clean
+
+all: $(BUILD)/micropython.wasm
+
+$(BUILD)/micropython.wasm: $(OBJ)
+	$(ECHO) "LINK $@"
+	$(Q)find $(BUILD) -name '*.o' | tr '\n' ' ' > $(BUILD)/objs.rsp
+	$(Q)$(LD) $(LDFLAGS) -o $@ @$(BUILD)/objs.rsp
+
+clean:
+	rm -rf $(BUILD)
+
+include $(TOP)/py/mkrules.mk
