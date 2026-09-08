@@ -49,6 +49,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 use tracing::{error, info};
 
 /// Plugin manifest defining tools and their executors.
@@ -79,11 +80,12 @@ pub struct PluginTool {
 /// Executor configuration for a plugin tool.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginExecutor {
-    /// Executor type (currently only "process" is supported)
+    /// Executor type: "process" for external commands, "wasm" for in-process WASM execution
     pub executor_type: String,
-    /// Command to execute
+    /// Command to execute (for "process" type)
+    #[serde(default)]
     pub command: String,
-    /// Command arguments (supports template variables)
+    /// Command arguments (supports template variables, for "process" type)
     #[serde(default)]
     pub args: Vec<String>,
     /// Working directory for the command
@@ -95,6 +97,19 @@ pub struct PluginExecutor {
     /// Timeout in seconds
     #[serde(default = "default_timeout")]
     pub timeout: u64,
+
+    /// Language runtime for WASM executor (e.g., "javascript", "python", "lua", "go")
+    #[serde(default)]
+    pub language: Option<String>,
+    /// Inline source code for WASM executor (evaluated in the language runtime)
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Path to a source file (.js, .py, .lua) or compiled WASM module (.wasm)
+    #[serde(default)]
+    pub source_file: Option<String>,
+    /// Handler function name to invoke for WASM executor
+    #[serde(default)]
+    pub handler_function: Option<String>,
 }
 
 fn default_timeout() -> u64 {
@@ -206,8 +221,23 @@ pub fn load_plugin_manifest(path: &Path) -> Result<PluginManifest, String> {
         if tool.name.is_empty() {
             return Err("Tool name cannot be empty".to_string());
         }
-        if tool.executor.executor_type != "process" {
-            return Err(format!("Unsupported executor type: {}", tool.executor.executor_type));
+        match tool.executor.executor_type.as_str() {
+            "process" => {
+                if tool.executor.command.is_empty() {
+                    return Err(format!("Tool '{}' with process executor must specify a command", tool.name));
+                }
+            }
+            "wasm" => {
+                if tool.executor.language.is_none() {
+                    return Err(format!("Tool '{}' with wasm executor must specify a language", tool.name));
+                }
+                if tool.executor.source.is_none() && tool.executor.source_file.is_none() {
+                    return Err(format!("Tool '{}' with wasm executor must specify source or source_file", tool.name));
+                }
+            }
+            other => {
+                return Err(format!("Unsupported executor type: {}", other));
+            }
         }
     }
 
@@ -227,9 +257,16 @@ pub fn load_plugin_manifest(path: &Path) -> Result<PluginManifest, String> {
 pub fn execute_plugin_tool(tool: &PluginTool, arguments: &Value) -> Result<String, String> {
     let executor = &tool.executor;
 
-    if executor.executor_type != "process" {
-        return Err(format!("Unsupported executor type: {}", executor.executor_type));
+    match executor.executor_type.as_str() {
+        "wasm" => execute_wasm_plugin_tool(tool, arguments),
+        "process" => execute_process_plugin_tool(tool, arguments),
+        other => Err(format!("Unsupported executor type: {}", other)),
     }
+}
+
+/// Execute a process-based plugin tool.
+fn execute_process_plugin_tool(tool: &PluginTool, arguments: &Value) -> Result<String, String> {
+    let executor = &tool.executor;
 
     // Detect if the plugin invokes a shell interpreter — arguments become shell commands
     let shell_interpreters = ["sh", "bash", "cmd", "cmd.exe", "/bin/sh", "/bin/bash", "powershell", "powershell.exe"];
@@ -310,6 +347,149 @@ pub fn execute_plugin_tool(tool: &PluginTool, arguments: &Value) -> Result<Strin
     }
 }
 
+static WASM_RUNTIME_CACHE: std::sync::LazyLock<Mutex<HashMap<String, Box<dyn crate::wasm_runtime::WasmRuntime>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn execute_wasm_plugin_tool(tool: &PluginTool, arguments: &Value) -> Result<String, String> {
+    let executor = &tool.executor;
+    let language = executor.language.as_deref()
+        .ok_or_else(|| "WASM executor requires 'language' field".to_string())?;
+
+    let source = resolve_wasm_source(executor)?;
+
+    match language {
+        "go" => execute_standalone_wasm_tool(executor, arguments),
+        _ => {
+            let mut cache = WASM_RUNTIME_CACHE.lock()
+                .map_err(|e| format!("WASM runtime cache poisoned: {}", e))?;
+
+            if !cache.contains_key(language) {
+                let runtime = create_wasm_runtime(language)?;
+                cache.insert(language.to_string(), runtime);
+            }
+
+            let runtime = cache.get_mut(language)
+                .ok_or_else(|| format!("No runtime for language: {}", language))?;
+
+            runtime.register_tool(&tool.name, &source)
+                .map_err(|e| format!("Failed to register WASM tool '{}': {}", tool.name, e))?;
+
+            let args_json = serde_json::to_string(arguments)
+                .map_err(|e| format!("Failed to serialize arguments: {}", e))?;
+
+            runtime.call_tool(&tool.name, &args_json)
+                .map_err(|e| format!("WASM tool '{}' execution failed: {}", tool.name, e))
+        }
+    }
+}
+
+fn resolve_wasm_source(executor: &PluginExecutor) -> Result<String, String> {
+    if let Some(source) = &executor.source {
+        return Ok(source.clone());
+    }
+    if let Some(source_file) = &executor.source_file {
+        let path = Path::new(source_file);
+        if !path.exists() {
+            return Err(format!("WASM source file not found: {}", source_file));
+        }
+        std::fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read source file '{}': {}", source_file, e))
+    } else {
+        Err("WASM executor requires 'source' or 'source_file'".to_string())
+    }
+}
+
+fn create_wasm_runtime(language: &str) -> Result<Box<dyn crate::wasm_runtime::WasmRuntime>, String> {
+    let (wasm_path, lang_name): (&str, &str) = match language {
+        "javascript" => ("bench_tools/quickjs_wasm/quickjs.wasm", "javascript"),
+        "python" => ("bench_tools/micropython_wasm/wasi-reactor/build/micropython.wasm", "python"),
+        "lua" => ("bench_tools/lua_wasm/lua.wasm", "lua"),
+        _ => return Err(format!("Unsupported WASM language: {}", language)),
+    };
+
+    let wasm_bytes = std::fs::read(wasm_path)
+        .map_err(|e| format!("Failed to read WASM module '{}': {}", wasm_path, e))?;
+
+    let mut runtime: Box<dyn crate::wasm_runtime::WasmRuntime> = match lang_name {
+        "javascript" => Box::new(crate::wasm_runtime::quickjs::QuickJsRuntime::new(&wasm_bytes)
+            .map_err(|e| format!("QuickJS init failed: {}", e))?),
+        "python" => Box::new(crate::wasm_runtime::micropython::MicroPythonRuntime::new(&wasm_bytes)
+            .map_err(|e| format!("MicroPython init failed: {}", e))?),
+        "lua" => Box::new(crate::wasm_runtime::lua::LuaRuntime::new(&wasm_bytes)
+            .map_err(|e| format!("Lua init failed: {}", e))?),
+        _ => unreachable!(),
+    };
+
+    runtime.init()
+        .map_err(|e| format!("WASM runtime init failed for '{}': {}", language, e))?;
+
+    info!(language = %language, wasm_path = %wasm_path, "Initialized WASM runtime for plugin");
+    Ok(runtime)
+}
+
+fn execute_standalone_wasm_tool(executor: &PluginExecutor, arguments: &Value) -> Result<String, String> {
+    use wasmer::{FunctionEnv, Instance, Module, Store, Value as WasmValue};
+
+    let source_file = executor.source_file.as_deref()
+        .ok_or("Go WASM tools require 'source_file' (compiled .wasm path)")?;
+
+    let wasm_bytes = std::fs::read(source_file)
+        .map_err(|e| format!("Failed to read WASM file '{}': {}", source_file, e))?;
+
+    let engine = wasmer::Engine::from(wasmer::Cranelift::default());
+    let module = Module::new(&engine, &wasm_bytes)
+        .map_err(|e| format!("WASM compile failed: {}", e))?;
+    let mut store = Store::new(engine);
+
+    let env = FunctionEnv::new(&mut store, crate::wasm_runtime::wasi::WasiEnv { memory: None });
+    let wasi_imports = crate::wasm_runtime::wasi::build_wasi_imports(&mut store, &env);
+    let instance = Instance::new(&mut store, &module, &wasi_imports)
+        .map_err(|e| format!("WASM instantiation failed: {}", e))?;
+    let memory = instance.exports.get_memory("memory")
+        .map_err(|e| format!("WASM module missing memory export: {}", e))?
+        .clone();
+    env.as_mut(&mut store).memory = Some(memory.clone());
+
+    if let Ok(start_fn) = instance.exports.get_function("_start") {
+        let _ = start_fn.call(&mut store, &[]);
+    }
+
+    let args_json = serde_json::to_string(arguments)
+        .map_err(|e| format!("Failed to serialize arguments: {}", e))?;
+    let args_bytes = args_json.as_bytes();
+
+    let prepare = instance.exports.get_function("prepare_call")
+        .map_err(|e| format!("WASM module missing prepare_call: {}", e))?;
+    prepare.call(&mut store, &[]).map_err(|e| format!("prepare_call failed: {}", e))?;
+
+    let malloc = instance.exports.get_function("malloc")
+        .map_err(|e| format!("WASM module missing malloc: {}", e))?;
+    let ptr_val = malloc.call(&mut store, &[WasmValue::I32(args_bytes.len() as i32)])
+        .map_err(|e| format!("malloc failed: {}", e))?;
+    let input_ptr = ptr_val[0].unwrap_i32();
+
+    memory.view(&store).write(input_ptr as u64, args_bytes)
+        .map_err(|e| format!("Failed to write input to WASM memory: {}", e))?;
+
+    let execute = instance.exports.get_function("tool_execute")
+        .map_err(|e| format!("WASM module missing tool_execute: {}", e))?;
+    let result = execute.call(&mut store, &[
+        WasmValue::I32(input_ptr),
+        WasmValue::I32(args_bytes.len() as i32),
+    ]).map_err(|e| format!("tool_execute failed: {}", e))?;
+
+    let encoded = result[0].unwrap_i64();
+    let result_ptr = (encoded >> 32) as u32;
+    let result_len = (encoded & 0xFFFF_FFFF) as u32;
+
+    let mut result_buf = vec![0u8; result_len as usize];
+    memory.view(&store).read(result_ptr as u64, &mut result_buf)
+        .map_err(|e| format!("Failed to read WASM result: {}", e))?;
+
+    String::from_utf8(result_buf)
+        .map_err(|e| format!("WASM result is not valid UTF-8: {}", e))
+}
+
 /// Substitute template variables in a string.
 ///
 /// Replaces `{{variable_name}}` with the corresponding value from arguments.
@@ -382,9 +562,18 @@ pub fn plugins_to_registry_tools(plugins: &[LoadedPlugin]) -> Vec<crate::registr
 
     for plugin in plugins {
         for tool in &plugin.manifest.tools {
+            let description = if tool.executor.executor_type == "wasm" {
+                if let Some(ref lang) = tool.executor.language {
+                    format!("{} [wasm:{}]", tool.description, lang)
+                } else {
+                    tool.description.clone()
+                }
+            } else {
+                tool.description.clone()
+            };
             tools.push(crate::registry::Tool {
                 name: tool.name.clone(),
-                description: tool.description.clone(),
+                description,
                 input_schema: tool.input_schema.clone(),
             });
         }
@@ -479,6 +668,10 @@ mod tests {
                 working_dir: None,
                 env: HashMap::new(),
                 timeout: 5,
+                language: None,
+                source: None,
+                source_file: None,
+                handler_function: None,
             },
         };
 
@@ -502,6 +695,10 @@ mod tests {
                 working_dir: None,
                 env: HashMap::new(),
                 timeout: 5,
+                language: None,
+                source: None,
+                source_file: None,
+                handler_function: None,
             },
         };
 
@@ -527,6 +724,10 @@ mod tests {
                 working_dir: None,
                 env: HashMap::new(),
                 timeout: 1,
+                language: None,
+                source: None,
+                source_file: None,
+                handler_function: None,
             },
         };
 
@@ -544,12 +745,16 @@ mod tests {
             description: "Bad tool".to_string(),
             input_schema: json!({"type": "object"}),
             executor: PluginExecutor {
-                executor_type: "wasm".to_string(),
+                executor_type: "docker".to_string(),
                 command: "test".to_string(),
                 args: vec![],
                 working_dir: None,
                 env: HashMap::new(),
                 timeout: 5,
+                language: None,
+                source: None,
+                source_file: None,
+                handler_function: None,
             },
         };
 
@@ -615,7 +820,7 @@ mod tests {
         let bad_executor = r#"{
             "name": "test",
             "version": "1.0.0",
-            "tools": [{"name": "t", "description": "d", "inputSchema": {}, "executor": {"executor_type": "wasm", "command": "echo", "args": []}}]
+            "tools": [{"name": "t", "description": "d", "inputSchema": {}, "executor": {"executor_type": "docker", "command": "echo", "args": []}}]
         }"#;
         let path = dir.path().join("bad_executor.json");
         std::fs::write(&path, bad_executor).unwrap();
@@ -644,6 +849,10 @@ mod tests {
                                 working_dir: None,
                                 env: HashMap::new(),
                                 timeout: 5,
+                                language: None,
+                                source: None,
+                                source_file: None,
+                                handler_function: None,
                             },
                         },
                     ],
@@ -787,6 +996,10 @@ mod tests {
                     m
                 },
                 timeout: 5,
+                language: None,
+                source: None,
+                source_file: None,
+                handler_function: None,
             },
         };
 

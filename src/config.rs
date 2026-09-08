@@ -43,6 +43,10 @@ pub struct ServerConfig {
     /// Feature flags
     #[serde(default)]
     pub features: FeaturesConfig,
+    
+    /// WASM runtime configuration for cross-language tool execution
+    #[serde(default)]
+    pub wasm_runtimes: WasmRuntimesConfig,
 }
 
 /// HTTP server configuration.
@@ -103,6 +107,70 @@ pub struct FeaturesConfig {
     pub http: bool,
 }
 
+/// WASM runtime configuration for cross-language tool execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WasmRuntimesConfig {
+    /// JavaScript (QuickJS) runtime configuration
+    #[serde(default)]
+    pub javascript: WasmLanguageConfig,
+    
+    /// Python (MicroPython) runtime configuration
+    #[serde(default)]
+    pub python: WasmLanguageConfig,
+    
+    /// Lua runtime configuration
+    #[serde(default)]
+    pub lua: WasmLanguageConfig,
+    
+    /// Go (TinyGo) runtime configuration
+    #[serde(default)]
+    pub go: WasmLanguageConfig,
+}
+
+/// Per-language WASM runtime configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WasmLanguageConfig {
+    /// Whether this language runtime is enabled
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    
+    /// Path to the WASM module for this language
+    #[serde(default)]
+    pub wasm_path: String,
+}
+
+impl Default for WasmRuntimesConfig {
+    fn default() -> Self {
+        Self {
+            javascript: WasmLanguageConfig {
+                enabled: true,
+                wasm_path: default_quickjs_wasm_path(),
+            },
+            python: WasmLanguageConfig {
+                enabled: true,
+                wasm_path: default_micropython_wasm_path(),
+            },
+            lua: WasmLanguageConfig {
+                enabled: true,
+                wasm_path: default_lua_wasm_path(),
+            },
+            go: WasmLanguageConfig {
+                enabled: true,
+                wasm_path: default_tinygo_wasm_path(),
+            },
+        }
+    }
+}
+
+impl Default for WasmLanguageConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            wasm_path: String::new(),
+        }
+    }
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -113,6 +181,7 @@ impl Default for ServerConfig {
             plugin_dir: default_plugin_dir(),
             logging: LoggingConfig::default(),
             features: FeaturesConfig::default(),
+            wasm_runtimes: WasmRuntimesConfig::default(),
         }
     }
 }
@@ -155,6 +224,26 @@ fn default_enable_rate_limit() -> bool {
 
 fn default_log_level() -> String {
     "info".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_quickjs_wasm_path() -> String {
+    "bench_tools/quickjs_wasm/quickjs.wasm".to_string()
+}
+
+fn default_micropython_wasm_path() -> String {
+    "bench_tools/micropython_wasm/wasi-reactor/build/micropython.wasm".to_string()
+}
+
+fn default_lua_wasm_path() -> String {
+    "bench_tools/lua_wasm/lua.wasm".to_string()
+}
+
+fn default_tinygo_wasm_path() -> String {
+    "bench_tools/tinygo_wasm/tool.wasm".to_string()
 }
 
 impl ServerConfig {
@@ -450,5 +539,42 @@ mod tests {
         assert!(content.contains("mode"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_wasm_runtimes_defaults() {
+        let config = ServerConfig::default();
+        assert!(config.wasm_runtimes.javascript.enabled);
+        assert!(config.wasm_runtimes.python.enabled);
+        assert!(config.wasm_runtimes.lua.enabled);
+        assert!(config.wasm_runtimes.go.enabled);
+        assert!(config.wasm_runtimes.javascript.wasm_path.contains("quickjs"));
+        assert!(config.wasm_runtimes.python.wasm_path.contains("micropython"));
+        assert!(config.wasm_runtimes.lua.wasm_path.contains("lua"));
+        assert!(config.wasm_runtimes.go.wasm_path.contains("tinygo"));
+    }
+
+    #[test]
+    fn test_wasm_runtimes_serialization_roundtrip() {
+        let config = ServerConfig::default();
+        let toml_str = toml::to_string(&config).unwrap();
+        let parsed: ServerConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.wasm_runtimes.javascript.wasm_path, config.wasm_runtimes.javascript.wasm_path);
+        assert_eq!(parsed.wasm_runtimes.python.enabled, config.wasm_runtimes.python.enabled);
+    }
+
+    #[test]
+    fn test_wasm_language_config_disable() {
+        let mut config = ServerConfig::default();
+        config.wasm_runtimes.javascript.enabled = false;
+        assert!(!config.wasm_runtimes.javascript.enabled);
+        assert!(config.wasm_runtimes.python.enabled);
+    }
+
+    #[test]
+    fn test_wasm_language_config_custom_path() {
+        let mut config = ServerConfig::default();
+        config.wasm_runtimes.lua.wasm_path = "/custom/lua.wasm".to_string();
+        assert_eq!(config.wasm_runtimes.lua.wasm_path, "/custom/lua.wasm");
     }
 }
