@@ -113,6 +113,10 @@ harness = false
 name = "wasm_isolation"
 harness = false
 
+[[bench]]
+name = "wasm_vs_native"
+harness = false
+
 [profile.release]
 opt-level = 3
 lto = true
