@@ -16,9 +16,10 @@ pub struct LuaRuntime {
     memory: Memory,
     #[allow(dead_code)]
     env: FunctionEnv<WasiEnv>,
-    next_offset: u64,
     tools: HashMap<String, String>,
 }
+
+const EXEC_SLOT: u64 = 512 * 1024;
 
 impl LuaRuntime {
     pub fn new(wasm_bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
@@ -33,12 +34,17 @@ impl LuaRuntime {
         let memory = instance.exports.get_memory("memory")?.clone();
         env.as_mut(&mut store).memory = Some(memory.clone());
 
+        let current_pages = memory.view(&store).size();
+        let needed_pages = ((EXEC_SLOT + 64 * 1024) / 65536 + 1) as u32;
+        if current_pages.0 < needed_pages {
+            memory.grow(&mut store, wasmer::Pages(needed_pages - current_pages.0))?;
+        }
+
         Ok(Self {
             store,
             instance,
             memory,
             env,
-            next_offset: 64 * 1024,
             tools: HashMap::new(),
         })
     }
@@ -49,18 +55,11 @@ impl LuaRuntime {
         Ok(rt)
     }
 
-    fn write_to_memory(&mut self, data: &[u8]) -> Result<(i32, i32), Box<dyn Error>> {
-        let ptr = self.next_offset as i32;
-        let len = data.len() as i32;
-        self.memory.view(&self.store).write(self.next_offset, data)?;
-        self.next_offset += data.len() as u64 + 64;
-        Ok((ptr, len))
-    }
-
     fn exec(&mut self, src: &str) -> Result<i32, Box<dyn Error>> {
-        let (ptr, len) = self.write_to_memory(src.as_bytes())?;
+        let data = src.as_bytes();
+        self.memory.view(&self.store).write(EXEC_SLOT, data)?;
         let exec_fn = self.instance.exports.get_function("lua_wasi_exec")?;
-        let result = exec_fn.call(&mut self.store, &[Value::I32(ptr), Value::I32(len)])?;
+        let result = exec_fn.call(&mut self.store, &[Value::I32(EXEC_SLOT as i32), Value::I32(data.len() as i32)])?;
         Ok(result[0].unwrap_i32())
     }
 
@@ -112,9 +111,8 @@ impl LuaRuntime {
     /// Returns (ns_per_call, checksum).
     pub fn bench_exec_repeated(&mut self, src: &str, iters: usize) -> (f64, u32) {
         let data = src.as_bytes();
-        let slot = 64 * 1024;
-        self.memory.view(&self.store).write(slot as u64, data).unwrap();
-        let ptr = slot as i32;
+        self.memory.view(&self.store).write(EXEC_SLOT, data).unwrap();
+        let ptr = EXEC_SLOT as i32;
         let len = data.len() as i32;
 
         let exec_fn = self.instance.exports.get_function("lua_wasi_exec").unwrap();
@@ -192,6 +190,23 @@ mod tests {
         let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         p.push("bench_tools/lua_wasm/lua.wasm");
         p
+    }
+
+    #[test]
+    #[ignore]
+    fn test_lua_memory_layout() {
+        let wasm = std::fs::read(wasm_path()).expect("Lua WASM not found");
+        let mut rt = LuaRuntime::cold_start(&wasm).expect("cold start failed");
+
+        let buf_start_fn = rt.instance.exports.get_function("lua_wasi_get_output_buf_start").expect("no output_buf_start");
+        let buf_start = buf_start_fn.call(&mut rt.store, &[]).unwrap()[0].unwrap_i32();
+        let buf_end = buf_start + 256 * 1024;
+
+        assert!(EXEC_SLOT > buf_end as u64,
+            "EXEC_SLOT {} overlaps output_buf ({} - {})",
+            EXEC_SLOT, buf_start, buf_end);
+
+        rt.destroy().unwrap();
     }
 
     #[test]

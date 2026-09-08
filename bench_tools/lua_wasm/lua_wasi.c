@@ -314,7 +314,7 @@ static void json_encode_value(lua_State *ls, int idx, luaL_Buffer *b, int depth)
                         luaL_addstring(b, kbuf);
                     }
                     luaL_addchar(b, ':');
-                    json_encode_value(ls, lua_gettop(ls) - 1, b, depth + 1);
+                    json_encode_value(ls, -1, b, depth + 1);
                     lua_pop(ls, 1);
                 }
                 lua_pop(ls, 1); /* pop table copy */
@@ -429,6 +429,11 @@ const char *lua_wasi_get_output(void) {
 /* Get output length */
 size_t lua_wasi_get_output_len(void) {
     return output_len;
+}
+
+/* Get pointer to output_buf start (for diagnostics) */
+const char *lua_wasi_get_output_buf_start(void) {
+    return output_buf;
 }
 
 /* Destroy Lua runtime */

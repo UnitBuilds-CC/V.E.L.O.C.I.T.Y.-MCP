@@ -1007,4 +1007,415 @@ mod tests {
         assert!(result.is_ok(), "Tool with working_dir and env should succeed: {:?}", result.err());
     }
 
+    // ── WASM real-world integration tests ──────────────────────────────
+
+    fn wasm_js_tool(name: &str, source: &str) -> PluginTool {
+        PluginTool {
+            name: name.to_string(),
+            description: "WASM JS test tool".to_string(),
+            input_schema: json!({"type": "object"}),
+            executor: PluginExecutor {
+                executor_type: "wasm".to_string(),
+                command: String::new(),
+                args: vec![],
+                working_dir: None,
+                env: HashMap::new(),
+                timeout: 5,
+                language: Some("javascript".to_string()),
+                source: Some(source.to_string()),
+                source_file: None,
+                handler_function: None,
+            },
+        }
+    }
+
+    fn wasm_py_tool(name: &str, source: &str) -> PluginTool {
+        PluginTool {
+            name: name.to_string(),
+            description: "WASM Python test tool".to_string(),
+            input_schema: json!({"type": "object"}),
+            executor: PluginExecutor {
+                executor_type: "wasm".to_string(),
+                command: String::new(),
+                args: vec![],
+                working_dir: None,
+                env: HashMap::new(),
+                timeout: 5,
+                language: Some("python".to_string()),
+                source: Some(source.to_string()),
+                source_file: None,
+                handler_function: None,
+            },
+        }
+    }
+
+    fn wasm_lua_tool(name: &str, source: &str) -> PluginTool {
+        PluginTool {
+            name: name.to_string(),
+            description: "WASM Lua test tool".to_string(),
+            input_schema: json!({"type": "object"}),
+            executor: PluginExecutor {
+                executor_type: "wasm".to_string(),
+                command: String::new(),
+                args: vec![],
+                working_dir: None,
+                env: HashMap::new(),
+                timeout: 5,
+                language: Some("lua".to_string()),
+                source: Some(source.to_string()),
+                source_file: None,
+                handler_function: None,
+            },
+        }
+    }
+
+    // ── JavaScript (QuickJS) ──
+
+    #[test]
+    #[ignore] // requires QuickJS WASM binary
+    fn test_wasm_js_string_transform() {
+        let _t = test_timer("test_wasm_js_string_transform");
+        let source = r#"function js_string_transform(args) {
+            var s = args.input || '';
+            switch (args.action) {
+                case 'upper': return {result: s.toUpperCase()};
+                case 'lower': return {result: s.toLowerCase()};
+                case 'reverse': return {result: s.split('').reverse().join('')};
+                case 'slug': return {result: s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')};
+                case 'capitalize': return {result: s.charAt(0).toUpperCase() + s.slice(1)};
+                case 'title': return {result: s.replace(/\b\w/g, function(c) { return c.toUpperCase(); })};
+                default: return {error: 'Unknown action: ' + args.action};
+            }
+        }"#;
+        let tool = wasm_js_tool("js_string_transform", source);
+
+        let r1 = execute_plugin_tool(&tool, &json!({"action": "upper", "input": "hello world"}));
+        assert!(r1.is_ok(), "upper failed: {:?}", r1.err());
+        assert!(r1.unwrap().contains("HELLO WORLD"));
+
+        let r2 = execute_plugin_tool(&tool, &json!({"action": "slug", "input": "Hello World! Foo Bar"}));
+        assert!(r2.is_ok(), "slug failed: {:?}", r2.err());
+        assert!(r2.unwrap().contains("hello-world-foo-bar"));
+
+        let r3 = execute_plugin_tool(&tool, &json!({"action": "reverse", "input": "abcdef"}));
+        assert!(r3.is_ok(), "reverse failed: {:?}", r3.err());
+        assert!(r3.unwrap().contains("fedcba"));
+
+        let r4 = execute_plugin_tool(&tool, &json!({"action": "title", "input": "the quick brown fox"}));
+        assert!(r4.is_ok(), "title failed: {:?}", r4.err());
+        assert!(r4.unwrap().contains("The Quick Brown Fox"));
+    }
+
+    #[test]
+    #[ignore] // requires QuickJS WASM binary
+    fn test_wasm_js_calculator() {
+        let _t = test_timer("test_wasm_js_calculator");
+        let source = r#"function js_calculator(args) {
+            var expr = args.expression || '';
+            if (!/^[0-9+\-*/().\s%^]+$/.test(expr)) return {error: 'Invalid characters'};
+            try {
+                var result = Function('"use strict"; return (' + expr + ')')();
+                return {result: result, expression: expr};
+            } catch(e) { return {error: e.message}; }
+        }"#;
+        let tool = wasm_js_tool("js_calculator", source);
+
+        let r1 = execute_plugin_tool(&tool, &json!({"expression": "2 + 3 * 4"}));
+        assert!(r1.is_ok(), "calc 2+3*4 failed: {:?}", r1.err());
+        assert!(r1.unwrap().contains("14"));
+
+        let r2 = execute_plugin_tool(&tool, &json!({"expression": "(100 - 25) / 5"}));
+        assert!(r2.is_ok(), "calc (100-25)/5 failed: {:?}", r2.err());
+        assert!(r2.unwrap().contains("15"));
+
+        let r3 = execute_plugin_tool(&tool, &json!({"expression": "2 ** 10"}));
+        assert!(r3.is_ok(), "calc 2**10 failed: {:?}", r3.err());
+        assert!(r3.unwrap().contains("1024"));
+    }
+
+    #[test]
+    #[ignore] // requires QuickJS WASM binary
+    fn test_wasm_js_data_flatten() {
+        let _t = test_timer("test_wasm_js_data_flatten");
+        let source = r#"function js_data_flatten(args) {
+            var result = {};
+            function flatten(obj, pre) {
+                for (var k in obj) {
+                    if (obj[k] && typeof obj[k] === 'object' && !Array.isArray(obj[k])) {
+                        flatten(obj[k], pre + k + '.');
+                    } else {
+                        result[pre + k] = obj[k];
+                    }
+                }
+            }
+            flatten(args.data || {}, args.prefix || '');
+            return {result: result};
+        }"#;
+        let tool = wasm_js_tool("js_data_flatten", source);
+
+        let nested = json!({
+            "name": "test",
+            "address": {
+                "street": "123 Main St",
+                "city": "Henties Bay",
+                "geo": {"lat": -22.0, "lon": 14.27}
+            },
+            "tags": ["rust", "wasm"]
+        });
+        let r = execute_plugin_tool(&tool, &json!({"data": nested}));
+        assert!(r.is_ok(), "flatten failed: {:?}", r.err());
+        let output = r.unwrap();
+        assert!(output.contains("address.street"));
+        assert!(output.contains("123 Main St"));
+        assert!(output.contains("address.geo.lat"));
+        assert!(output.contains("Henties Bay"));
+        assert!(output.contains("tags"));
+    }
+
+    // ── Python (MicroPython) ──
+
+    #[test]
+    #[ignore] // requires MicroPython WASM binary
+    fn test_wasm_py_text_analyzer() {
+        let _t = test_timer("test_wasm_py_text_analyzer");
+        let source = r#"
+def py_text_analyzer(args):
+    text = args.get('text', '')
+    words = text.split()
+    return {'words': len(words), 'chars': len(text), 'lines': text.count('\n') + 1 if text else 0, 'unique_words': len(set(w.lower() for w in words))}
+"#;
+        let tool = wasm_py_tool("py_text_analyzer", source);
+
+        let r = execute_plugin_tool(&tool, &json!({"text": "the quick brown fox jumps over the lazy dog\nthe fox is quick"}));
+        assert!(r.is_ok(), "text analyzer failed: {:?}", r.err());
+        let output = r.unwrap();
+        assert!(output.contains("\"words\""), "should have word count: {}", output);
+        assert!(output.contains("\"chars\""), "should have char count: {}", output);
+        assert!(output.contains("\"unique_words\""), "should have unique words: {}", output);
+    }
+
+    #[test]
+    #[ignore] // requires MicroPython WASM binary
+    fn test_wasm_py_unit_converter() {
+        let _t = test_timer("test_wasm_py_unit_converter");
+        let source = r#"
+def py_unit_converter(args):
+    v = args.get('value', 0)
+    f = args.get('from_unit', '')
+    t = args.get('to_unit', '')
+    temp = {'celsius': 'c', 'fahrenheit': 'f', 'kelvin': 'k'}
+    length = {'meter': 'm', 'foot': 'ft', 'inch': 'in', 'km': 'km', 'mile': 'mi'}
+    if f in temp and t in temp:
+        c = v if temp[f] == 'c' else (v - 32) * 5/9 if temp[f] == 'f' else v - 273.15
+        r = c if temp[t] == 'c' else c * 9/5 + 32 if temp[t] == 'f' else c + 273.15
+        return {'result': round(r, 4), 'from': f, 'to': t}
+    if f in length and t in length:
+        to_m = {'m': 1, 'ft': 0.3048, 'in': 0.0254, 'km': 1000, 'mi': 1609.344}
+        meters = v * to_m[length[f]]
+        r = meters / to_m[length[t]]
+        return {'result': round(r, 6), 'from': f, 'to': t}
+    return {'error': 'incompatible units'}
+"#;
+        let tool = wasm_py_tool("py_unit_converter", source);
+
+        let r1 = execute_plugin_tool(&tool, &json!({"value": 100, "from_unit": "celsius", "to_unit": "fahrenheit"}));
+        assert!(r1.is_ok(), "C→F failed: {:?}", r1.err());
+        assert!(r1.unwrap().contains("212"), "100°C should be 212°F");
+
+        let r2 = execute_plugin_tool(&tool, &json!({"value": 1, "from_unit": "mile", "to_unit": "km"}));
+        assert!(r2.is_ok(), "mi→km failed: {:?}", r2.err());
+        assert!(r2.unwrap().contains("1.609"), "1 mile should be ~1.609 km");
+    }
+
+    #[test]
+    #[ignore] // requires MicroPython WASM binary
+    fn test_wasm_py_list_operations() {
+        let _t = test_timer("test_wasm_py_list_operations");
+        let source = r#"
+def py_list_operations(args):
+    op = args.get('operation', '')
+    items = args.get('items', [])
+    if op == 'sort': return {'result': sorted(items)}
+    if op == 'reverse': return {'result': list(reversed(items))}
+    if op == 'unique': return {'result': sorted(set(items))}
+    if op == 'min': return {'result': min(items)}
+    if op == 'max': return {'result': max(items)}
+    if op == 'sum': return {'result': sum(items)}
+    if op == 'average': return {'result': sum(items) / len(items) if items else 0}
+    return {'error': 'unknown operation'}
+"#;
+        let tool = wasm_py_tool("py_list_operations", source);
+
+        let r1 = execute_plugin_tool(&tool, &json!({"operation": "sort", "items": [5, 3, 1, 4, 2]}));
+        assert!(r1.is_ok(), "sort failed: {:?}", r1.err());
+        assert!(r1.unwrap().contains("[1, 2, 3, 4, 5]"));
+
+        let r2 = execute_plugin_tool(&tool, &json!({"operation": "sum", "items": [10, 20, 30, 40]}));
+        assert!(r2.is_ok(), "sum failed: {:?}", r2.err());
+        assert!(r2.unwrap().contains("100"));
+
+        let r3 = execute_plugin_tool(&tool, &json!({"operation": "average", "items": [10, 20, 30, 40]}));
+        assert!(r3.is_ok(), "average failed: {:?}", r3.err());
+        assert!(r3.unwrap().contains("25"));
+    }
+
+    // ── Lua ──
+
+    #[test]
+    #[ignore] // requires Lua WASM binary
+    fn test_wasm_lua_string_utils() {
+        let _t = test_timer("test_wasm_lua_string_utils");
+        let source = "function lua_string_utils(args)\n\
+            local s = args.input or ''\n\
+            local a = args.action or ''\n\
+            if a == 'upper' then return {result = string.upper(s)}\n\
+            elseif a == 'lower' then return {result = string.lower(s)}\n\
+            elseif a == 'reverse' then return {result = string.reverse(s)}\n\
+            elseif a == 'repeat' then\n\
+                local n = args.count or 2\n\
+                return {result = string.rep(s, n)}\n\
+            elseif a == 'trim' then\n\
+                local t = s:match('^%s*(.-)%s*$')\n\
+                return {result = t}\n\
+            elseif a == 'word_count' then\n\
+                local c = 0\n\
+                for _ in s:gmatch('%S+') do c = c + 1 end\n\
+                return {result = c}\n\
+            else\n\
+                return {error = 'unknown action: ' .. a}\n\
+            end\n\
+          end";
+        let tool = wasm_lua_tool("lua_string_utils", source);
+
+        let r1 = execute_plugin_tool(&tool, &json!({"action": "upper", "input": "hello world"}));
+        assert!(r1.is_ok(), "upper failed: {:?}", r1.err());
+        let out1 = r1.unwrap();
+        assert!(out1.contains("HELLO WORLD"), "expected HELLO WORLD in: {}", out1);
+
+        let r2 = execute_plugin_tool(&tool, &json!({"action": "reverse", "input": "abcdef"}));
+        assert!(r2.is_ok(), "reverse failed: {:?}", r2.err());
+        let out2 = r2.unwrap();
+        assert!(out2.contains("fedcba"), "expected fedcba in: {}", out2);
+
+        let r3 = execute_plugin_tool(&tool, &json!({"action": "word_count", "input": "the quick brown fox"}));
+        assert!(r3.is_ok(), "word_count failed: {:?}", r3.err());
+        let out3 = r3.unwrap();
+        assert!(out3.contains("4"), "expected 4 in: {}", out3);
+    }
+
+    #[test]
+    #[ignore] // requires Lua WASM binary
+    fn test_wasm_lua_math_tools() {
+        let _t = test_timer("test_wasm_lua_math_tools");
+        let source = "function lua_math_tools(args)\n\
+            local op = args.operation or ''\n\
+            local v = args.value or 0\n\
+            if op == 'power' then return {result = v ^ (args.exponent or 2)}\n\
+            elseif op == 'sqrt' then return {result = math.sqrt(v)}\n\
+            elseif op == 'round' then return {result = math.floor(v + 0.5)}\n\
+            elseif op == 'floor' then return {result = math.floor(v)}\n\
+            elseif op == 'ceil' then return {result = math.ceil(v)}\n\
+            elseif op == 'abs' then return {result = math.abs(v)}\n\
+            elseif op == 'fibonacci' then\n\
+                local n = math.floor(v)\n\
+                if n <= 0 then return {result = 0}\n\
+                elseif n == 1 then return {result = 1}\n\
+                end\n\
+                local a, b = 0, 1\n\
+                for _ = 2, n do a, b = b, a + b end\n\
+                return {result = b}\n\
+            else\n\
+                return {error = 'unknown operation: ' .. op}\n\
+            end\n\
+          end";
+        let tool = wasm_lua_tool("lua_math_tools", source);
+
+        let r1 = execute_plugin_tool(&tool, &json!({"operation": "sqrt", "value": 144}));
+        assert!(r1.is_ok(), "sqrt failed: {:?}", r1.err());
+        let out1 = r1.unwrap();
+        assert!(out1.contains("12"), "expected 12 in: {}", out1);
+
+        let r2 = execute_plugin_tool(&tool, &json!({"operation": "power", "value": 2, "exponent": 10}));
+        assert!(r2.is_ok(), "power failed: {:?}", r2.err());
+        let out2 = r2.unwrap();
+        assert!(out2.contains("1024"), "expected 1024 in: {}", out2);
+
+        let r3 = execute_plugin_tool(&tool, &json!({"operation": "fibonacci", "value": 10}));
+        assert!(r3.is_ok(), "fibonacci failed: {:?}", r3.err());
+        let out3 = r3.unwrap();
+        assert!(out3.contains("55"), "fib(10) should be 55, got: {}", out3);
+    }
+
+    // ── Manifest loading ──
+
+    #[test]
+    fn test_wasm_plugin_manifests_parse() {
+        let _t = test_timer("test_wasm_plugin_manifests_parse");
+
+        let js_manifest = include_str!("../../plugins/wasm_javascript_tools.json");
+        let js: PluginManifest = serde_json::from_str(js_manifest).expect("JS manifest should parse");
+        assert_eq!(js.name, "wasm-javascript-tools");
+        assert_eq!(js.tools.len(), 3);
+        for tool in &js.tools {
+            assert_eq!(tool.executor.executor_type, "wasm");
+            assert_eq!(tool.executor.language.as_deref(), Some("javascript"));
+            assert!(tool.executor.source.is_some(), "JS tools should have inline source");
+        }
+
+        let py_manifest = include_str!("../../plugins/wasm_python_tools.json");
+        let py: PluginManifest = serde_json::from_str(py_manifest).expect("Python manifest should parse");
+        assert_eq!(py.name, "wasm-python-tools");
+        assert_eq!(py.tools.len(), 3);
+        for tool in &py.tools {
+            assert_eq!(tool.executor.executor_type, "wasm");
+            assert_eq!(tool.executor.language.as_deref(), Some("python"));
+        }
+
+        let lua_manifest = include_str!("../../plugins/wasm_lua_tools.json");
+        let lua: PluginManifest = serde_json::from_str(lua_manifest).expect("Lua manifest should parse");
+        assert_eq!(lua.name, "wasm-lua-tools");
+        assert_eq!(lua.tools.len(), 2);
+        for tool in &lua.tools {
+            assert_eq!(tool.executor.executor_type, "wasm");
+            assert_eq!(tool.executor.language.as_deref(), Some("lua"));
+        }
+    }
+
+    // ── Cross-language same-tool test ──
+
+    #[test]
+    #[ignore] // requires all WASM binaries
+    fn test_wasm_cross_language_string_reverse() {
+        let _t = test_timer("test_wasm_cross_language_string_reverse");
+
+        let js_source = r#"function reverse_string(args) {
+            return {result: (args.input || '').split('').reverse().join('')};
+        }"#;
+        let py_source = r#"
+def reverse_string(args):
+    s = args.get('input', '')
+    return {'result': ''.join(reversed(s))}
+"#;
+        let lua_source = r#"
+function reverse_string(args)
+    return {result = string.reverse(args.input or '')}
+end
+"#;
+
+        let js_tool = wasm_js_tool("reverse_string", js_source);
+        let py_tool = wasm_py_tool("reverse_string", py_source);
+        let lua_tool = wasm_lua_tool("reverse_string", lua_source);
+
+        let input = json!({"input": "Hello, Henties Bay!"});
+
+        let js_r = execute_plugin_tool(&js_tool, &input).expect("JS reverse failed");
+        let py_r = execute_plugin_tool(&py_tool, &input).expect("Python reverse failed");
+        let lua_r = execute_plugin_tool(&lua_tool, &input).expect("Lua reverse failed");
+
+        assert!(js_r.contains("yaB seitneH ,olleH"), "JS result: {}", js_r);
+        assert!(py_r.contains("yaB seitneH ,olleH"), "Python result: {}", py_r);
+        assert!(lua_r.contains("yaB seitneH ,olleH"), "Lua result: {}", lua_r);
+    }
+
 }
+
