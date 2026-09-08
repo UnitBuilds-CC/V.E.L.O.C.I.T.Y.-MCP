@@ -861,6 +861,8 @@ fn bench_cross_language_tools() {
     let mut micropython_available = false;
     let mut lua_ns: f64 = 0.0;
     let mut lua_available = false;
+    let mut tinygo_ns: f64 = 0.0;
+    let mut tinygo_available = false;
 
     // ── 1. Native Rust (baseline) ──────────────────────────────────────────
     println!("\n  [1] Native Rust (direct function call):");
@@ -1465,6 +1467,104 @@ fn bench_cross_language_tools() {
         lua_rt.destroy().ok();
     }
 
+    // ── 8. TinyGo via Wasmer (standalone WASM, in-process) ──────────────────
+    println!("\n  [8] TinyGo via Wasmer (standalone WASM, in-process):");
+    let tinygo_wasm_path = "bench_tools/tinygo_wasm/tool.wasm";
+    if !std::path::Path::new(tinygo_wasm_path).exists() {
+        println!("    SKIP — tool.wasm not found.");
+        println!("    Build with: cd bench_tools/tinygo_wasm && bash build.sh");
+    } else {
+        let tinygo_bytes = std::fs::read(tinygo_wasm_path).expect("read tool.wasm");
+        println!("    Module size: {} bytes", tinygo_bytes.len());
+
+        // Cold start: compile + instantiate
+        let cold_iters = 100;
+        let start = Instant::now();
+        for _ in 0..cold_iters {
+            let engine = wasmer::Engine::from(wasmer::Cranelift::default());
+            let module = wasmer::Module::new(&engine, &tinygo_bytes).unwrap();
+            let mut store = wasmer::Store::new(engine);
+            let env = wasmer::FunctionEnv::new(&mut store, crate::wasm_runtime::wasi::WasiEnv { memory: None });
+            let wasi_imports = crate::wasm_runtime::wasi::build_wasi_imports(&mut store, &env);
+            let instance = wasmer::Instance::new(&mut store, &module, &wasi_imports).unwrap();
+            let memory = instance.exports.get_memory("memory").unwrap().clone();
+            env.as_mut(&mut store).memory = Some(memory);
+            let start_fn = instance.exports.get_function("_start")
+                .unwrap().typed::<(), ()>(&store).unwrap();
+            start_fn.call(&mut store).unwrap();
+        }
+        let cold_start_ms = start.elapsed().as_nanos() as f64 / cold_iters as f64 / 1_000_000.0;
+        println!("    Cold start (compile+instantiate+_start): {:.1} ms", cold_start_ms);
+
+        // Warm setup
+        let engine = wasmer::Engine::from(wasmer::Cranelift::default());
+        let module = wasmer::Module::new(&engine, &tinygo_bytes).unwrap();
+        let mut store = wasmer::Store::new(engine);
+        let env = wasmer::FunctionEnv::new(&mut store, crate::wasm_runtime::wasi::WasiEnv { memory: None });
+        let wasi_imports = crate::wasm_runtime::wasi::build_wasi_imports(&mut store, &env);
+        let instance = wasmer::Instance::new(&mut store, &module, &wasi_imports).unwrap();
+        let memory = instance.exports.get_memory("memory").unwrap().clone();
+        env.as_mut(&mut store).memory = Some(memory.clone());
+
+        let prepare_fn = instance.exports.get_function("prepare_call")
+            .expect("prepare_call export")
+            .typed::<(), ()>(&store)
+            .expect("prepare_call typed");
+        let execute_fn = instance.exports.get_function("tool_execute")
+            .expect("tool_execute export")
+            .typed::<(i32, i32), i64>(&store)
+            .expect("tool_execute typed");
+
+        // Initialize TinyGo runtime
+        let start_fn = instance.exports.get_function("_start")
+            .unwrap().typed::<(), ()>(&store).unwrap();
+        start_fn.call(&mut store).unwrap();
+
+        // Verify correctness
+        let input_bytes = wasm_input.as_bytes();
+        let input_ptr = 1024i32;
+        let input_len = input_bytes.len() as i32;
+        memory.view(&store).write(input_ptr as u64, input_bytes).unwrap();
+        let result = execute_fn.call(&mut store, input_ptr, input_len).unwrap();
+        let result_ptr = (result >> 32) as u32;
+        let result_len = (result & 0xFFFF_FFFF) as u32;
+        let mut result_buf = vec![0u8; result_len as usize];
+        memory.view(&store).read(result_ptr as u64, &mut result_buf).unwrap();
+        let result_str = String::from_utf8(result_buf).unwrap();
+        let result_val: Value = serde_json::from_str(&result_str).unwrap();
+        println!("    Verify: word_count={}, char_count={}, line_count={}",
+            result_val["word_count"], result_val["char_count"], result_val["line_count"]);
+
+        // Benchmark
+        let tinygo_iterations = 10_000;
+        let start = Instant::now();
+        let mut tinygo_checksum: u32 = 0;
+        for _ in 0..tinygo_iterations {
+            prepare_fn.call(&mut store).unwrap();
+            memory.view(&store).write(input_ptr as u64, input_bytes).unwrap();
+            let r = execute_fn.call(&mut store, input_ptr, input_len).unwrap();
+            let rp = (r >> 32) as u32;
+            let rl = (r & 0xFFFF_FFFF) as u32;
+            let mut buf = vec![0u8; rl as usize];
+            memory.view(&store).read(rp as u64, &mut buf).unwrap();
+            if let Ok(v) = serde_json::from_slice::<Value>(&buf) {
+                if let Some(wc) = v["word_count"].as_u64() {
+                    tinygo_checksum = tinygo_checksum.wrapping_add(wc as u32);
+                }
+            }
+        }
+        let tinygo_ns_val = start.elapsed().as_nanos() as f64 / tinygo_iterations as f64;
+        black_box(tinygo_checksum);
+        tinygo_ns = tinygo_ns_val;
+        tinygo_available = true;
+        println!("    {:>10} iterations:  {:.1} ns/call  ({:.0}K calls/s)",
+            tinygo_iterations, tinygo_ns, 1_000_000.0 / tinygo_ns);
+        println!("    Overhead vs native Rust: {:.0}x", tinygo_ns / native_ns);
+        if wasm_available {
+            println!("    vs WASM (Rust tool):   {:.1}x", tinygo_ns / wasm_ns);
+        }
+    }
+
     // ── Summary table ──────────────────────────────────────────────────────
     println!("\n  ┌──────────────────────────┬──────────────┬───────────┐");
     println!("  │ Flavor                   │ Per-call     │ vs Native │");
@@ -1481,6 +1581,9 @@ fn bench_cross_language_tools() {
     }
     if lua_available {
         println!("  │ Lua via Lua/WASM          │ {:>6.0} ns    │   {:>5.0}x   │", lua_ns, lua_ns / native_ns);
+    }
+    if tinygo_available {
+        println!("  │ Go via TinyGo/WASM        │ {:>6.0} ns    │   {:>5.0}x   │", tinygo_ns, tinygo_ns / native_ns);
     }
     if node_available {
         println!("  │ Node.js child proc       │ {:>6.0} μs    │  {:>5.0}x   │", node_ns / 1000.0, node_ns / native_ns);
