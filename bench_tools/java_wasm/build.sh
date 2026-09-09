@@ -1,28 +1,20 @@
 #!/bin/bash
-# Build Java as WASI reactor for VELOCITY-MCP
-# NOTE: Java WASM requires TeaVM, GraalVM, or a JVM compiled to WASM
+# Build minimal Java interpreter as WASI reactor for VELOCITY-MCP
 set -e
 
+WASI_SDK="/c/wasi-sdk"
+CC="$WASI_SDK/bin/clang"
+CFLAGS="--sysroot=$WASI_SDK/share/wasi-sysroot -O2 -DWASM"
+LDFLAGS="--sysroot=$WASI_SDK/share/wasi-sysroot -Wl,--no-entry -Wl,--export-all"
+
 echo "=== Building Java WASI reactor ==="
+
+echo "Compiling java_wasi.c..."
+$CC $CFLAGS -c java_wasi.c -o java_wasi.o
+
+echo "Linking java.wasm..."
+$CC $LDFLAGS java_wasi.o -o java.wasm
+
+ls -lh java.wasm
 echo ""
-echo "Java WASM requires one of:"
-echo "  1. TeaVM - compile Java bytecode to WASM"
-echo "     https://teavm.org/"
-echo "     git clone https://github.com/konsoletyper/teavm"
-echo ""
-echo "  2. GraalVM Native Image with WASM target (experimental)"
-echo "     https://www.graalvm.org/"
-echo ""
-echo "  3. CheerpJ - Java to JS/WASM compiler"
-echo "     https://leaningtech.com/cheerpj/"
-echo ""
-echo "Recommended: TeaVM approach"
-echo "  1. Install TeaVM CLI"
-echo "  2. Write a Java class that implements the WASI interface"
-echo "  3. Compile: teavm --target WASM --output java.wasm ToolRunner.class"
-echo ""
-echo "Alternative: Use a minimal JVM like MicroVM or JamVM compiled with wasi-sdk"
-echo ""
-echo "See: https://github.com/nicko88/teavm-examples"
-echo ""
-echo "=== Build template complete ==="
+echo "=== Build complete: java.wasm ==="

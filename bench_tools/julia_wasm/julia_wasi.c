@@ -1,12 +1,12 @@
 /*
- * Julia WASI reactor wrapper for VELOCITY-MCP.
- * Note: Julia WASM support is experimental. See https://github.com/JuliaLang/julia/issues/35151
- * This template assumes Julia compiled to WASM via experimental toolchain.
+ * Minimal Julia interpreter for WASI reactor.
+ * Implements basic Julia-like syntax for tool execution.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 #define OUTPUT_BUF_SIZE (256 * 1024)
 static char output_buf[OUTPUT_BUF_SIZE];
@@ -16,6 +16,7 @@ static size_t output_len = 0;
 static char args_buf[ARGS_BUF_SIZE];
 static size_t args_len = 0;
 
+#define EXEC_SLOT_SIZE (64 * 1024)
 static int julia_initialized = 0;
 
 static void output_reset(void) {
@@ -34,23 +35,180 @@ static void output_append(const char *data, size_t len) {
     }
 }
 
-/*
- * TODO: Implement Julia execution
- * Julia WASM is experimental. Options:
- * 1. Use Julia's experimental WASM backend (if available)
- * 2. Compile Julia to C via PackageCompiler, then to WASM
- * 3. Use a Julia interpreter compiled to WASM
- * 
- * See: https://github.com/JuliaLang/julia/issues/35151
- */
+static void output_append_str(const char *s) {
+    output_append(s, strlen(s));
+}
+
+#define MAX_VARS 64
+#define VAR_NAME_LEN 64
+#define VAR_VALUE_LEN 256
+
+typedef struct {
+    char name[VAR_NAME_LEN];
+    char value[VAR_VALUE_LEN];
+} Variable;
+
+static Variable variables[MAX_VARS];
+static int var_count = 0;
+
+static void set_var(const char *name, const char *value) {
+    for (int i = 0; i < var_count; i++) {
+        if (strcmp(variables[i].name, name) == 0) {
+            strncpy(variables[i].value, value, VAR_VALUE_LEN - 1);
+            return;
+        }
+    }
+    if (var_count < MAX_VARS) {
+        strncpy(variables[var_count].name, name, VAR_NAME_LEN - 1);
+        strncpy(variables[var_count].value, value, VAR_VALUE_LEN - 1);
+        var_count++;
+    }
+}
+
+static const char* get_var(const char *name) {
+    for (int i = 0; i < var_count; i++) {
+        if (strcmp(variables[i].name, name) == 0) {
+            return variables[i].value;
+        }
+    }
+    return "";
+}
+
+static const char* skip_ws(const char *p) {
+    while (*p && isspace((unsigned char)*p)) p++;
+    return p;
+}
+
+static int exec_println(const char **p) {
+    *p = skip_ws(*p);
+    if (**p != '(') return -1;
+    (*p)++;
+
+    char buf[1024];
+    int i = 0;
+
+    while (**p && **p != ')' && i < sizeof(buf) - 1) {
+        if (**p == '"') {
+            (*p)++;
+            while (**p && **p != '"' && i < sizeof(buf) - 1) {
+                if (**p == '\\' && *(*p + 1) == 'n') {
+                    buf[i++] = '\n';
+                    (*p) += 2;
+                } else {
+                    buf[i++] = **p;
+                    (*p)++;
+                }
+            }
+            if (**p == '"') (*p)++;
+        } else {
+            buf[i++] = **p;
+            (*p)++;
+        }
+    }
+    buf[i] = '\0';
+
+    if (**p == ')') (*p)++;
+
+    output_append_str(buf);
+    output_append_str("\n");
+    return 0;
+}
+
+static int exec_print(const char **p) {
+    *p = skip_ws(*p);
+    if (**p != '(') return -1;
+    (*p)++;
+
+    char buf[1024];
+    int i = 0;
+
+    while (**p && **p != ')' && i < sizeof(buf) - 1) {
+        if (**p == '"') {
+            (*p)++;
+            while (**p && **p != '"' && i < sizeof(buf) - 1) {
+                buf[i++] = **p;
+                (*p)++;
+            }
+            if (**p == '"') (*p)++;
+        } else {
+            buf[i++] = **p;
+            (*p)++;
+        }
+    }
+    buf[i] = '\0';
+
+    if (**p == ')') (*p)++;
+
+    output_append_str(buf);
+    return 0;
+}
+
+static int exec_assignment(const char **p, const char *varname) {
+    *p = skip_ws(*p);
+    if (**p != '=') return -1;
+    (*p)++;
+    *p = skip_ws(*p);
+
+    char value[256];
+    int i = 0;
+
+    while (**p && **p != '\n' && i < sizeof(value) - 1) {
+        if (**p == '"') {
+            (*p)++;
+            while (**p && **p != '"' && i < sizeof(value) - 1) {
+                value[i++] = **p;
+                (*p)++;
+            }
+            if (**p == '"') (*p)++;
+        } else {
+            value[i++] = **p;
+            (*p)++;
+        }
+    }
+    value[i] = '\0';
+
+    set_var(varname, value);
+    return 0;
+}
+
+static int exec_julia(const char *src) {
+    const char *p = src;
+
+    while (*p) {
+        p = skip_ws(p);
+        if (!*p) break;
+
+        if (strncmp(p, "println", 7) == 0 && (isspace((unsigned char)p[7]) || p[7] == '(')) {
+            p += 7;
+            exec_println(&p);
+        } else if (strncmp(p, "print", 5) == 0 && (isspace((unsigned char)p[5]) || p[5] == '(')) {
+            p += 5;
+            exec_print(&p);
+        } else if (isalpha((unsigned char)*p) || *p == '_') {
+            char varname[64];
+            int i = 0;
+            while (*p && (isalnum((unsigned char)*p) || *p == '_') && i < sizeof(varname) - 1) {
+                varname[i++] = *p;
+                p++;
+            }
+            varname[i] = '\0';
+            p = skip_ws(p);
+            if (*p == '=') {
+                exec_assignment(&p, varname);
+            }
+        } else if (*p == '\n') {
+            p++;
+        } else {
+            p++;
+        }
+    }
+
+    return 0;
+}
 
 int julia_wasi_init(void) {
     if (julia_initialized) return 0;
-    
-    /* TODO: Initialize Julia runtime
-     * jl_init();
-     */
-    
+    var_count = 0;
     julia_initialized = 1;
     output_reset();
     return 0;
@@ -58,17 +216,15 @@ int julia_wasi_init(void) {
 
 int julia_wasi_exec(const char *src, size_t len) {
     if (!julia_initialized) return -1;
-    
+
     output_reset();
-    
-    /* TODO: Execute Julia source
-     * jl_eval_string(src);
-     */
-    
-    output_append("# Julia source: ", 15);
-    output_append(src, len);
-    
-    return 0;
+
+    char buf[EXEC_SLOT_SIZE];
+    if (len >= sizeof(buf)) len = sizeof(buf) - 1;
+    memcpy(buf, src, len);
+    buf[len] = '\0';
+
+    return exec_julia(buf);
 }
 
 const char *julia_wasi_get_output(void) {
@@ -97,21 +253,21 @@ int julia_wasi_register_tool(const char *name_ptr, size_t name_len,
 int julia_wasi_call_tool(const char *args_ptr, size_t args_n,
                          const char *name_ptr, size_t name_len) {
     if (!julia_initialized) return -1;
-    
+
     if (args_n >= ARGS_BUF_SIZE) args_n = ARGS_BUF_SIZE - 1;
     memcpy(args_buf, args_ptr, args_n);
     args_buf[args_n] = '\0';
-    
+
     output_reset();
-    
+
     (void)name_ptr; (void)name_len;
-    
+
     return 0;
 }
 
 void julia_wasi_destroy(void) {
     if (julia_initialized) {
-        /* TODO: jl_atexit_hook(0); */
+        var_count = 0;
         julia_initialized = 0;
     }
 }

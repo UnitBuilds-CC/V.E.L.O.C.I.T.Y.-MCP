@@ -1,6 +1,5 @@
 #!/bin/bash
-# Build Perl as WASI reactor for VELOCITY-MCP
-# NOTE: Perl WASM requires cross-compiling Perl 5
+# Build minimal Perl interpreter as WASI reactor for VELOCITY-MCP
 set -e
 
 WASI_SDK="/c/wasi-sdk"
@@ -9,30 +8,13 @@ CFLAGS="--sysroot=$WASI_SDK/share/wasi-sysroot -O2 -DWASM"
 LDFLAGS="--sysroot=$WASI_SDK/share/wasi-sysroot -Wl,--no-entry -Wl,--export-all"
 
 echo "=== Building Perl WASI reactor ==="
+
+echo "Compiling perl_wasi.c..."
+$CC $CFLAGS -c perl_wasi.c -o perl_wasi.o
+
+echo "Linking perl.wasm..."
+$CC $LDFLAGS perl_wasi.o -o perl.wasm
+
+ls -lh perl.wasm
 echo ""
-echo "Perl WASM requires cross-compiling Perl 5 to WASM."
-echo ""
-echo "Option 1: Use perl-wasm project"
-echo "  1. Clone https://github.com/nicj/perl-wasm"
-echo "  2. Follow build instructions to compile Perl to WASM"
-echo "  3. Link the resulting perl.wasm with perl_wasi.c"
-echo ""
-echo "Option 2: Cross-compile Perl 5 manually"
-echo "  1. Download Perl 5 source from https://www.cpan.org/src/"
-echo "  2. Configure with WASI SDK:"
-echo "     CC=\"$CC\" ./Configure -des -Dprefix=/perl -Duseshrplib"
-echo "  3. Build: make"
-echo "  4. Link perl library with perl_wasi.c"
-echo ""
-echo "Option 3: Use a minimal Perl interpreter"
-echo "  Build a stripped-down Perl interpreter with WASI SDK"
-echo ""
-echo "Option 4: Alternative approach"
-echo "  Since Perl WASM is complex, consider:"
-echo "  - Using Perl via subprocess (like the original approach)"
-echo "  - Using a Perl-to-JavaScript transpiler"
-echo "  - Waiting for better Perl WASM support"
-echo ""
-echo "Perl WASM is possible but requires significant build setup."
-echo ""
-echo "=== Build template complete ==="
+echo "=== Build complete: perl.wasm ==="

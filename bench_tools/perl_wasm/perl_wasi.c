@@ -1,12 +1,12 @@
 /*
- * Perl WASI reactor wrapper for VELOCITY-MCP.
- * Provides exported functions for host to execute Perl code and retrieve output.
- * TODO: Integrate actual Perl interpreter (requires perl cross-compiled to WASM)
+ * Minimal Perl interpreter for WASI reactor.
+ * Implements basic Perl-like syntax for tool execution.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 #define OUTPUT_BUF_SIZE (256 * 1024)
 static char output_buf[OUTPUT_BUF_SIZE];
@@ -16,6 +16,7 @@ static size_t output_len = 0;
 static char args_buf[ARGS_BUF_SIZE];
 static size_t args_len = 0;
 
+#define EXEC_SLOT_SIZE (64 * 1024)
 static int perl_initialized = 0;
 
 static void output_reset(void) {
@@ -34,25 +35,183 @@ static void output_append(const char *data, size_t len) {
     }
 }
 
-/*
- * TODO: Implement Perl execution
- * Perl can be cross-compiled to WASM using:
- * 1. perl-wasm project (https://github.com/nicj/perl-wasm)
- * 2. Cross-compile Perl 5 with WASI SDK
- * 3. Use a minimal Perl-like interpreter
- *
- * The Perl interpreter needs to be initialized with perl_alloc(), perl_construct()
- * and code executed via perl_eval_sv() or similar.
- */
+static void output_append_str(const char *s) {
+    output_append(s, strlen(s));
+}
+
+/* Simple variable storage */
+#define MAX_VARS 64
+#define VAR_NAME_LEN 64
+#define VAR_VALUE_LEN 256
+
+typedef struct {
+    char name[VAR_NAME_LEN];
+    char value[VAR_VALUE_LEN];
+} Variable;
+
+static Variable variables[MAX_VARS];
+static int var_count = 0;
+
+static void set_var(const char *name, const char *value) {
+    for (int i = 0; i < var_count; i++) {
+        if (strcmp(variables[i].name, name) == 0) {
+            strncpy(variables[i].value, value, VAR_VALUE_LEN - 1);
+            return;
+        }
+    }
+    if (var_count < MAX_VARS) {
+        strncpy(variables[var_count].name, name, VAR_NAME_LEN - 1);
+        strncpy(variables[var_count].value, value, VAR_VALUE_LEN - 1);
+        var_count++;
+    }
+}
+
+static const char* get_var(const char *name) {
+    for (int i = 0; i < var_count; i++) {
+        if (strcmp(variables[i].name, name) == 0) {
+            return variables[i].value;
+        }
+    }
+    return "";
+}
+
+static const char* skip_ws(const char *p) {
+    while (*p && isspace((unsigned char)*p)) p++;
+    return p;
+}
+
+/* Parse print statement */
+static int exec_print(const char **p) {
+    *p = skip_ws(*p);
+    char buf[1024];
+    int i = 0;
+
+    while (**p && **p != ';' && i < sizeof(buf) - 1) {
+        if (**p == '$') {
+            (*p)++;
+            char varname[64];
+            int j = 0;
+            while (**p && (isalnum((unsigned char)**p) || **p == '_') && j < sizeof(varname) - 1) {
+                varname[j++] = **p;
+                (*p)++;
+            }
+            varname[j] = '\0';
+            const char *val = get_var(varname);
+            int vlen = strlen(val);
+            if (i + vlen < sizeof(buf) - 1) {
+                memcpy(buf + i, val, vlen);
+                i += vlen;
+            }
+        } else if (**p == '"' || **p == '\'') {
+            char quote = **p;
+            (*p)++;
+            while (**p && **p != quote && i < sizeof(buf) - 1) {
+                if (**p == '\\' && *(*p + 1) == 'n') {
+                    buf[i++] = '\n';
+                    (*p) += 2;
+                } else {
+                    buf[i++] = **p;
+                    (*p)++;
+                }
+            }
+            if (**p == quote) (*p)++;
+        } else if (**p == '.') {
+            /* String concatenation */
+            (*p)++;
+            *p = skip_ws(*p);
+        } else {
+            buf[i++] = **p;
+            (*p)++;
+        }
+    }
+    buf[i] = '\0';
+
+    if (**p == ';') (*p)++;
+
+    output_append_str(buf);
+    return 0;
+}
+
+/* Parse assignment: $var = value; */
+static int exec_assignment(const char **p, const char *varname) {
+    *p = skip_ws(*p);
+    if (**p != '=') return -1;
+    (*p)++;
+    *p = skip_ws(*p);
+
+    char value[256];
+    int i = 0;
+
+    while (**p && **p != ';' && i < sizeof(value) - 1) {
+        if (**p == '"' || **p == '\'') {
+            char quote = **p;
+            (*p)++;
+            while (**p && **p != quote && i < sizeof(value) - 1) {
+                value[i++] = **p;
+                (*p)++;
+            }
+            if (**p == quote) (*p)++;
+        } else {
+            value[i++] = **p;
+            (*p)++;
+        }
+    }
+    value[i] = '\0';
+
+    if (**p == ';') (*p)++;
+
+    set_var(varname, value);
+    return 0;
+}
+
+/* Execute Perl code */
+static int exec_perl(const char *src) {
+    const char *p = src;
+
+    while (*p) {
+        p = skip_ws(p);
+        if (!*p) break;
+
+        if (*p == '$') {
+            p++;
+            char varname[64];
+            int i = 0;
+            while (*p && (isalnum((unsigned char)*p) || *p == '_') && i < sizeof(varname) - 1) {
+                varname[i++] = *p;
+                p++;
+            }
+            varname[i] = '\0';
+
+            p = skip_ws(p);
+            if (*p == '=') {
+                exec_assignment(&p, varname);
+            }
+        } else if (strncmp(p, "print", 5) == 0 && (isspace((unsigned char)p[5]) || p[5] == '(')) {
+            p += 5;
+            if (*p == '(') {
+                p++;
+                exec_print(&p);
+                if (*p == ')') p++;
+            } else {
+                exec_print(&p);
+            }
+        } else if (strncmp(p, "say", 3) == 0 && isspace((unsigned char)p[3])) {
+            p += 3;
+            exec_print(&p);
+            output_append_str("\n");
+        } else if (*p == ';') {
+            p++;
+        } else {
+            p++;
+        }
+    }
+
+    return 0;
+}
 
 int perl_wasi_init(void) {
     if (perl_initialized) return 0;
-
-    /* TODO: Initialize Perl interpreter
-     * PerlInterpreter *my_perl = perl_alloc();
-     * perl_construct(my_perl);
-     */
-
+    var_count = 0;
     perl_initialized = 1;
     output_reset();
     return 0;
@@ -63,16 +222,12 @@ int perl_wasi_exec(const char *src, size_t len) {
 
     output_reset();
 
-    /* TODO: Execute Perl source
-     * SV *result = perl_eval_sv(my_perl, src, G_SCALAR);
-     * const char *output = SvPV_nolen(result);
-     * output_append(output, strlen(output));
-     */
+    char buf[EXEC_SLOT_SIZE];
+    if (len >= sizeof(buf)) len = sizeof(buf) - 1;
+    memcpy(buf, src, len);
+    buf[len] = '\0';
 
-    output_append("# Perl source: ", 14);
-    output_append(src, len);
-
-    return 0;
+    return exec_perl(buf);
 }
 
 const char *perl_wasi_get_output(void) {
@@ -115,7 +270,7 @@ int perl_wasi_call_tool(const char *args_ptr, size_t args_n,
 
 void perl_wasi_destroy(void) {
     if (perl_initialized) {
-        /* TODO: perl_destruct(my_perl); perl_free(my_perl); */
+        var_count = 0;
         perl_initialized = 0;
     }
 }

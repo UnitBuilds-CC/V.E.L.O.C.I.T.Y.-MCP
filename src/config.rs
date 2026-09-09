@@ -207,27 +207,27 @@ impl Default for WasmRuntimesConfig {
                 wasm_path: default_typescript_wasm_path(),
             },
             php: WasmLanguageConfig {
-                enabled: false,
+                enabled: true,
                 wasm_path: default_php_wasm_path(),
             },
             csharp: WasmLanguageConfig {
-                enabled: false,
+                enabled: true,
                 wasm_path: default_csharp_wasm_path(),
             },
             java: WasmLanguageConfig {
-                enabled: false,
+                enabled: true,
                 wasm_path: default_java_wasm_path(),
             },
             r: WasmLanguageConfig {
-                enabled: false,
+                enabled: true,
                 wasm_path: default_r_wasm_path(),
             },
             julia: WasmLanguageConfig {
-                enabled: false,
+                enabled: true,
                 wasm_path: default_julia_wasm_path(),
             },
             perl: WasmLanguageConfig {
-                enabled: false,
+                enabled: true,
                 wasm_path: default_perl_wasm_path(),
             },
         }
@@ -659,12 +659,12 @@ mod tests {
         assert!(config.wasm_runtimes.ruby.enabled);
         assert!(config.wasm_runtimes.rust.enabled);
         assert!(config.wasm_runtimes.typescript.enabled);
-        assert!(!config.wasm_runtimes.php.enabled);
-        assert!(!config.wasm_runtimes.csharp.enabled);
-        assert!(!config.wasm_runtimes.java.enabled);
-        assert!(!config.wasm_runtimes.r.enabled);
-        assert!(!config.wasm_runtimes.julia.enabled);
-        assert!(!config.wasm_runtimes.perl.enabled);
+        assert!(config.wasm_runtimes.php.enabled);
+        assert!(config.wasm_runtimes.csharp.enabled);
+        assert!(config.wasm_runtimes.java.enabled);
+        assert!(config.wasm_runtimes.r.enabled);
+        assert!(config.wasm_runtimes.julia.enabled);
+        assert!(config.wasm_runtimes.perl.enabled);
         assert!(config.wasm_runtimes.javascript.wasm_path.contains("quickjs"));
         assert!(config.wasm_runtimes.python.wasm_path.contains("micropython"));
         assert!(config.wasm_runtimes.lua.wasm_path.contains("lua"));

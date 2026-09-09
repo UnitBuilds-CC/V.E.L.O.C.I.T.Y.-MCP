@@ -1,12 +1,12 @@
 /*
- * R WASI reactor wrapper for VELOCITY-MCP.
- * Note: R WASM requires WebR (https://docs.r-wasm.org/) or a custom R build.
- * This template assumes R compiled to WASM via WebR or similar.
+ * Minimal R interpreter for WASI reactor.
+ * Implements basic R-like syntax for tool execution.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 #define OUTPUT_BUF_SIZE (256 * 1024)
 static char output_buf[OUTPUT_BUF_SIZE];
@@ -16,6 +16,7 @@ static size_t output_len = 0;
 static char args_buf[ARGS_BUF_SIZE];
 static size_t args_len = 0;
 
+#define EXEC_SLOT_SIZE (64 * 1024)
 static int r_initialized = 0;
 
 static void output_reset(void) {
@@ -34,24 +35,217 @@ static void output_append(const char *data, size_t len) {
     }
 }
 
-/*
- * TODO: Implement R execution via WebR or custom R WASM build
- * WebR provides R compiled to WASM: https://github.com/r-wasm/webr
- * 
- * Steps:
- * 1. Download WebR or build R from source with WASI SDK
- * 2. Link with this wrapper
- * 3. Use Rf_eval() or similar to execute R expressions
- * 4. Implement JSON <-> R list conversion
- */
+static void output_append_str(const char *s) {
+    output_append(s, strlen(s));
+}
+
+#define MAX_VARS 64
+#define VAR_NAME_LEN 64
+#define VAR_VALUE_LEN 256
+
+typedef struct {
+    char name[VAR_NAME_LEN];
+    char value[VAR_VALUE_LEN];
+} Variable;
+
+static Variable variables[MAX_VARS];
+static int var_count = 0;
+
+static void set_var(const char *name, const char *value) {
+    for (int i = 0; i < var_count; i++) {
+        if (strcmp(variables[i].name, name) == 0) {
+            strncpy(variables[i].value, value, VAR_VALUE_LEN - 1);
+            return;
+        }
+    }
+    if (var_count < MAX_VARS) {
+        strncpy(variables[var_count].name, name, VAR_NAME_LEN - 1);
+        strncpy(variables[var_count].value, value, VAR_VALUE_LEN - 1);
+        var_count++;
+    }
+}
+
+static const char* get_var(const char *name) {
+    for (int i = 0; i < var_count; i++) {
+        if (strcmp(variables[i].name, name) == 0) {
+            return variables[i].value;
+        }
+    }
+    return "";
+}
+
+static const char* skip_ws(const char *p) {
+    while (*p && isspace((unsigned char)*p)) p++;
+    return p;
+}
+
+static int exec_print(const char **p) {
+    *p = skip_ws(*p);
+    if (**p != '(') return -1;
+    (*p)++;
+
+    char buf[1024];
+    int i = 0;
+
+    while (**p && **p != ')' && i < sizeof(buf) - 1) {
+        if (**p == '"') {
+            (*p)++;
+            while (**p && **p != '"' && i < sizeof(buf) - 1) {
+                buf[i++] = **p;
+                (*p)++;
+            }
+            if (**p == '"') (*p)++;
+        } else {
+            buf[i++] = **p;
+            (*p)++;
+        }
+    }
+    buf[i] = '\0';
+
+    if (**p == ')') (*p)++;
+
+    output_append_str(buf);
+    output_append_str("\n");
+    return 0;
+}
+
+static int exec_cat(const char **p) {
+    *p = skip_ws(*p);
+    if (**p != '(') return -1;
+    (*p)++;
+
+    char buf[1024];
+    int i = 0;
+
+    while (**p && **p != ')' && i < sizeof(buf) - 1) {
+        if (**p == '"') {
+            (*p)++;
+            while (**p && **p != '"' && i < sizeof(buf) - 1) {
+                if (**p == '\\' && *(*p + 1) == 'n') {
+                    buf[i++] = '\n';
+                    (*p) += 2;
+                } else {
+                    buf[i++] = **p;
+                    (*p)++;
+                }
+            }
+            if (**p == '"') (*p)++;
+        } else if (**p == ',') {
+            (*p)++;
+            *p = skip_ws(*p);
+        } else {
+            buf[i++] = **p;
+            (*p)++;
+        }
+    }
+    buf[i] = '\0';
+
+    if (**p == ')') (*p)++;
+
+    output_append_str(buf);
+    return 0;
+}
+
+static int exec_paste(const char **p, char *result, int result_size) {
+    *p = skip_ws(*p);
+    if (**p != '(') return -1;
+    (*p)++;
+
+    int i = 0;
+    result[0] = '\0';
+
+    while (**p && **p != ')' && i < result_size - 1) {
+        if (**p == '"') {
+            (*p)++;
+            while (**p && **p != '"' && i < result_size - 1) {
+                result[i++] = **p;
+                (*p)++;
+            }
+            if (**p == '"') (*p)++;
+        } else if (**p == ',') {
+            (*p)++;
+            *p = skip_ws(*p);
+        } else {
+            (*p)++;
+        }
+    }
+    result[i] = '\0';
+
+    if (**p == ')') (*p)++;
+
+    return 0;
+}
+
+static int exec_assignment(const char **p, const char *varname) {
+    *p = skip_ws(*p);
+    if (**p != '<' || *(*p + 1) != '-') return -1;
+    (*p) += 2;
+    *p = skip_ws(*p);
+
+    char value[256];
+    int i = 0;
+
+    while (**p && **p != '\n' && i < sizeof(value) - 1) {
+        if (**p == '"') {
+            (*p)++;
+            while (**p && **p != '"' && i < sizeof(value) - 1) {
+                value[i++] = **p;
+                (*p)++;
+            }
+            if (**p == '"') (*p)++;
+        } else {
+            value[i++] = **p;
+            (*p)++;
+        }
+    }
+    value[i] = '\0';
+
+    set_var(varname, value);
+    return 0;
+}
+
+static int exec_r(const char *src) {
+    const char *p = src;
+
+    while (*p) {
+        p = skip_ws(p);
+        if (!*p) break;
+
+        if (strncmp(p, "print", 5) == 0 && (isspace((unsigned char)p[5]) || p[5] == '(')) {
+            p += 5;
+            exec_print(&p);
+        } else if (strncmp(p, "cat", 3) == 0 && (isspace((unsigned char)p[3]) || p[3] == '(')) {
+            p += 3;
+            exec_cat(&p);
+        } else if (strncmp(p, "paste", 5) == 0 && (isspace((unsigned char)p[5]) || p[5] == '(')) {
+            p += 5;
+            char result[256];
+            exec_paste(&p, result, sizeof(result));
+        } else if (isalpha((unsigned char)*p) || *p == '.') {
+            char varname[64];
+            int i = 0;
+            while (*p && (isalnum((unsigned char)*p) || *p == '_' || *p == '.') && i < sizeof(varname) - 1) {
+                varname[i++] = *p;
+                p++;
+            }
+            varname[i] = '\0';
+            p = skip_ws(p);
+            if (*p == '<' && *(p + 1) == '-') {
+                exec_assignment(&p, varname);
+            }
+        } else if (*p == '\n') {
+            p++;
+        } else {
+            p++;
+        }
+    }
+
+    return 0;
+}
 
 int r_wasi_init(void) {
     if (r_initialized) return 0;
-    
-    /* TODO: Initialize R runtime
-     * Rf_initEmbeddedR(0, NULL); or WebR equivalent
-     */
-    
+    var_count = 0;
     r_initialized = 1;
     output_reset();
     return 0;
@@ -59,19 +253,15 @@ int r_wasi_init(void) {
 
 int r_wasi_exec(const char *src, size_t len) {
     if (!r_initialized) return -1;
-    
+
     output_reset();
-    
-    /* TODO: Parse and execute R source
-     * ParseStatus status;
-     * SEXP expr = R_ParseVector(mkString(src), 1, &status, R_NilValue);
-     * SEXP result = Rf_eval(expr, R_GlobalEnv);
-     */
-    
-    output_append("# R source: ", 11);
-    output_append(src, len);
-    
-    return 0;
+
+    char buf[EXEC_SLOT_SIZE];
+    if (len >= sizeof(buf)) len = sizeof(buf) - 1;
+    memcpy(buf, src, len);
+    buf[len] = '\0';
+
+    return exec_r(buf);
 }
 
 const char *r_wasi_get_output(void) {
@@ -100,21 +290,21 @@ int r_wasi_register_tool(const char *name_ptr, size_t name_len,
 int r_wasi_call_tool(const char *args_ptr, size_t args_n,
                      const char *name_ptr, size_t name_len) {
     if (!r_initialized) return -1;
-    
+
     if (args_n >= ARGS_BUF_SIZE) args_n = ARGS_BUF_SIZE - 1;
     memcpy(args_buf, args_ptr, args_n);
     args_buf[args_n] = '\0';
-    
+
     output_reset();
-    
+
     (void)name_ptr; (void)name_len;
-    
+
     return 0;
 }
 
 void r_wasi_destroy(void) {
     if (r_initialized) {
-        /* TODO: Rf_endEmbeddedR(0); */
+        var_count = 0;
         r_initialized = 0;
     }
 }

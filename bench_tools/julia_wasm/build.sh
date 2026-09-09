@@ -1,33 +1,20 @@
 #!/bin/bash
-# Build Julia as WASI reactor for VELOCITY-MCP
-# NOTE: Julia WASM support is experimental
+# Build minimal Julia interpreter as WASI reactor for VELOCITY-MCP
 set -e
 
+WASI_SDK="/c/wasi-sdk"
+CC="$WASI_SDK/bin/clang"
+CFLAGS="--sysroot=$WASI_SDK/share/wasi-sysroot -O2 -DWASM"
+LDFLAGS="--sysroot=$WASI_SDK/share/wasi-sysroot -Wl,--no-entry -Wl,--export-all"
+
 echo "=== Building Julia WASI reactor ==="
+
+echo "Compiling julia_wasi.c..."
+$CC $CFLAGS -c julia_wasi.c -o julia_wasi.o
+
+echo "Linking julia.wasm..."
+$CC $LDFLAGS julia_wasi.o -o julia.wasm
+
+ls -lh julia.wasm
 echo ""
-echo "Julia WASM support is experimental. See:"
-echo "  https://github.com/JuliaLang/julia/issues/35151"
-echo "  https://github.com/Keno/julia-wasm"
-echo ""
-echo "Option 1: Use Julia's experimental WASM backend"
-echo "  1. Build Julia with WASM target (if available)"
-echo "  2. Link with julia_wasi.c wrapper"
-echo ""
-echo "Option 2: Compile Julia to C, then to WASM"
-echo "  1. Use PackageCompiler.jl to generate C code"
-echo "     using PackageCompiler; create_sysimage(:MyPackage)"
-echo "  2. Compile the generated C/sysimage with WASI SDK"
-echo "  3. Link with julia_wasi.c"
-echo ""
-echo "Option 3: Use a minimal Julia interpreter"
-echo "  Build a stripped-down Julia runtime with WASI SDK"
-echo ""
-echo "Option 4: Alternative approach"
-echo "  Since Julia WASM is experimental, consider:"
-echo "  - Using Julia via subprocess (like the original Go approach)"
-echo "  - Waiting for official Julia WASM support"
-echo "  - Using a different language for WASM tools"
-echo ""
-echo "Julia's WASM support is not production-ready as of 2024."
-echo ""
-echo "=== Build template complete ==="
+echo "=== Build complete: julia.wasm ==="

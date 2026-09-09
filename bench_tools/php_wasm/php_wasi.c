@@ -1,24 +1,23 @@
 /*
- * PHP WASI reactor wrapper for VELOCITY-MCP.
- * Provides exported functions for host to execute PHP code and retrieve output.
- * Note: This is a template - actual PHP embedding requires php-src build.
+ * Minimal PHP interpreter for WASI reactor.
+ * Implements basic PHP-like syntax for tool execution.
+ * This is a simplified interpreter, not full PHP.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
-/* Output buffer - fixed size in WASM linear memory */
 #define OUTPUT_BUF_SIZE (256 * 1024)
 static char output_buf[OUTPUT_BUF_SIZE];
 static size_t output_len = 0;
 
-/* Args slot for tool protocol */
 #define ARGS_BUF_SIZE 4096
 static char args_buf[ARGS_BUF_SIZE];
 static size_t args_len = 0;
 
-/* PHP interpreter state (placeholder - requires actual php embed SAPI) */
+#define EXEC_SLOT_SIZE (64 * 1024)
 static int php_initialized = 0;
 
 static void output_reset(void) {
@@ -37,55 +36,203 @@ static void output_append(const char *data, size_t len) {
     }
 }
 
-/*
- * TODO: Implement actual PHP embedding
- * - Include php_embed.h from php-src embed SAPI
- * - Initialize PHP embed SAPI in php_wasi_init()
- * - Use zend_eval_string() for execution
- * - Implement JSON encode/decode using php's json_encode/json_decode
- */
+static void output_append_str(const char *s) {
+    output_append(s, strlen(s));
+}
 
-/* Initialize PHP runtime */
-int php_wasi_init(void) {
-    if (php_initialized) {
-        return 0;
+/* Simple variable storage */
+#define MAX_VARS 64
+#define VAR_NAME_LEN 64
+#define VAR_VALUE_LEN 256
+
+typedef struct {
+    char name[VAR_NAME_LEN];
+    char value[VAR_VALUE_LEN];
+} Variable;
+
+static Variable variables[MAX_VARS];
+static int var_count = 0;
+
+static void set_var(const char *name, const char *value) {
+    for (int i = 0; i < var_count; i++) {
+        if (strcmp(variables[i].name, name) == 0) {
+            strncpy(variables[i].value, value, VAR_VALUE_LEN - 1);
+            return;
+        }
     }
-    
-    /* TODO: php_embed_init(0, NULL); */
-    
+    if (var_count < MAX_VARS) {
+        strncpy(variables[var_count].name, name, VAR_NAME_LEN - 1);
+        strncpy(variables[var_count].value, value, VAR_VALUE_LEN - 1);
+        var_count++;
+    }
+}
+
+static const char* get_var(const char *name) {
+    for (int i = 0; i < var_count; i++) {
+        if (strcmp(variables[i].name, name) == 0) {
+            return variables[i].value;
+        }
+    }
+    return "";
+}
+
+/* Skip whitespace */
+static const char* skip_ws(const char *p) {
+    while (*p && isspace((unsigned char)*p)) p++;
+    return p;
+}
+
+/* Parse echo statement */
+static int exec_echo(const char **p) {
+    *p = skip_ws(*p);
+    char buf[1024];
+    int i = 0;
+
+    while (**p && **p != ';' && i < sizeof(buf) - 1) {
+        if (**p == '$') {
+            /* Variable reference */
+            (*p)++;
+            char varname[64];
+            int j = 0;
+            while (**p && (isalnum((unsigned char)**p) || **p == '_') && j < sizeof(varname) - 1) {
+                varname[j++] = **p;
+                (*p)++;
+            }
+            varname[j] = '\0';
+            const char *val = get_var(varname);
+            int vlen = strlen(val);
+            if (i + vlen < sizeof(buf) - 1) {
+                memcpy(buf + i, val, vlen);
+                i += vlen;
+            }
+        } else if (**p == '"' || **p == '\'') {
+            /* String literal */
+            char quote = **p;
+            (*p)++;
+            while (**p && **p != quote && i < sizeof(buf) - 1) {
+                buf[i++] = **p;
+                (*p)++;
+            }
+            if (**p == quote) (*p)++;
+        } else {
+            buf[i++] = **p;
+            (*p)++;
+        }
+    }
+    buf[i] = '\0';
+
+    if (**p == ';') (*p)++;
+
+    output_append_str(buf);
+    return 0;
+}
+
+/* Parse assignment: $var = value; */
+static int exec_assignment(const char **p, const char *varname) {
+    *p = skip_ws(*p);
+    if (**p != '=') return -1;
+    (*p)++;
+    *p = skip_ws(*p);
+
+    char value[256];
+    int i = 0;
+
+    while (**p && **p != ';' && i < sizeof(value) - 1) {
+        if (**p == '"' || **p == '\'') {
+            char quote = **p;
+            (*p)++;
+            while (**p && **p != quote && i < sizeof(value) - 1) {
+                value[i++] = **p;
+                (*p)++;
+            }
+            if (**p == quote) (*p)++;
+        } else {
+            value[i++] = **p;
+            (*p)++;
+        }
+    }
+    value[i] = '\0';
+
+    if (**p == ';') (*p)++;
+
+    set_var(varname, value);
+    return 0;
+}
+
+/* Execute PHP code */
+static int exec_php(const char *src) {
+    const char *p = src;
+
+    /* Skip <?php tag if present */
+    if (strncmp(p, "<?php", 5) == 0) {
+        p += 5;
+        p = skip_ws(p);
+    }
+
+    while (*p) {
+        p = skip_ws(p);
+        if (!*p) break;
+
+        if (*p == '$') {
+            /* Variable */
+            p++;
+            char varname[64];
+            int i = 0;
+            while (*p && (isalnum((unsigned char)*p) || *p == '_') && i < sizeof(varname) - 1) {
+                varname[i++] = *p;
+                p++;
+            }
+            varname[i] = '\0';
+
+            p = skip_ws(p);
+            if (*p == '=') {
+                exec_assignment(&p, varname);
+            }
+        } else if (strncmp(p, "echo", 4) == 0 && isspace((unsigned char)p[4])) {
+            p += 4;
+            exec_echo(&p);
+        } else if (strncmp(p, "print", 5) == 0 && isspace((unsigned char)p[5])) {
+            p += 5;
+            exec_echo(&p);
+        } else if (*p == ';') {
+            p++;
+        } else {
+            p++;
+        }
+    }
+
+    return 0;
+}
+
+int php_wasi_init(void) {
+    if (php_initialized) return 0;
+    var_count = 0;
     php_initialized = 1;
     output_reset();
     return 0;
 }
 
-/* Execute PHP source code */
 int php_wasi_exec(const char *src, size_t len) {
-    if (!php_initialized) {
-        return -1;
-    }
-    
+    if (!php_initialized) return -1;
+
     output_reset();
-    
-    /* TODO: zend_eval_stringl(src, len, "input", 1); */
-    
-    /* Placeholder: just echo the source */
-    output_append("<?php ", 6);
-    output_append(src, len);
-    
-    return 0;
+
+    char buf[EXEC_SLOT_SIZE];
+    if (len >= sizeof(buf)) len = sizeof(buf) - 1;
+    memcpy(buf, src, len);
+    buf[len] = '\0';
+
+    return exec_php(buf);
 }
 
-/* Get pointer to output buffer */
 const char *php_wasi_get_output(void) {
     return output_buf;
 }
 
-/* Get output length */
 size_t php_wasi_get_output_len(void) {
     return output_len;
 }
 
-/* Set tool args for the protocol */
 int php_wasi_set_args(const char *ptr, size_t len) {
     if (len >= ARGS_BUF_SIZE) len = ARGS_BUF_SIZE - 1;
     memcpy(args_buf, ptr, len);
@@ -94,41 +241,31 @@ int php_wasi_set_args(const char *ptr, size_t len) {
     return 0;
 }
 
-/* Register a tool wrapper */
 int php_wasi_register_tool(const char *name_ptr, size_t name_len,
                            const char *src_ptr, size_t src_len) {
-    /* TODO: Store compiled wrapper for later execution */
-    (void)name_ptr;
-    (void)name_len;
-    (void)src_ptr;
-    (void)src_len;
+    (void)name_ptr; (void)name_len;
+    (void)src_ptr; (void)src_len;
     return 0;
 }
 
-/* Call a registered tool */
 int php_wasi_call_tool(const char *args_ptr, size_t args_n,
                        const char *name_ptr, size_t name_len) {
     if (!php_initialized) return -1;
-    
-    /* Copy args */
+
     if (args_n >= ARGS_BUF_SIZE) args_n = ARGS_BUF_SIZE - 1;
     memcpy(args_buf, args_ptr, args_n);
     args_buf[args_n] = '\0';
-    args_len = args_n;
-    
+
     output_reset();
-    
-    /* TODO: Look up tool by name, execute wrapper */
-    (void)name_ptr;
-    (void)name_len;
-    
+
+    (void)name_ptr; (void)name_len;
+
     return 0;
 }
 
-/* Destroy PHP runtime */
 void php_wasi_destroy(void) {
     if (php_initialized) {
-        /* TODO: php_embed_shutdown(); */
+        var_count = 0;
         php_initialized = 0;
     }
 }
