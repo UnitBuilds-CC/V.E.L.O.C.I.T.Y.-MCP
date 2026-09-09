@@ -13,13 +13,16 @@ use super::WasmRuntime;
 const PYSTACK_SIZE: i32 = 16384;
 const HEAP_SIZE: i32 = 256 * 1024;
 
+const EXEC_SLOT: u64 = 64 * 1024;   // 64KB - for source code
+const ARGS_SLOT: u64 = 4 * 1024;    // 4KB - for tool args JSON
+const NAME_SLOT: u64 = 8 * 1024;    // 8KB - for tool name
+
 pub struct MicroPythonRuntime {
     store: Store,
     instance: Instance,
     memory: Memory,
     #[allow(dead_code)]
     env: FunctionEnv<WasiEnv>,
-    next_offset: u64,
     tools: HashMap<String, String>,
 }
 
@@ -41,7 +44,6 @@ impl MicroPythonRuntime {
             instance,
             memory,
             env,
-            next_offset: 64 * 1024,
             tools: HashMap::new(),
         })
     }
@@ -52,18 +54,11 @@ impl MicroPythonRuntime {
         Ok(rt)
     }
 
-    fn write_to_memory(&mut self, data: &[u8]) -> Result<(i32, i32), Box<dyn Error>> {
-        let ptr = self.next_offset as i32;
-        let len = data.len() as i32;
-        self.memory.view(&self.store).write(self.next_offset, data)?;
-        self.next_offset += data.len() as u64 + 64;
-        Ok((ptr, len))
-    }
-
     fn exec(&mut self, src: &str) -> Result<i32, Box<dyn Error>> {
-        let (ptr, len) = self.write_to_memory(src.as_bytes())?;
+        let data = src.as_bytes();
+        self.memory.view(&self.store).write(EXEC_SLOT, data)?;
         let exec_fn = self.instance.exports.get_function("mp_wasi_exec")?;
-        let result = exec_fn.call(&mut self.store, &[Value::I32(ptr), Value::I32(len)])?;
+        let result = exec_fn.call(&mut self.store, &[Value::I32(EXEC_SLOT as i32), Value::I32(data.len() as i32)])?;
         Ok(result[0].unwrap_i32())
     }
 
@@ -115,9 +110,8 @@ impl MicroPythonRuntime {
     /// Returns (ns_per_call, checksum).
     pub fn bench_exec_repeated(&mut self, src: &str, iters: usize) -> (f64, u32) {
         let data = src.as_bytes();
-        let slot = 64 * 1024;
-        self.memory.view(&self.store).write(slot as u64, data).unwrap();
-        let ptr = slot as i32;
+        self.memory.view(&self.store).write(EXEC_SLOT, data).unwrap();
+        let ptr = EXEC_SLOT as i32;
         let len = data.len() as i32;
 
         let exec_fn = self.instance.exports.get_function("mp_wasi_exec").unwrap();
@@ -149,7 +143,39 @@ impl WasmRuntime for MicroPythonRuntime {
     }
 
     fn register_tool(&mut self, name: &str, source: &str) -> Result<(), Box<dyn Error>> {
+        // Execute the tool source to define the function
         self.exec_and_get_output(source)?;
+
+        // Build wrapper that uses pre-compiled protocol
+        let wrapper = format!(
+            "_args = get_tool_args()\n\
+             _result = {}(_args)\n\
+             set_tool_result(_result)",
+            name
+        );
+
+        // Write wrapper source to EXEC_SLOT
+        let wrapper_bytes = wrapper.as_bytes();
+        self.memory.view(&self.store).write(EXEC_SLOT, wrapper_bytes)?;
+
+        // Write tool name to NAME_SLOT
+        let name_bytes = name.as_bytes();
+        self.memory.view(&self.store).write(NAME_SLOT, name_bytes)?;
+
+        // Call mp_wasi_register_tool(name_ptr, name_len, src_ptr, src_len)
+        let register_fn = self.instance.exports.get_function("mp_wasi_register_tool")?;
+        let result = register_fn.call(&mut self.store, &[
+            Value::I32(NAME_SLOT as i32),
+            Value::I32(name_bytes.len() as i32),
+            Value::I32(EXEC_SLOT as i32),
+            Value::I32(wrapper_bytes.len() as i32),
+        ])?;
+
+        if result[0].unwrap_i32() != 0 {
+            let output = self.get_output()?;
+            return Err(format!("Failed to register tool: {}", output.trim()).into());
+        }
+
         self.tools.insert(name.to_string(), name.to_string());
         Ok(())
     }
@@ -159,21 +185,35 @@ impl WasmRuntime for MicroPythonRuntime {
             return Err(format!("Unknown Python tool: {}", name).into());
         }
 
-        let escaped = args_json
-            .replace('\\', "\\\\")
-            .replace('\'', "\\'")
-            .replace('\n', "\\n")
-            .replace('\r', "\\r");
+        // Write args to ARGS_SLOT
+        let args_bytes = args_json.as_bytes();
+        self.memory.view(&self.store).write(ARGS_SLOT, args_bytes)?;
 
-        let wrapper = format!(
-            "import json\n\
-             _args = json.loads('{}')\n\
-             _result = {}(_args)\n\
-             print(json.dumps(_result))",
-            escaped, name
-        );
+        // Write tool name to NAME_SLOT
+        let name_bytes = name.as_bytes();
+        self.memory.view(&self.store).write(NAME_SLOT, name_bytes)?;
 
-        let output = self.exec_and_get_output(&wrapper)?;
+        // Call mp_wasi_set_args(ptr, len)
+        let set_args_fn = self.instance.exports.get_function("mp_wasi_set_args")?;
+        set_args_fn.call(&mut self.store, &[
+            Value::I32(ARGS_SLOT as i32),
+            Value::I32(args_bytes.len() as i32),
+        ])?;
+
+        // Call mp_wasi_call_tool(name_ptr, name_len)
+        let call_fn = self.instance.exports.get_function("mp_wasi_call_tool")?;
+        let result = call_fn.call(&mut self.store, &[
+            Value::I32(NAME_SLOT as i32),
+            Value::I32(name_bytes.len() as i32),
+        ])?;
+
+        let rc = result[0].unwrap_i32();
+        let output = self.get_output()?;
+
+        if rc != 0 {
+            return Err(format!("Python tool error: {}", output.trim()).into());
+        }
+
         Ok(output.trim().to_string())
     }
 
@@ -221,6 +261,24 @@ mod tests {
 
         let result = rt.call_tool("greet", r#"{"name": "Wasmer"}"#).expect("call failed");
         assert!(result.contains("Hello, Wasmer!"), "unexpected result: {}", result);
+
+        rt.destroy().unwrap();
+    }
+
+    #[test]
+    #[ignore]
+    fn test_micropython_precompiled_tool() {
+        let wasm = std::fs::read(wasm_path()).expect("MicroPython WASM not found");
+        let mut rt = MicroPythonRuntime::cold_start(&wasm).expect("cold start failed");
+
+        let source = "def add_numbers(args):\n    return {'sum': args['a'] + args['b']}\n";
+        rt.register_tool("add_numbers", source).expect("register failed");
+
+        let result = rt.call_tool("add_numbers", r#"{"a": 3, "b": 4}"#).expect("call failed");
+        assert!(result.contains("7"), "Expected 7 in result: {}", result);
+
+        let result2 = rt.call_tool("add_numbers", r#"{"a": 10, "b": 20}"#).expect("call failed");
+        assert!(result2.contains("30"), "Expected 30 in result: {}", result2);
 
         rt.destroy().unwrap();
     }

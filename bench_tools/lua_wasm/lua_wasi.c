@@ -337,6 +337,122 @@ static int c_json_encode(lua_State *ls) {
     return 1;
 }
 
+/* ---- Pre-compiled wrapper protocol ---- */
+
+/* Args slot: 4KB buffer for passing JSON args without code interpolation */
+#define ARGS_BUF_SIZE 4096
+static char args_buf[ARGS_BUF_SIZE];
+static size_t args_len = 0;
+
+/* get_tool_args() - reads JSON from args_buf, returns Lua table */
+static int c_get_tool_args(lua_State *ls) {
+    JsonParser p = { .s = args_buf, .pos = 0, .len = args_len };
+    jp_parse_value(&p, ls);
+    return 1;
+}
+
+/* set_tool_result(value) - JSON-encodes Lua value to output_buf */
+static int c_set_tool_result(lua_State *ls) {
+    output_reset();
+    luaL_Buffer b;
+    luaL_buffinit(ls, &b);
+    json_encode_value(ls, 1, &b, 0);
+    luaL_pushresult(&b);
+    size_t len;
+    const char *s = lua_tolstring(ls, -1, &len);
+    output_append(s, len);
+    lua_pop(ls, 1);
+    return 0;
+}
+
+/* Registry key for pre-compiled tool wrappers */
+#define TOOL_REGISTRY_KEY "__tool_wrappers"
+
+/* lua_wasi_register_wrapper(name_ptr, name_len, src_ptr, src_len) -> int
+ * Pre-compiles wrapper source and stores in Lua registry keyed by tool name.
+ */
+int lua_wasi_register_wrapper(const char *name_ptr, size_t name_len,
+                               const char *src_ptr, size_t src_len) {
+    if (L == NULL) return -1;
+
+    /* Compile the wrapper */
+    int status = luaL_loadbuffer(L, src_ptr, src_len, "tool_wrapper");
+    if (status != LUA_OK) {
+        const char *err = lua_tostring(L, -1);
+        if (err) output_append(err, strlen(err));
+        lua_pop(L, 1);
+        return -1;
+    }
+    /* Compiled function is now on stack top */
+
+    /* Get or create the tool wrappers table in registry */
+    lua_getfield(L, LUA_REGISTRYINDEX, TOOL_REGISTRY_KEY);
+    if (lua_isnil(L, -1)) {
+        lua_pop(L, 1);
+        lua_newtable(L);
+        lua_pushvalue(L, -1);
+        lua_setfield(L, LUA_REGISTRYINDEX, TOOL_REGISTRY_KEY);
+    }
+    /* Stack: compiled_func, wrappers_table */
+
+    /* Set wrappers_table[name] = compiled_func */
+    lua_pushlstring(L, name_ptr, name_len);
+    lua_pushvalue(L, -3);  /* copy compiled_func */
+    lua_rawset(L, -3);     /* table[name] = func */
+
+    lua_pop(L, 2);  /* pop table and compiled_func */
+    return 0;
+}
+
+/* lua_wasi_call_tool(name_ptr, name_len) -> int
+ * Calls the pre-compiled wrapper for the named tool.
+ * Args must be written to args_buf before calling.
+ */
+int lua_wasi_call_tool(const char *name_ptr, size_t name_len) {
+    if (L == NULL) return -1;
+
+    output_reset();
+
+    /* Get the wrappers table */
+    lua_getfield(L, LUA_REGISTRYINDEX, TOOL_REGISTRY_KEY);
+    if (lua_isnil(L, -1)) {
+        lua_pop(L, 1);
+        output_append("No tools registered", 17);
+        return -1;
+    }
+
+    /* Look up the tool by name */
+    lua_pushlstring(L, name_ptr, name_len);
+    lua_rawget(L, -2);  /* get wrappers_table[name] */
+    if (lua_isnil(L, -1)) {
+        lua_pop(L, 2);
+        output_append("Unknown tool", 12);
+        return -1;
+    }
+    /* Stack: wrappers_table, compiled_func */
+
+    /* Call the wrapper (0 args, 0 results) */
+    int status = lua_pcall(L, 0, 0, 0);
+    if (status != LUA_OK) {
+        const char *err = lua_tostring(L, -1);
+        if (err) output_append(err, strlen(err));
+        lua_pop(L, 2);
+        return -1;
+    }
+
+    lua_settop(L, 0);
+    return 0;
+}
+
+/* lua_wasi_set_args(ptr, len) - write args to args_buf slot */
+int lua_wasi_set_args(const char *ptr, size_t len) {
+    if (len >= ARGS_BUF_SIZE) len = ARGS_BUF_SIZE - 1;
+    memcpy(args_buf, ptr, len);
+    args_buf[len] = '\0';
+    args_len = len;
+    return 0;
+}
+
 /* ---- Stubs for excluded libraries ---- */
 
 /* loadlib.c excluded (needs dlopen); stub package lib */
@@ -381,6 +497,12 @@ int lua_wasi_init(void) {
     lua_setglobal(L, "json_decode");
     lua_pushcfunction(L, c_json_encode);
     lua_setglobal(L, "json_encode");
+
+    /* Register tool protocol builtins */
+    lua_pushcfunction(L, c_get_tool_args);
+    lua_setglobal(L, "get_tool_args");
+    lua_pushcfunction(L, c_set_tool_result);
+    lua_setglobal(L, "set_tool_result");
 
     output_reset();
     return 0;

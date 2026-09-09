@@ -1347,7 +1347,8 @@ fn bench_cross_language_tools() {
         // Warm benchmark: evaluate JS tool repeatedly
         let bench_js = r#"JSON.stringify({size:64,payload:"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"})"#;
         let bench_bytes = bench_js.as_bytes();
-        let bench_ptr = rt.write_code(bench_bytes).expect("write_code");
+        let bench_ptr: i32 = rt.exec_slot_ptr();
+        rt.write_to_exec_slot(bench_bytes).expect("write bench code");
 
         let iterations = 10_000;
         let start = Instant::now();

@@ -17,12 +17,11 @@ pub struct QuickJsRuntime {
     memory: Memory,
     #[allow(dead_code)]
     env: FunctionEnv<WasiEnv>,
-    /// Next available memory offset for writing code/args into WASM linear memory.
-    /// Starts at 64KB to avoid the zero-page.
-    next_offset: u64,
     /// Registered tool names.
     tools: HashMap<String, String>,
 }
+
+const EXEC_SLOT: u64 = 64 * 1024;
 
 impl QuickJsRuntime {
     /// Create a new QuickJS runtime from WASM module bytes.
@@ -46,7 +45,6 @@ impl QuickJsRuntime {
             instance,
             memory,
             env,
-            next_offset: 64 * 1024,
             tools: HashMap::new(),
         })
     }
@@ -56,15 +54,6 @@ impl QuickJsRuntime {
         let mut rt = Self::new(wasm_bytes)?;
         rt.init()?;
         Ok(rt)
-    }
-
-    /// Write bytes into WASM linear memory at the next available offset.
-    /// Returns the pointer where data was written.
-    pub fn write_code(&mut self, data: &[u8]) -> Result<i32, Box<dyn Error>> {
-        let ptr = self.next_offset as i32;
-        self.memory.view(&self.store).write(self.next_offset, data)?;
-        self.next_offset += data.len() as u64 + 64;
-        Ok(ptr)
     }
 
     /// Evaluate JS code at a pre-written memory location.
@@ -78,6 +67,25 @@ impl QuickJsRuntime {
             Value::I32(0),
         ])?;
         Ok(result[0].unwrap_i32())
+    }
+
+    fn exec(&mut self, src: &str) -> Result<i32, Box<dyn Error>> {
+        let data = src.as_bytes();
+        self.memory.view(&self.store).write(EXEC_SLOT, data)?;
+        // Null-terminate for C-style string handling
+        self.memory.view(&self.store).write(EXEC_SLOT + data.len() as u64, &[0u8])?;
+        let handle = self.eval_at(EXEC_SLOT as i32, data.len() as i32)?;
+        Ok(handle)
+    }
+
+    pub fn write_to_exec_slot(&mut self, data: &[u8]) -> Result<(), Box<dyn Error>> {
+        self.memory.view(&self.store).write(EXEC_SLOT, data)?;
+        self.memory.view(&self.store).write(EXEC_SLOT + data.len() as u64, &[0u8])?;
+        Ok(())
+    }
+
+    pub fn exec_slot_ptr(&self) -> i32 {
+        EXEC_SLOT as i32
     }
 
     /// Check if a result handle is an exception. Returns the error message if so.
@@ -171,9 +179,7 @@ impl QuickJsRuntime {
 
     /// Evaluate JS code and return the string result, or error.
     pub fn eval_to_string(&mut self, code: &str) -> Result<String, Box<dyn Error>> {
-        let code_bytes = code.as_bytes();
-        let code_ptr = self.write_code(code_bytes)?;
-        let handle = self.eval_at(code_ptr, code_bytes.len() as i32)?;
+        let handle = self.exec(code)?;
         if let Some(exc) = self.check_exception(handle)? {
             self.free_value(handle)?;
             return Err(exc.into());
@@ -234,6 +240,12 @@ impl WasmRuntime for QuickJsRuntime {
 
     fn register_tool(&mut self, name: &str, source: &str) -> Result<(), Box<dyn Error>> {
         self.eval_to_string(source)?;
+
+        let wrapper = format!(
+            "var __wrapper = function() {{ return JSON.stringify({name}(JSON.parse(__args_buf))); }};"
+        );
+        self.eval_to_string(&wrapper)?;
+
         self.tools.insert(name.to_string(), name.to_string());
         Ok(())
     }
@@ -242,11 +254,14 @@ impl WasmRuntime for QuickJsRuntime {
         if !self.tools.contains_key(name) {
             return Err(format!("Unknown JS tool: {}", name).into());
         }
-        let escaped_args = args_json.replace('\\', "\\\\").replace('`', "\\`").replace("${", "\\${");
-        let call_code = format!(
-            "(function() {{ var __args = JSON.parse(`{}`); return JSON.stringify({}(__args)); }})()",
-            escaped_args, name
-        );
+
+        let escaped = args_json
+            .replace('\\', "\\\\")
+            .replace('\'', "\\'")
+            .replace('\n', "\\n")
+            .replace('\r', "\\r");
+
+        let call_code = format!("__args_buf = '{}'; __wrapper()", escaped);
         self.eval_to_string(&call_code)
     }
 
@@ -258,5 +273,50 @@ impl WasmRuntime for QuickJsRuntime {
 
     fn language(&self) -> &str {
         "javascript"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wasm_path() -> std::path::PathBuf {
+        let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        p.push("bench_tools/quickjs_wasm/quickjs.wasm");
+        p
+    }
+
+    #[test]
+    #[ignore]
+    fn test_quickjs_basic_exec() {
+        let wasm = std::fs::read(wasm_path()).expect("QuickJS WASM not found");
+        let mut rt = QuickJsRuntime::cold_start(&wasm).expect("cold start failed");
+
+        let output = rt.eval_to_string("'hello from quickjs'").expect("exec failed");
+        assert_eq!(output, "hello from quickjs");
+
+        rt.destroy().unwrap();
+    }
+
+    #[test]
+    #[ignore]
+    fn test_quickjs_precompiled_tool() {
+        let wasm = std::fs::read(wasm_path()).expect("QuickJS WASM not found");
+        let mut rt = QuickJsRuntime::cold_start(&wasm).expect("cold start failed");
+
+        let source = r#"
+            function greet(args) {
+                return { message: 'Hello, ' + (args.name || 'world') + '!' };
+            }
+        "#;
+        rt.register_tool("greet", source).expect("register failed");
+
+        let result = rt.call_tool("greet", r#"{"name": "QuickJS"}"#).expect("call failed");
+        assert!(result.contains("Hello, QuickJS!"), "unexpected result: {}", result);
+
+        let result2 = rt.call_tool("greet", r#"{"name": "Wasmer"}"#).expect("call failed");
+        assert!(result2.contains("Hello, Wasmer!"), "unexpected result: {}", result2);
+
+        rt.destroy().unwrap();
     }
 }

@@ -39,6 +39,7 @@ cp "$OVERLAY_DIR/Makefile.wasi" "$PORT_DIR/"
 cp "$OVERLAY_DIR/setjmp.h" "$PORT_DIR/"
 cp "$OVERLAY_DIR/variants/wasi/mpconfigvariant.h" "$PORT_DIR/variants/wasi/"
 cp "$OVERLAY_DIR/variants/wasi/mpconfigvariant.mk" "$PORT_DIR/variants/wasi/"
+cp "$OVERLAY_DIR/qstrdefsport.h" "$PORT_DIR/"
 
 # Build.
 echo "Building MicroPython WASI reactor..."

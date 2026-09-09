@@ -20,6 +20,8 @@ pub struct LuaRuntime {
 }
 
 const EXEC_SLOT: u64 = 512 * 1024;
+const ARGS_SLOT: u64 = 4 * 1024;   // 4KB - for tool args JSON
+const NAME_SLOT: u64 = 8 * 1024;   // 8KB - for tool name
 
 impl LuaRuntime {
     pub fn new(wasm_bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
@@ -144,7 +146,39 @@ impl WasmRuntime for LuaRuntime {
     }
 
     fn register_tool(&mut self, name: &str, source: &str) -> Result<(), Box<dyn Error>> {
+        // Execute the tool source to define the function
         self.exec_and_get_output(source)?;
+
+        // Build wrapper that uses pre-compiled protocol
+        let wrapper = format!(
+            "local _args = get_tool_args()\n\
+             local _result = {}(_args)\n\
+             set_tool_result(_result)",
+            name
+        );
+
+        // Write wrapper source to EXEC_SLOT
+        let wrapper_bytes = wrapper.as_bytes();
+        self.memory.view(&self.store).write(EXEC_SLOT, wrapper_bytes)?;
+
+        // Write tool name to NAME_SLOT
+        let name_bytes = name.as_bytes();
+        self.memory.view(&self.store).write(NAME_SLOT, name_bytes)?;
+
+        // Call lua_wasi_register_wrapper(name_ptr, name_len, src_ptr, src_len)
+        let register_fn = self.instance.exports.get_function("lua_wasi_register_wrapper")?;
+        let result = register_fn.call(&mut self.store, &[
+            Value::I32(NAME_SLOT as i32),
+            Value::I32(name_bytes.len() as i32),
+            Value::I32(EXEC_SLOT as i32),
+            Value::I32(wrapper_bytes.len() as i32),
+        ])?;
+
+        if result[0].unwrap_i32() != 0 {
+            let output = self.get_output()?;
+            return Err(format!("Failed to register wrapper: {}", output.trim()).into());
+        }
+
         self.tools.insert(name.to_string(), name.to_string());
         Ok(())
     }
@@ -154,20 +188,35 @@ impl WasmRuntime for LuaRuntime {
             return Err(format!("Unknown Lua tool: {}", name).into());
         }
 
-        let escaped = args_json
-            .replace('\\', "\\\\")
-            .replace('\'', "\\'")
-            .replace('\n', "\\n")
-            .replace('\r', "\\r");
+        // Write args to ARGS_SLOT
+        let args_bytes = args_json.as_bytes();
+        self.memory.view(&self.store).write(ARGS_SLOT, args_bytes)?;
 
-        let wrapper = format!(
-            "local _args = json_decode('{}')\n\
-             local _result = {}(_args)\n\
-             print(json_encode(_result))",
-            escaped, name
-        );
+        // Write tool name to NAME_SLOT
+        let name_bytes = name.as_bytes();
+        self.memory.view(&self.store).write(NAME_SLOT, name_bytes)?;
 
-        let output = self.exec_and_get_output(&wrapper)?;
+        // Call lua_wasi_set_args(ptr, len)
+        let set_args_fn = self.instance.exports.get_function("lua_wasi_set_args")?;
+        set_args_fn.call(&mut self.store, &[
+            Value::I32(ARGS_SLOT as i32),
+            Value::I32(args_bytes.len() as i32),
+        ])?;
+
+        // Call lua_wasi_call_tool(name_ptr, name_len)
+        let call_fn = self.instance.exports.get_function("lua_wasi_call_tool")?;
+        let result = call_fn.call(&mut self.store, &[
+            Value::I32(NAME_SLOT as i32),
+            Value::I32(name_bytes.len() as i32),
+        ])?;
+
+        let rc = result[0].unwrap_i32();
+        let output = self.get_output()?;
+
+        if rc != 0 {
+            return Err(format!("Lua tool error: {}", output.trim()).into());
+        }
+
         Ok(output.trim().to_string())
     }
 
@@ -217,6 +266,32 @@ mod tests {
 
         let output = rt.exec_and_get_output("print('hello from lua')").expect("exec failed");
         assert_eq!(output.trim(), "hello from lua");
+
+        rt.destroy().unwrap();
+    }
+
+    #[test]
+    #[ignore]
+    fn test_lua_precompiled_tool() {
+        let wasm = std::fs::read(wasm_path()).expect("Lua WASM not found");
+        let mut rt = LuaRuntime::cold_start(&wasm).expect("cold start failed");
+
+        // Register a tool that adds two numbers
+        let source = r#"
+            function add_numbers(args)
+                return { sum = args.a + args.b }
+            end
+        "#;
+        rt.register_tool("add_numbers", source).expect("register_tool failed");
+
+        // Call the tool with JSON args
+        let result = rt.call_tool("add_numbers", r#"{"a": 3, "b": 4}"#).expect("call_tool failed");
+        assert!(result.contains("\"sum\""), "Expected sum in result: {}", result);
+        assert!(result.contains("7"), "Expected 7 in result: {}", result);
+
+        // Call again with different args to verify pre-compiled wrapper reuse
+        let result2 = rt.call_tool("add_numbers", r#"{"a": 10, "b": 20}"#).expect("call_tool failed");
+        assert!(result2.contains("30"), "Expected 30 in result: {}", result2);
 
         rt.destroy().unwrap();
     }
