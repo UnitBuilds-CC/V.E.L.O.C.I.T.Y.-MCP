@@ -350,6 +350,15 @@ fn execute_process_plugin_tool(tool: &PluginTool, arguments: &Value) -> Result<S
 static WASM_RUNTIME_CACHE: std::sync::LazyLock<Mutex<HashMap<String, Box<dyn crate::wasm_runtime::WasmRuntime>>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
+struct CachedWasmModule {
+    engine: wasmer::Engine,
+    module: wasmer::Module,
+    mtime: Option<std::time::SystemTime>,
+}
+
+static WASM_MODULE_CACHE: std::sync::LazyLock<Mutex<HashMap<String, CachedWasmModule>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
 fn execute_wasm_plugin_tool(tool: &PluginTool, arguments: &Value) -> Result<String, String> {
     let executor = &tool.executor;
     let language = executor.language.as_deref()
@@ -428,17 +437,42 @@ fn create_wasm_runtime(language: &str) -> Result<Box<dyn crate::wasm_runtime::Wa
 }
 
 fn execute_standalone_wasm_tool(executor: &PluginExecutor, arguments: &Value) -> Result<String, String> {
-    use wasmer::{FunctionEnv, Instance, Module, Store, Value as WasmValue};
+    use wasmer::{FunctionEnv, Instance, Store, Value as WasmValue};
 
     let source_file = executor.source_file.as_deref()
         .ok_or("Go WASM tools require 'source_file' (compiled .wasm path)")?;
 
-    let wasm_bytes = std::fs::read(source_file)
-        .map_err(|e| format!("Failed to read WASM file '{}': {}", source_file, e))?;
+    let current_mtime = std::fs::metadata(source_file)
+        .ok().and_then(|m| m.modified().ok());
 
-    let engine = wasmer::Engine::from(wasmer::Cranelift::default());
-    let module = Module::new(&engine, &wasm_bytes)
-        .map_err(|e| format!("WASM compile failed: {}", e))?;
+    let (engine, module) = {
+        let mut cache = WASM_MODULE_CACHE.lock()
+            .map_err(|e| format!("WASM module cache poisoned: {}", e))?;
+
+        let cached = cache.get(source_file);
+        let needs_recompile = match cached {
+            Some(entry) => entry.mtime != current_mtime,
+            None => true,
+        };
+
+        if needs_recompile {
+            let wasm_bytes = std::fs::read(source_file)
+                .map_err(|e| format!("Failed to read WASM file '{}': {}", source_file, e))?;
+            let engine = wasmer::Engine::from(wasmer::Cranelift::default());
+            let module = wasmer::Module::new(&engine, &wasm_bytes)
+                .map_err(|e| format!("WASM compile failed: {}", e))?;
+            cache.insert(source_file.to_string(), CachedWasmModule {
+                engine: engine.clone(),
+                module: module.clone(),
+                mtime: current_mtime,
+            });
+            (engine, module)
+        } else {
+            let entry = cached.unwrap();
+            (entry.engine.clone(), entry.module.clone())
+        }
+    };
+
     let mut store = Store::new(engine);
 
     let env = FunctionEnv::new(&mut store, crate::wasm_runtime::wasi::WasiEnv { memory: None });

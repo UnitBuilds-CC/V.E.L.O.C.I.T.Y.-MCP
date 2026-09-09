@@ -265,10 +265,10 @@ fn go_wasm_per_call(wasm_bytes: &[u8]) -> Option<f64> {
     use wasmer::{FunctionEnv, Instance, Module, Store, Value as WasmValue};
     use velocity_mcp::wasm_runtime::wasi::{WasiEnv, build_wasi_imports};
 
-    let iters = 1000;
+    let iters = 10;
 
-    // warmup
-    for _ in 0..10 {
+    // warmup (3 calls — each compile is ~400ms)
+    for _ in 0..3 {
         let engine = wasmer::Engine::from(wasmer::Cranelift::default());
         let module = Module::new(&engine, wasm_bytes).ok()?;
         let mut store = Store::new(engine);
@@ -301,6 +301,78 @@ fn go_wasm_per_call(wasm_bytes: &[u8]) -> Option<f64> {
         let engine = wasmer::Engine::from(wasmer::Cranelift::default());
         let module = Module::new(&engine, wasm_bytes).ok()?;
         let mut store = Store::new(engine);
+        let env = FunctionEnv::new(&mut store, WasiEnv { memory: None });
+        let wasi_imports = build_wasi_imports(&mut store, &env);
+        let instance = Instance::new(&mut store, &module, &wasi_imports).ok()?;
+        let memory = instance.exports.get_memory("memory").ok()?.clone();
+        env.as_mut(&mut store).memory = Some(memory.clone());
+        if let Ok(start_fn) = instance.exports.get_function("_start") {
+            let _ = start_fn.call(&mut store, &[]);
+        }
+        let prepare = instance.exports.get_function("prepare_call").ok()?;
+        prepare.call(&mut store, &[]).ok()?;
+        let malloc = instance.exports.get_function("malloc").ok()?;
+        let args_bytes = BENCH_INPUT_JSON.as_bytes();
+        let ptr_val = malloc.call(&mut store, &[WasmValue::I32(args_bytes.len() as i32)]).ok()?;
+        let input_ptr = ptr_val[0].unwrap_i32();
+        memory.view(&store).write(input_ptr as u64, args_bytes).ok()?;
+        let execute = instance.exports.get_function("tool_execute").ok()?;
+        if let Ok(result) = execute.call(&mut store, &[
+            WasmValue::I32(input_ptr),
+            WasmValue::I32(args_bytes.len() as i32),
+        ]) {
+            let encoded = result[0].unwrap_i64();
+            let _result_ptr = (encoded >> 32) as u32;
+            let result_len = (encoded & 0xFFFF_FFFF) as u32;
+            checksum = checksum.wrapping_add(result_len);
+        }
+    }
+    let ns = start.elapsed().as_nanos() as f64 / iters as f64;
+    std::hint::black_box(checksum);
+    Some(ns)
+}
+
+// ── Go WASM (cached module — compile once, reuse for each call) ──
+
+fn go_wasm_cached(wasm_bytes: &[u8]) -> Option<f64> {
+    use wasmer::{FunctionEnv, Instance, Module, Store, Value as WasmValue};
+    use velocity_mcp::wasm_runtime::wasi::{WasiEnv, build_wasi_imports};
+
+    let iters = 1000;
+
+    let engine = wasmer::Engine::from(wasmer::Cranelift::default());
+    let module = Module::new(&engine, wasm_bytes).ok()?;
+
+    // warmup
+    for _ in 0..10 {
+        let mut store = Store::new(engine.clone());
+        let env = FunctionEnv::new(&mut store, WasiEnv { memory: None });
+        let wasi_imports = build_wasi_imports(&mut store, &env);
+        let instance = Instance::new(&mut store, &module, &wasi_imports).ok()?;
+        let memory = instance.exports.get_memory("memory").ok()?.clone();
+        env.as_mut(&mut store).memory = Some(memory.clone());
+        if let Ok(start_fn) = instance.exports.get_function("_start") {
+            let _ = start_fn.call(&mut store, &[]);
+        }
+        let prepare = instance.exports.get_function("prepare_call").ok()?;
+        prepare.call(&mut store, &[]).ok()?;
+        let malloc = instance.exports.get_function("malloc").ok()?;
+        let args_bytes = BENCH_INPUT_JSON.as_bytes();
+        let ptr_val = malloc.call(&mut store, &[WasmValue::I32(args_bytes.len() as i32)]).ok()?;
+        let input_ptr = ptr_val[0].unwrap_i32();
+        memory.view(&store).write(input_ptr as u64, args_bytes).ok()?;
+        let execute = instance.exports.get_function("tool_execute").ok()?;
+        let _ = execute.call(&mut store, &[
+            WasmValue::I32(input_ptr),
+            WasmValue::I32(args_bytes.len() as i32),
+        ]).ok()?;
+    }
+
+    // measurement
+    let start = Instant::now();
+    let mut checksum: u32 = 0;
+    for _ in 0..iters {
+        let mut store = Store::new(engine.clone());
         let env = FunctionEnv::new(&mut store, WasiEnv { memory: None });
         let wasi_imports = build_wasi_imports(&mut store, &env);
         let instance = Instance::new(&mut store, &module, &wasi_imports).ok()?;
@@ -372,6 +444,7 @@ struct LangResult {
     native_cold_ms: Option<f64>,
     wasm_hot_ns: Option<f64>,
     native_hot_ns: Option<f64>,
+    wasm_cached_ns: Option<f64>,
 }
 
 fn print_language_block(r: &LangResult) {
@@ -426,22 +499,34 @@ fn print_language_block(r: &LangResult) {
             println!("    SKIP — neither runtime available");
         }
     }
+
+    if let Some(cached_ns) = r.wasm_cached_ns {
+        let cached_us = cached_ns / 1000.0;
+        println!("\n  Cached module (compile once, reuse):");
+        println!("    {:20} {:>6.1} µs/call  ({:.1}K calls/s)", r.wasm_label, cached_us, 1_000_000.0 / cached_ns);
+        if let Some(uncached) = r.wasm_hot_ns {
+            let speedup = uncached / cached_ns;
+            println!("    Speedup vs uncached:  {:.1}x", speedup);
+        }
+    }
 }
 
 fn print_summary_table(results: &[LangResult]) {
     println!("\n═══ Summary ═══════════════════════════════════════════════════════");
-    println!("{:<14} {:>12} {:>12} {:>10} {:>10}", "Language", "WASM hot", "Native hot", "WASM cold", "Ratio");
-    println!("{:<14} {:>12} {:>12} {:>10} {:>10}", "", "(µs/call)", "(µs/call)", "(ms)", "(W/N)");
+    println!("{:<14} {:>12} {:>12} {:>12} {:>10} {:>10}", "Language", "WASM hot", "WASM cached", "Native hot", "WASM cold", "Ratio");
+    println!("{:<14} {:>12} {:>12} {:>12} {:>10} {:>10}", "", "(µs/call)", "(µs/call)", "(µs/call)", "(ms)", "(W/N)");
     println!("──────────────────────────────────────────────────────────────────");
     for r in results {
         let wasm_hot = r.wasm_hot_ns.map(|v| format!("{:.1}", v / 1000.0)).unwrap_or_else(|| "SKIP".into());
+        let wasm_cached = r.wasm_cached_ns.map(|v| format!("{:.1}", v / 1000.0)).unwrap_or_else(|| "—".into());
         let native_hot = r.native_hot_ns.map(|v| format!("{:.1}", v / 1000.0)).unwrap_or_else(|| "SKIP".into());
         let wasm_cold = r.wasm_cold_ms.map(|v| format!("{:.1}", v)).unwrap_or_else(|| "SKIP".into());
-        let ratio = match (r.wasm_hot_ns, r.native_hot_ns) {
+        let best_wasm = r.wasm_cached_ns.or(r.wasm_hot_ns);
+        let ratio = match (best_wasm, r.native_hot_ns) {
             (Some(w), Some(n)) => format!("{:.2}x", n / w),
             _ => "—".into(),
         };
-        println!("{:<14} {:>12} {:>12} {:>10} {:>10}", r.name, wasm_hot, native_hot, wasm_cold, ratio);
+        println!("{:<14} {:>12} {:>12} {:>12} {:>10} {:>10}", r.name, wasm_hot, wasm_cached, native_hot, wasm_cold, ratio);
     }
     println!("──────────────────────────────────────────────────────────────────");
     println!("  Ratio = native_latency / wasm_latency (>1 means WASM is faster)");
@@ -493,6 +578,7 @@ fn main() {
         native_cold_ms: None,
         wasm_hot_ns: None,
         native_hot_ns: None,
+        wasm_cached_ns: None,
     };
 
     if quickjs_wasm.exists() {
@@ -584,6 +670,7 @@ fn main() {
         native_cold_ms: None,
         wasm_hot_ns: None,
         native_hot_ns: None,
+        wasm_cached_ns: None,
     };
 
     if micropython_wasm.exists() {
@@ -669,6 +756,7 @@ fn main() {
         native_cold_ms: None,
         wasm_hot_ns: None,
         native_hot_ns: None,
+        wasm_cached_ns: None,
     };
 
     if lua_wasm.exists() {
@@ -754,15 +842,28 @@ fn main() {
         native_cold_ms: None,
         wasm_hot_ns: None,
         native_hot_ns: None,
+        wasm_cached_ns: None,
     };
 
     if tinygo_wasm.exists() {
         let wasm_bytes = std::fs::read(tinygo_wasm).unwrap();
 
-        // Go WASM per-call (production path)
+        // Go WASM per-call (production path — no cache)
         if let Some(ns) = go_wasm_per_call(&wasm_bytes) {
-            println!("  Go WASM per-call: {:.1} µs/call", ns / 1000.0);
+            println!("  Go WASM per-call (no cache): {:.1} µs/call", ns / 1000.0);
             go_r.wasm_hot_ns = Some(ns);
+        }
+
+        // Go WASM cached module (compile once, reuse)
+        let mut cached_times = Vec::with_capacity(RUNS);
+        for _ in 0..RUNS {
+            if let Some(ns) = go_wasm_cached(&wasm_bytes) {
+                cached_times.push(ns);
+            }
+        }
+        if !cached_times.is_empty() {
+            go_r.wasm_cached_ns = Some(median_of(&mut cached_times));
+            println!("  Go WASM cached module:   {:.1} µs/call", go_r.wasm_cached_ns.unwrap() / 1000.0);
         }
 
         // Go WASM cold start (per-call instantiation)
