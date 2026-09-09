@@ -125,6 +125,42 @@ pub struct WasmRuntimesConfig {
     /// Go (TinyGo) runtime configuration
     #[serde(default)]
     pub go: WasmLanguageConfig,
+    
+    /// Ruby (CRuby/WASM) runtime configuration
+    #[serde(default)]
+    pub ruby: WasmLanguageConfig,
+    
+    /// Rust (wasm32-wasi) runtime configuration
+    #[serde(default)]
+    pub rust: WasmLanguageConfig,
+    
+    /// TypeScript (QuickJS) runtime configuration
+    #[serde(default)]
+    pub typescript: WasmLanguageConfig,
+    
+    /// PHP runtime configuration
+    #[serde(default)]
+    pub php: WasmLanguageConfig,
+    
+    /// C#/.NET runtime configuration
+    #[serde(default)]
+    pub csharp: WasmLanguageConfig,
+    
+    /// Java/Kotlin runtime configuration
+    #[serde(default)]
+    pub java: WasmLanguageConfig,
+    
+    /// R runtime configuration
+    #[serde(default)]
+    pub r: WasmLanguageConfig,
+    
+    /// Julia runtime configuration
+    #[serde(default)]
+    pub julia: WasmLanguageConfig,
+    
+    /// Perl runtime configuration
+    #[serde(default)]
+    pub perl: WasmLanguageConfig,
 }
 
 /// Per-language WASM runtime configuration.
@@ -157,6 +193,42 @@ impl Default for WasmRuntimesConfig {
             go: WasmLanguageConfig {
                 enabled: true,
                 wasm_path: default_tinygo_wasm_path(),
+            },
+            ruby: WasmLanguageConfig {
+                enabled: true,
+                wasm_path: default_ruby_wasm_path(),
+            },
+            rust: WasmLanguageConfig {
+                enabled: true,
+                wasm_path: default_rust_wasm_path(),
+            },
+            typescript: WasmLanguageConfig {
+                enabled: true,
+                wasm_path: default_typescript_wasm_path(),
+            },
+            php: WasmLanguageConfig {
+                enabled: false,
+                wasm_path: default_php_wasm_path(),
+            },
+            csharp: WasmLanguageConfig {
+                enabled: false,
+                wasm_path: default_csharp_wasm_path(),
+            },
+            java: WasmLanguageConfig {
+                enabled: false,
+                wasm_path: default_java_wasm_path(),
+            },
+            r: WasmLanguageConfig {
+                enabled: false,
+                wasm_path: default_r_wasm_path(),
+            },
+            julia: WasmLanguageConfig {
+                enabled: false,
+                wasm_path: default_julia_wasm_path(),
+            },
+            perl: WasmLanguageConfig {
+                enabled: false,
+                wasm_path: default_perl_wasm_path(),
             },
         }
     }
@@ -244,6 +316,42 @@ fn default_lua_wasm_path() -> String {
 
 fn default_tinygo_wasm_path() -> String {
     "bench_tools/tinygo_wasm/tool.wasm".to_string()
+}
+
+fn default_ruby_wasm_path() -> String {
+    "bench_tools/mruby_wasm/ruby.wasm".to_string()
+}
+
+fn default_rust_wasm_path() -> String {
+    "bench_tools/rust_wasm/example_tool.wasm".to_string()
+}
+
+fn default_typescript_wasm_path() -> String {
+    "bench_tools/quickjs_wasm/quickjs.wasm".to_string()
+}
+
+fn default_php_wasm_path() -> String {
+    "bench_tools/php_wasm/php.wasm".to_string()
+}
+
+fn default_csharp_wasm_path() -> String {
+    "bench_tools/csharp_wasm/dotnet.wasm".to_string()
+}
+
+fn default_java_wasm_path() -> String {
+    "bench_tools/java_wasm/java.wasm".to_string()
+}
+
+fn default_r_wasm_path() -> String {
+    "bench_tools/r_wasm/r.wasm".to_string()
+}
+
+fn default_julia_wasm_path() -> String {
+    "bench_tools/julia_wasm/julia.wasm".to_string()
+}
+
+fn default_perl_wasm_path() -> String {
+    "bench_tools/perl_wasm/perl.wasm".to_string()
 }
 
 impl ServerConfig {
@@ -548,10 +656,28 @@ mod tests {
         assert!(config.wasm_runtimes.python.enabled);
         assert!(config.wasm_runtimes.lua.enabled);
         assert!(config.wasm_runtimes.go.enabled);
+        assert!(config.wasm_runtimes.ruby.enabled);
+        assert!(config.wasm_runtimes.rust.enabled);
+        assert!(config.wasm_runtimes.typescript.enabled);
+        assert!(!config.wasm_runtimes.php.enabled);
+        assert!(!config.wasm_runtimes.csharp.enabled);
+        assert!(!config.wasm_runtimes.java.enabled);
+        assert!(!config.wasm_runtimes.r.enabled);
+        assert!(!config.wasm_runtimes.julia.enabled);
+        assert!(!config.wasm_runtimes.perl.enabled);
         assert!(config.wasm_runtimes.javascript.wasm_path.contains("quickjs"));
         assert!(config.wasm_runtimes.python.wasm_path.contains("micropython"));
         assert!(config.wasm_runtimes.lua.wasm_path.contains("lua"));
         assert!(config.wasm_runtimes.go.wasm_path.contains("tinygo"));
+        assert!(config.wasm_runtimes.ruby.wasm_path.contains("mruby"));
+        assert!(config.wasm_runtimes.rust.wasm_path.contains("rust_wasm"));
+        assert!(config.wasm_runtimes.typescript.wasm_path.contains("quickjs"));
+        assert!(config.wasm_runtimes.php.wasm_path.contains("php_wasm"));
+        assert!(config.wasm_runtimes.csharp.wasm_path.contains("csharp_wasm"));
+        assert!(config.wasm_runtimes.java.wasm_path.contains("java_wasm"));
+        assert!(config.wasm_runtimes.r.wasm_path.contains("r_wasm"));
+        assert!(config.wasm_runtimes.julia.wasm_path.contains("julia_wasm"));
+        assert!(config.wasm_runtimes.perl.wasm_path.contains("perl_wasm"));
     }
 
     #[test]

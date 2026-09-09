@@ -4,9 +4,18 @@
 //! and runs in-process via Wasmer. The `WasmRuntime` trait provides a uniform interface
 //! for registering and calling tools written in any supported language.
 
+pub mod csharp;
+pub mod java;
+pub mod julia;
 pub mod lua;
 pub mod micropython;
+pub mod perl;
+pub mod php;
 pub mod quickjs;
+pub mod r;
+pub mod ruby;
+pub mod rust;
+pub mod typescript;
 pub mod wasi;
 
 use std::collections::HashMap;
