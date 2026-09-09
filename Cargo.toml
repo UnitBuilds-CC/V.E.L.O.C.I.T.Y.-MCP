@@ -117,6 +117,10 @@ harness = false
 name = "wasm_vs_native"
 harness = false
 
+[[bench]]
+name = "wasm_tool_latency"
+harness = false
+
 [profile.release]
 opt-level = 3
 lto = true
