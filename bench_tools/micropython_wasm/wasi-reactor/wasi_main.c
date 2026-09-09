@@ -498,10 +498,18 @@ int mp_wasi_register_tool(const char *name_ptr, size_t name_len,
     }
 }
 
-/* mp_wasi_call_tool(name_ptr, name_len) -> int
- * Calls the pre-compiled wrapper for the named tool.
+/* mp_wasi_call_tool(args_ptr, args_n, name_ptr, name_len) -> int
+ * Single-call protocol: reads args from WASM memory, looks up pre-compiled
+ * wrapper, executes it. Replaces the old two-call set_args + call_tool pattern.
  */
-int mp_wasi_call_tool(const char *name_ptr, size_t name_len) {
+int mp_wasi_call_tool(const char *args_ptr, size_t args_n,
+                      const char *name_ptr, size_t name_len) {
+    /* Copy args directly from WASM memory into our parse buffer */
+    if (args_n >= ARGS_BUF_SIZE) args_n = ARGS_BUF_SIZE - 1;
+    memcpy(args_buf, args_ptr, args_n);
+    args_buf[args_n] = '\0';
+    args_len = args_n;
+
     output_reset();
 
     /* Find tool in registry */

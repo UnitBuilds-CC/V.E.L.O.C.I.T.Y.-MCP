@@ -1,0 +1,64 @@
+{
+  "name": "wasm-lua-tools",
+  "version": "1.0.0",
+  "tools": [
+    {
+      "name": "lua_string_utils",
+      "description": "Lua string utilities: upper, lower, reverse, repeat, trim, word_count",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["upper", "lower", "reverse", "repeat", "trim", "word_count"],
+            "description": "String operation"
+          },
+          "input": {
+            "type": "string",
+            "description": "Input string"
+          },
+          "count": {
+            "type": "number",
+            "description": "Repeat count (for 'repeat' action)"
+          }
+        },
+        "required": ["action", "input"]
+      },
+      "executor": {
+        "executor_type": "wasm",
+        "language": "lua",
+        "source": "function lua_string_utils(args)\n  local s = args.input or ''\n  local a = args.action or ''\n  if a == 'upper' then return {result = string.upper(s)}\n  elseif a == 'lower' then return {result = string.lower(s)}\n  elseif a == 'reverse' then return {result = string.reverse(s)}\n  elseif a == 'repeat' then\n    local n = args.count or 2\n    return {result = string.rep(s, n)}\n  elseif a == 'trim' then\n    local t = s:match('^%s*(.-)%s*$')\n    return {result = t}\n  elseif a == 'word_count' then\n    local c = 0\n    for _ in s:gmatch('%S+') do c = c + 1 end\n    return {result = c}\n  else\n    return {error = 'unknown action: ' .. a}\n  end\nend",
+        "timeout": 5
+      }
+    },
+    {
+      "name": "lua_math_tools",
+      "description": "Lua math operations: power, sqrt, round, floor, ceil, abs, fibonacci",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": ["power", "sqrt", "round", "floor", "ceil", "abs", "fibonacci"],
+            "description": "Math operation"
+          },
+          "value": {
+            "type": "number",
+            "description": "Input number"
+          },
+          "exponent": {
+            "type": "number",
+            "description": "Exponent (for 'power' operation)"
+          }
+        },
+        "required": ["operation", "value"]
+      },
+      "executor": {
+        "executor_type": "wasm",
+        "language": "lua",
+        "source": "function lua_math_tools(args)\n  local op = args.operation or ''\n  local v = args.value or 0\n  if op == 'power' then return {result = v ^ (args.exponent or 2)}\n  elseif op == 'sqrt' then return {result = math.sqrt(v)}\n  elseif op == 'round' then return {result = math.floor(v + 0.5)}\n  elseif op == 'floor' then return {result = math.floor(v)}\n  elseif op == 'ceil' then return {result = math.ceil(v)}\n  elseif op == 'abs' then return {result = math.abs(v)}\n  elseif op == 'fibonacci' then\n    local n = math.floor(v)\n    if n <= 0 then return {result = 0}\n    elseif n == 1 then return {result = 1}\n    end\n    local a, b = 0, 1\n    for _ = 2, n do a, b = b, a + b end\n    return {result = b}\n  else\n    return {error = 'unknown operation: ' .. op}\n  end\nend",
+        "timeout": 5
+      }
+    }
+  ]
+}

@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::error::Error;
-use wasmer::{FunctionEnv, Instance, Memory, Module, Store, Value};
+use wasmer::{Function, FunctionEnv, Instance, Memory, Module, Store, Value};
 
 use super::wasi::{WasiEnv, build_quickjs_imports};
 use super::WasmRuntime;
@@ -19,6 +19,10 @@ pub struct QuickJsRuntime {
     env: FunctionEnv<WasiEnv>,
     /// Registered tool names.
     tools: HashMap<String, String>,
+    /// Cached qjs_eval function to avoid export hash lookups.
+    qjs_eval_fn: Option<Function>,
+    /// Reusable buffer for building eval snippets (avoids per-call allocation).
+    eval_buf: Vec<u8>,
 }
 
 const EXEC_SLOT: u64 = 64 * 1024;
@@ -46,6 +50,8 @@ impl QuickJsRuntime {
             memory,
             env,
             tools: HashMap::new(),
+            qjs_eval_fn: None,
+            eval_buf: Vec::with_capacity(512),
         })
     }
 
@@ -59,7 +65,8 @@ impl QuickJsRuntime {
     /// Evaluate JS code at a pre-written memory location.
     /// Returns the result handle (caller must free via `free_value`).
     pub fn eval_at(&mut self, code_ptr: i32, code_len: i32) -> Result<i32, Box<dyn Error>> {
-        let qjs_eval_fn = self.instance.exports.get_function("qjs_eval")?;
+        let qjs_eval_fn = self.qjs_eval_fn.as_ref()
+            .ok_or_else(|| "qjs_eval not cached — call init() first")?;
         let result = qjs_eval_fn.call(&mut self.store, &[
             Value::I32(code_ptr),
             Value::I32(code_len),
@@ -235,6 +242,8 @@ impl WasmRuntime for QuickJsRuntime {
         if result != 0 {
             return Err(format!("qjs_init() failed with code {}", result).into());
         }
+
+        self.qjs_eval_fn = Some(self.instance.exports.get_function("qjs_eval")?.clone());
         Ok(())
     }
 
@@ -255,14 +264,34 @@ impl WasmRuntime for QuickJsRuntime {
             return Err(format!("Unknown JS tool: {}", name).into());
         }
 
-        let escaped = args_json
-            .replace('\\', "\\\\")
-            .replace('\'', "\\'")
-            .replace('\n', "\\n")
-            .replace('\r', "\\r");
+        // Build eval snippet directly into reusable buffer:
+        //   __args_buf = '<escaped>'; __wrapper()
+        // Single-pass escape — no intermediate allocations.
+        self.eval_buf.clear();
+        self.eval_buf.extend_from_slice(b"__args_buf='");
+        for &b in args_json.as_bytes() {
+            match b {
+                b'\\' => self.eval_buf.extend_from_slice(b"\\\\"),
+                b'\'' => self.eval_buf.extend_from_slice(b"\\'"),
+                b'\n' => self.eval_buf.extend_from_slice(b"\\n"),
+                b'\r' => self.eval_buf.extend_from_slice(b"\\r"),
+                _ => self.eval_buf.push(b),
+            }
+        }
+        self.eval_buf.extend_from_slice(b"';__wrapper()");
 
-        let call_code = format!("__args_buf = '{}'; __wrapper()", escaped);
-        self.eval_to_string(&call_code)
+        // Write to EXEC_SLOT and eval
+        let len = self.eval_buf.len();
+        self.memory.view(&self.store).write(EXEC_SLOT, &self.eval_buf)?;
+        self.memory.view(&self.store).write(EXEC_SLOT + len as u64, &[0u8])?;
+        let handle = self.eval_at(EXEC_SLOT as i32, len as i32)?;
+
+        if let Some(exc) = self.check_exception(handle)? {
+            self.free_value(handle)?;
+            return Err(exc.into());
+        }
+        self.read_string_value(handle)?
+            .ok_or_else(|| "JS evaluation returned null".into())
     }
 
     fn destroy(&mut self) -> Result<(), Box<dyn Error>> {

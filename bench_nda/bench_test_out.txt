@@ -1,0 +1,254 @@
+========================================================================
+  NDA-Native Benchmark: Binary-over-Shmem vs JSON-RPC-over-Stdio
+  VELOCITY-MCP v3.0.0 — 3 iterations × 3 rounds (median) per method
+========================================================================
+
+  Server: C:/Users/ian/Documents/MCP/target/release/velocity_mcp.exe
+  Buffer: nda_bench_1788267047110230400.bin
+  Shmem input limit: 4080 bytes, output limit: 61440 bytes
+
+  Transport primitive costs (this machine):
+  Micro: event ping-pong RTT (2 threads, same proc): 5.78 us  (one wake = 2.89 us)
+  Micro: event ping-pong RTT (2 processes):          5.71 us  (one wake = 2.85 us)
+  Micro: flush_async (FlushViewOfFile, dirty page):  35.98 us
+  Micro: SHA-256 of 8KB payload (Merkle size):     3.84 us  (2.13 GB/s)
+
+Starting NDA shmem server...
+Warming up NDA path...
+Running NDA-native benchmarks... (3 rounds, median kept)
+    [client phases] write=0.0us wait=0.5us read+copy=0.1us
+    [client phases] write=0.0us wait=0.5us read+copy=0.1us
+    [client phases] write=0.1us wait=0.5us read+copy=0.1us
+  Semantic check: NDA tools/list decoded to 16 tools (incl. read_nda, bench_echo) — OK
+Starting JSON-RPC stdio server...
+Warming up stdio path...
+Running stdio benchmarks... (3 rounds, median kept)
+Starting shmem server for JSON-over-shmem test...
+Running JSON-over-shmem benchmarks... (3 rounds, median kept)
+  Semantic check: JSON/shmem tools/list matches NDA tool set (16 tools) — OK
+Starting NDA-binary stdio server...
+Warming up NDA/stdio path...
+Running NDA/stdio benchmarks... (3 rounds, median kept)
+Starting HTTP server on port 13400...
+[2m2026-09-01T12:50:48.168724Z[0m [32m INFO[0m Starting V.E.L.O.C.I.T.Y. NMCP Server...
+[2m2026-09-01T12:50:48.169102Z[0m [32m INFO[0m Protocol mode selected [3mmode[0m[2m=[0m"http"
+[2m2026-09-01T12:50:48.169140Z[0m [32m INFO[0m C# core engine path resolved [3mcsharp_path[0m[2m=[0mNdaMcpServer.exe
+[2m2026-09-01T12:50:48.169449Z[0m [32m INFO[0m Plugin directory does not exist, skipping plugin loading [3mplugin_dir[0m[2m=[0m"plugins"
+[2m2026-09-01T12:50:48.169494Z[0m [32m INFO[0m Loaded plugins [3mplugin_dir[0m[2m=[0mplugins [3mcount[0m[2m=[0m0
+[2m2026-09-01T12:50:48.169513Z[0m [32m INFO[0m HTTP server address [3maddr[0m[2m=[0m"127.0.0.1:13400"
+Warning: Failed to set Ctrl+C handler: Ctrl-C error: Ctrl-C signal handler already registered
+[2m2026-09-01T12:50:48.170430Z[0m [33m WARN[0m HTTP server starting without API key authentication. The server is open to unauthenticated access. Set http.api_key in config or VELOCITY_HTTP_API_KEY environment variable to enable authentication.
+[2m2026-09-01T12:50:48.170934Z[0m [32m INFO[0m Starting HTTP server [3maddr[0m[2m=[0m"127.0.0.1:13400"
+Warming up HTTP path...
+[2m2026-09-01T12:50:48.414687Z[0m [32m INFO[0m Client initializing [3mclient[0m[2m=[0m"unknown" [3mversion[0m[2m=[0m"unknown"
+[2m2026-09-01T12:50:48.414752Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.414980Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m204 No Content [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.415091Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.415232Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.415317Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.415390Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.415453Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.415518Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.415578Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.415634Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.415773Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.415856Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+Running JSON/HTTP benchmarks... (3 rounds, median kept)
+[2m2026-09-01T12:50:48.415961Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.416036Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.416114Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.416198Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.416288Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.416379Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.416464Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.416551Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.416638Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.416965Z[0m [33m WARN[0m Failed to discover tools from C# engine, using built-in tools only [3merror[0m[2m=[0mC# engine not found at: NdaMcpServer.exe
+[2m2026-09-01T12:50:48.417227Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.417699Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.417981Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.418266Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.418502Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.418725Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.418952Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.419307Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.419618Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.419784Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.419863Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.419930Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.419995Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.420056Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.420116Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.420178Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.420241Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.420309Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.420375Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.420443Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.420506Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.420568Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.420631Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.420697Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.420762Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.420826Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.420890Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.420954Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.421019Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.421128Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.421193Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.421253Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.421311Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.421369Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.421426Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.421484Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.421545Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.421609Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.421670Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.421733Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.421795Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.421856Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.421916Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.422016Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.422087Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.422155Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.422230Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.422298Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.422422Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.422582Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.422693Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.422794Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.422950Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+[2m2026-09-01T12:50:48.423074Z[0m [32m INFO[0m Request completed [3mmethod[0m[2m=[0mPOST [3muri[0m[2m=[0m/mcp [3mstatus[0m[2m=[0m200 OK [3mduration_ms[0m[2m=[0m0
+
+Running tools/list payload-scaling benchmark...
+  +0 tools: 16 tools total — NDA 8001 B vs JSON 7605 B, sets match (16 names)
+  +32 tools: 48 tools total — NDA 17857 B vs JSON 16981 B, sets match (48 names)
+  +64 tools: 80 tools total — NDA 27713 B vs JSON 26357 B, sets match (80 names)
+  +128 tools: 144 tools total — NDA 47425 B vs JSON 45109 B, sets match (144 names)
+
+========================================================================
+  RESULTS
+========================================================================
+
+  Six transport pipelines compared:
+    NDA/shmem    = NDA binary TLV over shared memory (zero-poll Win32 events)
+    JSON/stdio   = JSON-RPC over stdin/stdout pipes (thread + channel + 200ms poll)
+    JSON/shmem   = JSON-RPC over shared memory (isolates encoding cost)
+    NDA/stdio    = NDA binary TLV over stdin/stdout pipes (length-prefixed frames)
+    JSON/HTTP    = JSON-RPC over HTTP/1.1 keep-alive (Axum router + middleware)
+
+─── Ping ──────────────────────────────────────────
+                              NDA/shmem   JSON/stdio   JSON/shmem    NDA/stdio    JSON/HTTP
+  Avg latency                   0.001 ms      0.050 ms      0.007 ms      0.019 ms      0.083 ms
+  p50                           0.001 ms      0.048 ms      0.007 ms      0.015 ms      0.082 ms
+  p95                           0.001 ms      0.057 ms      0.007 ms      0.026 ms      0.086 ms
+  p99                           0.001 ms      0.057 ms      0.007 ms      0.026 ms      0.086 ms
+  Throughput                  1428571 r/s      20013 r/s     141509 r/s      53571 r/s      12116 r/s
+
+  Avg speedup:  71.4x faster (NDA/shmem vs JSON/stdio)
+  P99 speedup:  71.6x faster
+  NDA/stdio vs JSON/stdio:  2.7x avg, 2.2x p99 (binary encoding over pipes)
+  NDA/stdio vs NDA/shmem:   26.7x avg, 32.0x p99 (stdio pipe cost for binary frames)
+  Encoding speedup: 10.1x (binary TLV vs JSON, same shmem transport)
+  Transport speedup: 71.4x (shmem vs stdio pipes, same JSON encoding)
+  JSON/HTTP vs JSON/stdio:  0.6x avg, 0.7x p99 (HTTP transport overhead on JSON)
+  JSON/HTTP vs NDA/shmem:   117.9x avg, 107.6x p99 (full stack cost: JSON + HTTP + Axum)
+
+─── Tools/List ──────────────────────────────────────────
+                              NDA/shmem   JSON/stdio   JSON/shmem    NDA/stdio    JSON/HTTP
+  Avg latency                   0.010 ms      0.273 ms      0.135 ms      0.072 ms      0.268 ms
+  p50                           0.005 ms      0.284 ms      0.134 ms      0.067 ms      0.256 ms
+  p95                           0.019 ms      0.285 ms      0.150 ms      0.087 ms      0.302 ms
+  p99                           0.019 ms      0.285 ms      0.150 ms      0.087 ms      0.302 ms
+  Throughput                   102041 r/s       3667 r/s       7409 r/s      13928 r/s       3736 r/s
+
+  Avg speedup:  27.8x faster (NDA/shmem vs JSON/stdio)
+  P99 speedup:  15.3x faster
+  NDA/stdio vs JSON/stdio:  3.8x avg, 3.3x p99 (binary encoding over pipes)
+  NDA/stdio vs NDA/shmem:   7.3x avg, 4.7x p99 (stdio pipe cost for binary frames)
+  Encoding speedup: 13.8x (binary TLV vs JSON, same shmem transport)
+  Transport speedup: 27.8x (shmem vs stdio pipes, same JSON encoding)
+  JSON/HTTP vs JSON/stdio:  1.0x avg, 0.9x p99 (HTTP transport overhead on JSON)
+  JSON/HTTP vs NDA/shmem:   27.3x avg, 16.2x p99 (full stack cost: JSON + HTTP + Axum)
+
+─── Tools/Call (64B) ──────────────────────────────────────────
+                              NDA/shmem   JSON/stdio   JSON/shmem    NDA/stdio    JSON/HTTP
+  Avg latency                   0.002 ms      0.051 ms      0.009 ms      0.029 ms      0.062 ms
+  p50                           0.001 ms      0.046 ms      0.009 ms      0.019 ms      0.063 ms
+  p95                           0.002 ms      0.071 ms      0.010 ms      0.051 ms      0.064 ms
+  p99                           0.002 ms      0.071 ms      0.010 ms      0.051 ms      0.064 ms
+  Throughput                   600000 r/s      19481 r/s     111111 r/s      33898 r/s      16112 r/s
+
+  Avg speedup:  30.8x faster (NDA/shmem vs JSON/stdio)
+  P99 speedup:  32.3x faster
+  NDA/stdio vs JSON/stdio:  1.7x avg, 1.4x p99 (binary encoding over pipes)
+  NDA/stdio vs NDA/shmem:   17.7x avg, 23.0x p99 (stdio pipe cost for binary frames)
+  Encoding speedup: 5.4x (binary TLV vs JSON, same shmem transport)
+  Transport speedup: 30.8x (shmem vs stdio pipes, same JSON encoding)
+  JSON/HTTP vs JSON/stdio:  0.8x avg, 1.1x p99 (HTTP transport overhead on JSON)
+  JSON/HTTP vs NDA/shmem:   37.2x avg, 29.1x p99 (full stack cost: JSON + HTTP + Axum)
+
+─── Health/Check ──────────────────────────────────────────
+                              NDA/shmem   JSON/stdio   JSON/shmem    NDA/stdio    JSON/HTTP
+  Avg latency                   0.001 ms      0.042 ms      0.006 ms      0.017 ms      0.062 ms
+  p50                           0.001 ms      0.039 ms      0.006 ms      0.018 ms      0.063 ms
+  p95                           0.001 ms      0.050 ms      0.007 ms      0.018 ms      0.063 ms
+  p99                           0.001 ms      0.050 ms      0.007 ms      0.018 ms      0.063 ms
+  Throughput                  1875000 r/s      23885 r/s     156250 r/s      57803 r/s      16094 r/s
+
+  Avg speedup:  78.5x faster (NDA/shmem vs JSON/stdio)
+  P99 speedup:  83.5x faster
+  NDA/stdio vs JSON/stdio:  2.4x avg, 2.8x p99 (binary encoding over pipes)
+  NDA/stdio vs NDA/shmem:   32.4x avg, 30.2x p99 (stdio pipe cost for binary frames)
+  Encoding speedup: 12.0x (binary TLV vs JSON, same shmem transport)
+  Transport speedup: 78.5x (shmem vs stdio pipes, same JSON encoding)
+  JSON/HTTP vs JSON/stdio:  0.7x avg, 0.8x p99 (HTTP transport overhead on JSON)
+  JSON/HTTP vs NDA/shmem:   116.5x avg, 105.7x p99 (full stack cost: JSON + HTTP + Axum)
+
+─── Payload Scaling: bench_echo ──────────────────────────────────────────
+
+     Payload   NDA/shmem JSON/stdio JSON/shmem  NDA/stdio  JSON/HTTP     Avg Δ    P99 Δ
+  ────────────────────────────────────────────────────────────────────────────────────────────────────
+       256 B     0.002 ms    0.048 ms    0.007 ms    0.021 ms    0.057 ms    25.5x   21.0x
+        1 KB     0.002 ms    0.042 ms    0.009 ms    0.031 ms    0.060 ms    18.3x   16.4x
+        4 KB     0.004 ms    0.063 ms    0.020 ms    0.029 ms    0.127 ms    14.9x   19.5x
+
+─── tools/list Payload Scaling: registry size (NDA/shmem vs JSON/shmem) ──
+
+  (JSON/stdio excluded: its tools/list paginates at 100 tools,
+   so payloads would not be comparable at larger registries.)
+
+      +tools  tools  NDA bytes JSON bytes     NDA/shmem   JSON/shmem  Speedup
+  ──────────────────────────────────────────────────────────────────────────────
+           0     16       8001       7605       0.005 ms      0.091 ms    17.1x
+          32     48      17857      16981       0.017 ms      0.279 ms    16.1x
+          64     80      27713      26357       0.036 ms      0.272 ms     7.6x
+         128    144      47425      45109       0.033 ms      0.361 ms    11.0x
+
+========================================================================
+  SUMMARY
+========================================================================
+
+  Pipeline                Avg         P99         vs NDA/shmem
+  ─────────────────────────────────────────────────────────────────
+  NDA/shmem           0.001 ms       0.001 ms   (baseline)
+  NDA/stdio           0.022 ms       0.031 ms   22.6x avg, 26.2x p99
+  JSON/shmem          0.007 ms       0.008 ms   7.7x avg (encoding cost only)
+  JSON/stdio          0.048 ms       0.059 ms   49.4x avg, 49.6x p99
+  JSON/HTTP           0.069 ms       0.071 ms   71.3x avg, 59.3x p99
+
+  What's being measured:
+    NDA/shmem:  TLV encode → SHA-256 → mmap write → SetEvent → server processes
+                → mmap write → SetEvent → client reads. No JSON parsing anywhere.
+    NDA/stdio:  TLV encode → SHA-256 → pipe write → pipe read → server processes
+                → pipe write → pipe read → TLV decode. Same binary encoding, pipes for transport.
+    JSON/shmem: serde_json stringify → mmap write → SetEvent → server parses
+                → mmap write → SetEvent → client JSON parses. Same shmem, JSON encoding cost.
+    JSON/stdio: serde_json stringify → pipe write → thread recv → channel send →
+                serde_json parse → handle → serde_json stringify → pipe write →
+                pipe read → JSON parse. Two JSON serialize+parse cycles per request.
+    JSON/HTTP:  serde_json stringify → HTTP POST → TCP write → Axum router →
+                middleware stack → serde_json parse → handle → serde_json
+                stringify → HTTP response → TCP read → JSON parse.
+
+  Shmem buffer limits: input ≤ 4080 bytes, output ≤ 61440 bytes
+  (4KB input / 61KB output — sufficient for typical MCP tool calls)

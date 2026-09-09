@@ -1,0 +1,75 @@
+{
+  "name": "wasm-javascript-tools",
+  "version": "1.0.0",
+  "tools": [
+    {
+      "name": "js_string_transform",
+      "description": "Transform strings: upper, lower, reverse, slug, capitalize, or title case",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["upper", "lower", "reverse", "slug", "capitalize", "title"],
+            "description": "Transformation to apply"
+          },
+          "input": {
+            "type": "string",
+            "description": "Text to transform"
+          }
+        },
+        "required": ["action", "input"]
+      },
+      "executor": {
+        "executor_type": "wasm",
+        "language": "javascript",
+        "source": "function js_string_transform(args) { var s = args.input || ''; switch (args.action) { case 'upper': return {result: s.toUpperCase()}; case 'lower': return {result: s.toLowerCase()}; case 'reverse': return {result: s.split('').reverse().join('')}; case 'slug': return {result: s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}; case 'capitalize': return {result: s.charAt(0).toUpperCase() + s.slice(1)}; case 'title': return {result: s.replace(/\\b\\w/g, function(c) { return c.toUpperCase(); })}; default: return {error: 'Unknown action: ' + args.action}; } }",
+        "timeout": 5
+      }
+    },
+    {
+      "name": "js_calculator",
+      "description": "Evaluate a mathematical expression safely and return the result",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "expression": {
+            "type": "string",
+            "description": "Math expression to evaluate (e.g. '2 + 3 * 4')"
+          }
+        },
+        "required": ["expression"]
+      },
+      "executor": {
+        "executor_type": "wasm",
+        "language": "javascript",
+        "source": "function js_calculator(args) { var expr = args.expression || ''; if (!/^[0-9+\\-*/().\\s%^]+$/.test(expr)) return {error: 'Invalid characters in expression'}; try { var result = Function('\"use strict\"; return (' + expr + ')')(); return {result: result, expression: expr}; } catch(e) { return {error: e.message}; } }",
+        "timeout": 5
+      }
+    },
+    {
+      "name": "js_data_flatten",
+      "description": "Flatten a nested JSON object into dot-notation keys",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "description": "Nested object to flatten"
+          },
+          "prefix": {
+            "type": "string",
+            "description": "Optional key prefix"
+          }
+        },
+        "required": ["data"]
+      },
+      "executor": {
+        "executor_type": "wasm",
+        "language": "javascript",
+        "source": "function js_data_flatten(args) { var result = {}; function flatten(obj, pre) { for (var k in obj) { if (obj[k] && typeof obj[k] === 'object' && !Array.isArray(obj[k])) { flatten(obj[k], pre + k + '.'); } else { result[pre + k] = obj[k]; } } } flatten(args.data || {}, args.prefix || ''); return {result: result}; }",
+        "timeout": 5
+      }
+    }
+  ]
+}

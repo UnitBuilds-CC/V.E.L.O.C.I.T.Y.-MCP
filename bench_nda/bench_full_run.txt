@@ -1,0 +1,475 @@
+========================================================================
+  NDA-Native Benchmark: Binary-over-Shmem vs JSON-RPC-over-Stdio
+  VELOCITY-MCP v3.0.0 — 500 iterations × 3 rounds (median) per method
+========================================================================
+
+  Server: target/release/velocity_mcp.exe
+  Buffer: nda_bench_1788287091613501500.bin
+  Shmem input limit: 4080 bytes, output limit: 61440 bytes
+
+  Transport primitive costs (this machine):
+  Micro: event ping-pong RTT (2 threads, same proc): 5.40 us  (one wake = 2.70 us)
+  Micro: event ping-pong RTT (2 processes):          4.93 us  (one wake = 2.47 us)
+  Micro: flush_async (FlushViewOfFile, dirty page):  22.90 us
+  Micro: SHA-256 of 8KB payload (Merkle size):     3.63 us  (2.26 GB/s)
+
+Starting NDA shmem server...
+Measuring NDA/shmem cold start...
+  NDA/shmem cold start: 1st=0.049ms, 2nd=0.003ms
+Warming up NDA path...
+Running NDA-native benchmarks... (3 rounds, median kept)
+    [client phases] write=0.1us wait=3.0us read=0.1us
+    [client phases] write=0.0us wait=3.4us read=0.1us
+    [client phases] write=0.1us wait=3.6us read=0.3us
+  Semantic check: NDA tools/list decoded to 17 tools (incl. read_nda, bench_echo) — OK
+Starting JSON-RPC stdio server...
+Warming up stdio path...
+Running stdio benchmarks... (3 rounds, median kept)
+    [client phases] json_encode=0.2us pipe_write=2.7us pipe_read=15.5us
+    [client phases] json_encode=0.2us pipe_write=2.8us pipe_read=16.1us
+    [client phases] json_encode=0.2us pipe_write=2.7us pipe_read=15.1us
+    [client phases] json_encode=0.4us pipe_write=3.5us pipe_read=193.6us
+    [client phases] json_encode=0.3us pipe_write=3.3us pipe_read=161.6us
+    [client phases] json_encode=0.3us pipe_write=3.1us pipe_read=158.4us
+    [client phases] json_encode=0.2us pipe_write=2.7us pipe_read=19.2us
+    [client phases] json_encode=0.2us pipe_write=2.8us pipe_read=19.6us
+    [client phases] json_encode=0.2us pipe_write=2.8us pipe_read=19.7us
+    [client phases] json_encode=0.2us pipe_write=2.7us pipe_read=17.5us
+    [client phases] json_encode=0.2us pipe_write=2.7us pipe_read=17.7us
+    [client phases] json_encode=0.2us pipe_write=2.7us pipe_read=18.0us
+    [client phases] json_encode=0.2us pipe_write=2.6us pipe_read=20.6us
+    [client phases] json_encode=0.2us pipe_write=2.6us pipe_read=20.4us
+    [client phases] json_encode=0.2us pipe_write=2.5us pipe_read=17.8us
+    [client phases] json_encode=0.2us pipe_write=2.6us pipe_read=20.7us
+    [client phases] json_encode=0.2us pipe_write=2.6us pipe_read=20.3us
+    [client phases] json_encode=0.3us pipe_write=2.6us pipe_read=22.0us
+    [client phases] json_encode=0.2us pipe_write=2.7us pipe_read=24.7us
+    [client phases] json_encode=0.2us pipe_write=2.7us pipe_read=24.3us
+    [client phases] json_encode=0.2us pipe_write=2.7us pipe_read=23.8us
+Starting shmem server for JSON-over-shmem test...
+Running JSON-over-shmem benchmarks... (3 rounds, median kept)
+    [client phases] write=0.3us wait=5.2us read=0.3us
+    [client phases] write=0.2us wait=5.4us read=0.3us
+    [client phases] write=0.2us wait=5.4us read=0.2us
+    [client phases] write=0.3us wait=55.7us read=1.0us
+    [client phases] write=0.3us wait=49.2us read=0.9us
+    [client phases] write=0.3us wait=44.5us read=0.9us
+  Semantic check: JSON/shmem tools/list matches NDA tool set (17 tools) — OK
+    [client phases] write=0.3us wait=6.8us read=0.3us
+    [client phases] write=0.3us wait=6.2us read=0.2us
+    [client phases] write=0.3us wait=6.1us read=0.2us
+    [client phases] write=0.2us wait=5.3us read=0.2us
+    [client phases] write=0.2us wait=5.1us read=0.2us
+    [client phases] write=0.2us wait=5.2us read=0.2us
+    [client phases] write=0.3us wait=6.3us read=0.3us
+    [client phases] write=0.3us wait=6.6us read=0.3us
+    [client phases] write=0.3us wait=6.4us read=0.3us
+    [client phases] write=0.3us wait=6.7us read=0.3us
+    [client phases] write=0.3us wait=6.7us read=0.3us
+    [client phases] write=0.3us wait=7.0us read=0.3us
+    [client phases] write=0.3us wait=7.7us read=0.7us
+    [client phases] write=0.3us wait=7.7us read=0.6us
+    [client phases] write=0.3us wait=7.8us read=0.6us
+Starting NDA-binary stdio server...
+Warming up NDA/stdio path...
+Running NDA/stdio benchmarks... (3 rounds, median kept)
+    [client phases] frame_build=0.4us pipe_write=3.9us pipe_read=10.4us
+    [client phases] frame_build=0.4us pipe_write=3.8us pipe_read=10.6us
+    [client phases] frame_build=0.4us pipe_write=3.8us pipe_read=10.2us
+    [client phases] frame_build=0.3us pipe_write=4.0us pipe_read=54.5us
+    [client phases] frame_build=0.3us pipe_write=4.0us pipe_read=49.9us
+    [client phases] frame_build=0.3us pipe_write=4.0us pipe_read=50.4us
+    [client phases] frame_build=0.6us pipe_write=3.9us pipe_read=15.0us
+    [client phases] frame_build=0.6us pipe_write=3.9us pipe_read=14.9us
+    [client phases] frame_build=0.7us pipe_write=3.9us pipe_read=15.6us
+    [client phases] frame_build=0.4us pipe_write=3.9us pipe_read=12.9us
+    [client phases] frame_build=0.4us pipe_write=4.1us pipe_read=13.4us
+    [client phases] frame_build=0.4us pipe_write=3.9us pipe_read=12.6us
+    [client phases] frame_build=0.6us pipe_write=4.0us pipe_read=16.1us
+    [client phases] frame_build=0.5us pipe_write=3.9us pipe_read=15.8us
+    [client phases] frame_build=0.6us pipe_write=3.9us pipe_read=16.5us
+    [client phases] frame_build=0.6us pipe_write=4.0us pipe_read=18.8us
+    [client phases] frame_build=0.6us pipe_write=3.9us pipe_read=18.3us
+    [client phases] frame_build=0.6us pipe_write=3.9us pipe_read=18.6us
+    [client phases] frame_build=0.6us pipe_write=4.0us pipe_read=22.4us
+    [client phases] frame_build=0.6us pipe_write=4.0us pipe_read=23.1us
+    [client phases] frame_build=0.6us pipe_write=3.9us pipe_read=22.9us
+    [client phases] frame_build=0.6us pipe_write=4.0us pipe_read=67.2us
+    [client phases] frame_build=0.6us pipe_write=4.1us pipe_read=44.8us
+    [client phases] frame_build=0.6us pipe_write=3.9us pipe_read=36.0us
+    [client phases] frame_build=0.6us pipe_write=4.0us pipe_read=191.4us
+    [client phases] frame_build=0.6us pipe_write=4.0us pipe_read=174.5us
+    [client phases] frame_build=0.7us pipe_write=4.2us pipe_read=133.4us
+    [client phases] frame_build=3.5us pipe_write=11.8us pipe_read=7628.0us
+    [client phases] frame_build=3.4us pipe_write=11.4us pipe_read=7611.7us
+    [client phases] frame_build=3.5us pipe_write=11.4us pipe_read=7713.1us
+Starting HTTP server on port 14500...
+Warming up HTTP path...
+Running JSON/HTTP benchmarks... (3 rounds, median kept)
+    [client phases] json_encode=0.2us http_send=47.5us response_read=0.7us
+    [client phases] json_encode=0.2us http_send=48.4us response_read=0.7us
+    [client phases] json_encode=0.2us http_send=48.3us response_read=0.7us
+    [client phases] json_encode=0.3us http_send=170.3us response_read=3.7us
+    [client phases] json_encode=0.3us http_send=155.0us response_read=3.7us
+    [client phases] json_encode=0.3us http_send=143.7us response_read=3.6us
+    [client phases] json_encode=0.3us http_send=54.2us response_read=0.8us
+    [client phases] json_encode=0.3us http_send=53.9us response_read=0.8us
+    [client phases] json_encode=0.3us http_send=55.1us response_read=0.8us
+    [client phases] json_encode=0.2us http_send=47.2us response_read=0.7us
+    [client phases] json_encode=0.2us http_send=48.7us response_read=0.6us
+    [client phases] json_encode=0.3us http_send=49.4us response_read=0.7us
+    [client phases] json_encode=0.3us http_send=55.8us response_read=0.9us
+    [client phases] json_encode=0.4us http_send=61.0us response_read=1.1us
+    [client phases] json_encode=0.4us http_send=66.6us response_read=1.4us
+    [client phases] json_encode=0.5us http_send=67.3us response_read=2.4us
+    [client phases] json_encode=0.3us http_send=56.5us response_read=1.5us
+    [client phases] json_encode=0.3us http_send=53.6us response_read=1.4us
+    [client phases] json_encode=0.3us http_send=58.1us response_read=2.6us
+    [client phases] json_encode=0.3us http_send=56.0us response_read=2.6us
+    [client phases] json_encode=0.3us http_send=58.4us response_read=2.7us
+Audit export (json_http): 6000 entries → bench_nda/audit_json_http.json
+Starting Node.js JSON/stdio server (bench_nodejs/server.js)...
+Warming up Node.js/stdio path...
+Running Node.js/stdio benchmarks... (3 rounds, median kept)
+    [client phases] json_encode=0.2us pipe_write=1.6us pipe_read=33.1us
+    [client phases] json_encode=0.2us pipe_write=1.6us pipe_read=25.8us
+    [client phases] json_encode=0.2us pipe_write=1.6us pipe_read=24.3us
+    [client phases] json_encode=0.3us pipe_write=3.2us pipe_read=70.3us
+    [client phases] json_encode=0.3us pipe_write=3.2us pipe_read=69.6us
+    [client phases] json_encode=0.2us pipe_write=3.1us pipe_read=68.6us
+    [client phases] json_encode=0.2us pipe_write=2.8us pipe_read=28.1us
+    [client phases] json_encode=0.2us pipe_write=2.8us pipe_read=28.5us
+    [client phases] json_encode=0.2us pipe_write=2.7us pipe_read=28.0us
+    [client phases] json_encode=0.2us pipe_write=2.7us pipe_read=26.5us
+    [client phases] json_encode=0.2us pipe_write=2.1us pipe_read=24.7us
+    [client phases] json_encode=0.2us pipe_write=2.0us pipe_read=24.5us
+    [client phases] json_encode=0.2us pipe_write=2.5us pipe_read=27.2us
+    [client phases] json_encode=0.2us pipe_write=2.5us pipe_read=26.4us
+    [client phases] json_encode=0.2us pipe_write=2.5us pipe_read=25.5us
+    [client phases] json_encode=0.2us pipe_write=2.6us pipe_read=27.8us
+    [client phases] json_encode=0.2us pipe_write=2.8us pipe_read=28.6us
+    [client phases] json_encode=0.2us pipe_write=2.8us pipe_read=29.3us
+    [client phases] json_encode=0.2us pipe_write=2.8us pipe_read=34.5us
+    [client phases] json_encode=0.3us pipe_write=3.1us pipe_read=37.0us
+    [client phases] json_encode=0.3us pipe_write=3.0us pipe_read=35.1us
+Starting Node.js HTTP server on port 15500...
+Warming up Node.js/HTTP path...
+Running Node.js/HTTP benchmarks... (3 rounds, median kept)
+    [client phases] json_encode=0.3us http_send=82.3us response_read=0.9us
+    [client phases] json_encode=0.3us http_send=56.4us response_read=0.7us
+    [client phases] json_encode=0.2us http_send=50.2us response_read=0.6us
+    [client phases] json_encode=0.3us http_send=66.3us response_read=3.8us
+    [client phases] json_encode=0.3us http_send=63.1us response_read=3.7us
+    [client phases] json_encode=0.3us http_send=64.6us response_read=3.7us
+    [client phases] json_encode=0.3us http_send=49.4us response_read=0.7us
+    [client phases] json_encode=0.3us http_send=47.9us response_read=0.7us
+    [client phases] json_encode=0.3us http_send=45.7us response_read=0.7us
+    [client phases] json_encode=0.3us http_send=47.5us response_read=0.6us
+    [client phases] json_encode=0.3us http_send=63.7us response_read=0.8us
+    [client phases] json_encode=0.3us http_send=61.7us response_read=1.0us
+    [client phases] json_encode=0.3us http_send=50.0us response_read=0.9us
+    [client phases] json_encode=0.3us http_send=47.1us response_read=0.8us
+    [client phases] json_encode=0.3us http_send=47.4us response_read=0.9us
+    [client phases] json_encode=0.3us http_send=49.7us response_read=1.4us
+    [client phases] json_encode=0.3us http_send=49.2us response_read=1.5us
+    [client phases] json_encode=0.3us http_send=49.4us response_read=1.5us
+    [client phases] json_encode=0.4us http_send=60.4us response_read=3.4us
+    [client phases] json_encode=0.4us http_send=55.5us response_read=3.2us
+    [client phases] json_encode=0.3us http_send=50.4us response_read=2.5us
+Starting HTTP server for NDA/HTTP on port 16500...
+Warming up NDA/HTTP path...
+Running NDA/HTTP benchmarks... (3 rounds, median kept)
+    [client phases] frame_build=0.5us http_send=48.0us response_read=0.3us
+    [client phases] frame_build=0.5us http_send=47.6us response_read=0.3us
+    [client phases] frame_build=0.5us http_send=48.1us response_read=0.3us
+    [client phases] frame_build=0.4us http_send=55.8us response_read=4.2us
+    [client phases] frame_build=0.6us http_send=69.0us response_read=7.1us
+    [client phases] frame_build=0.5us http_send=59.9us response_read=5.7us
+    [client phases] frame_build=0.8us http_send=55.8us response_read=0.3us
+    [client phases] frame_build=0.8us http_send=55.6us response_read=0.3us
+    [client phases] frame_build=0.8us http_send=55.4us response_read=0.4us
+    [client phases] frame_build=0.5us http_send=47.1us response_read=0.3us
+    [client phases] frame_build=0.5us http_send=46.5us response_read=0.3us
+    [client phases] frame_build=0.5us http_send=46.6us response_read=0.3us
+    [client phases] frame_build=0.8us http_send=52.5us response_read=0.3us
+    [client phases] frame_build=0.8us http_send=52.5us response_read=0.3us
+    [client phases] frame_build=0.8us http_send=52.7us response_read=0.3us
+    [client phases] frame_build=0.9us http_send=61.3us response_read=0.4us
+    [client phases] frame_build=0.8us http_send=56.6us response_read=0.4us
+    [client phases] frame_build=0.8us http_send=54.2us response_read=0.3us
+    [client phases] frame_build=0.8us http_send=56.2us response_read=0.4us
+    [client phases] frame_build=0.8us http_send=57.2us response_read=0.4us
+    [client phases] frame_build=0.8us http_send=57.9us response_read=0.4us
+    [client phases] frame_build=0.6us http_send=62.8us response_read=6.1us
+    [client phases] frame_build=0.7us http_send=64.3us response_read=5.4us
+    [client phases] frame_build=0.7us http_send=69.8us response_read=7.0us
+    [client phases] frame_build=0.7us http_send=106.5us response_read=14.7us
+    [client phases] frame_build=0.7us http_send=109.5us response_read=15.0us
+    [client phases] frame_build=0.7us http_send=110.3us response_read=34.9us
+    [client phases] frame_build=3.0us http_send=3811.9us response_read=3252.7us
+    [client phases] frame_build=2.9us http_send=3814.7us response_read=3410.2us
+    [client phases] frame_build=3.2us http_send=3938.3us response_read=3497.2us
+Audit export (nda_http): 10500 entries → bench_nda/audit_nda_http.json
+
+Running Merkle hashing cost benchmarks... (10000 iterations)
+
+Running tools/list payload-scaling benchmark...
+    [client phases] write=0.3us wait=65.3us read=0.9us
+    [client phases] write=0.3us wait=56.6us read=0.9us
+    [client phases] write=0.3us wait=56.3us read=0.9us
+  +0 tools: 17 tools total — NDA 8214 B vs JSON 7800 B, sets match (17 names)
+    [client phases] write=0.3us wait=124.7us read=1.5us
+    [client phases] write=0.3us wait=123.4us read=1.4us
+    [client phases] write=0.3us wait=124.3us read=1.3us
+  +32 tools: 49 tools total — NDA 18070 B vs JSON 17176 B, sets match (49 names)
+    [client phases] write=0.8us wait=270.3us read=4.5us
+    [client phases] write=0.6us wait=217.3us read=3.7us
+    [client phases] write=0.6us wait=236.0us read=3.7us
+  +64 tools: 81 tools total — NDA 27926 B vs JSON 26552 B, sets match (81 names)
+    [client phases] write=0.8us wait=359.3us read=6.6us
+    [client phases] write=0.6us wait=306.7us read=5.5us
+    [client phases] write=0.5us wait=291.6us read=6.0us
+  +128 tools: 145 tools total — NDA 47638 B vs JSON 45304 B, sets match (145 names)
+
+========================================================================
+  RESULTS
+========================================================================
+
+  Eight transport pipelines compared:
+    NDA/shmem    = NDA binary TLV over shared memory (zero-poll Win32 events)
+    JSON/stdio   = JSON-RPC over stdin/stdout pipes (thread + channel + 200ms poll)
+    JSON/shmem   = JSON-RPC over shared memory (isolates encoding cost)
+    NDA/stdio    = NDA binary TLV over stdin/stdout pipes (length-prefixed frames)
+    JSON/HTTP    = JSON-RPC over HTTP/1.1 keep-alive (Axum router + middleware)
+    Node/stdio   = JSON-RPC over stdin/stdout pipes (Node.js server)
+    Node/HTTP    = JSON-RPC over HTTP/1.1 keep-alive (Node.js http.createServer)
+    NDA/HTTP     = NDA binary TLV over HTTP/1.1 keep-alive (Axum, binary endpoint)
+
+─── Ping ──────────────────────────────────────────
+                              NDA/shmem   JSON/stdio   JSON/shmem    NDA/stdio    JSON/HTTP   Node/stdio    Node/HTTP     NDA/HTTP
+  1st call                      0.002 ms      0.019 ms      0.006 ms      0.015 ms      0.052 ms      0.194 ms      0.119 ms      0.090 ms
+  2nd call                      0.002 ms      0.020 ms      0.006 ms      0.013 ms      0.051 ms      0.067 ms      0.115 ms      0.103 ms
+  Warm avg                      0.004 ms      0.019 ms      0.006 ms      0.015 ms      0.049 ms      0.027 ms      0.057 ms      0.049 ms
+  Warm p50                      0.002 ms      0.018 ms      0.006 ms      0.015 ms      0.048 ms      0.025 ms      0.048 ms      0.046 ms
+  Warm p95                      0.004 ms      0.021 ms      0.006 ms      0.018 ms      0.061 ms      0.037 ms      0.111 ms      0.068 ms
+  Warm p99                      0.007 ms      0.028 ms      0.013 ms      0.031 ms      0.075 ms      0.080 ms      0.158 ms      0.094 ms
+  Warm throughput              278057 r/s      53880 r/s     166172 r/s      66688 r/s      20249 r/s      36443 r/s      17461 r/s      20511 r/s
+
+  Avg speedup:  5.2x faster (NDA/shmem vs JSON/stdio)
+  P99 speedup:  4.0x faster
+  NDA/stdio vs JSON/stdio:  1.2x avg, 0.9x p99 (binary encoding over pipes)
+  NDA/stdio vs NDA/shmem:   4.2x avg, 4.3x p99 (stdio pipe cost for binary frames)
+  Encoding speedup: 1.7x (binary TLV vs JSON, same shmem transport)
+  Transport speedup: 5.2x (shmem vs stdio pipes, same JSON encoding)
+  JSON/HTTP vs JSON/stdio:  0.4x avg, 0.4x p99 (HTTP transport overhead on JSON)
+  JSON/HTTP vs NDA/shmem:   13.7x avg, 10.5x p99 (full stack cost: JSON + HTTP + Axum)
+  Node/stdio vs JSON/stdio: 0.7x avg, 0.4x p99 (Node.js vs Rust service layer)
+  Node/stdio vs NDA/shmem:  7.6x avg, 11.3x p99 (full cross-stack cost)
+  Node/HTTP vs JSON/HTTP:   0.9x avg, 0.5x p99 (Node.js vs Rust HTTP service)
+  Node/HTTP vs NDA/shmem:   15.9x avg, 22.3x p99 (full cross-stack HTTP cost)
+  NDA/HTTP vs JSON/HTTP:   1.0x avg, 0.8x p99 (binary encoding savings over HTTP)
+  NDA/HTTP vs NDA/shmem:   13.6x avg, 13.2x p99 (HTTP transport overhead for binary)
+
+─── Tools/List ──────────────────────────────────────────
+                              NDA/shmem   JSON/stdio   JSON/shmem    NDA/stdio    JSON/HTTP   Node/stdio    Node/HTTP     NDA/HTTP
+  1st call                      0.009 ms      0.278 ms      0.051 ms      0.052 ms      0.150 ms      0.093 ms      0.070 ms      0.064 ms
+  2nd call                      0.009 ms      0.264 ms      0.057 ms      0.052 ms      0.153 ms      0.104 ms      0.072 ms      0.098 ms
+  Warm avg                      0.008 ms      0.165 ms      0.051 ms      0.055 ms      0.159 ms      0.073 ms      0.069 ms      0.066 ms
+  Warm p50                      0.007 ms      0.160 ms      0.047 ms      0.053 ms      0.158 ms      0.068 ms      0.061 ms      0.064 ms
+  Warm p95                      0.009 ms      0.209 ms      0.073 ms      0.064 ms      0.200 ms      0.091 ms      0.102 ms      0.085 ms
+  Warm p99                      0.010 ms      0.242 ms      0.101 ms      0.091 ms      0.220 ms      0.189 ms      0.153 ms      0.112 ms
+  Warm throughput              131704 r/s       6062 r/s      19786 r/s      18222 r/s       6283 r/s      13677 r/s      14558 r/s      15112 r/s
+
+  Avg speedup:  21.7x faster (NDA/shmem vs JSON/stdio)
+  P99 speedup:  23.5x faster
+  NDA/stdio vs JSON/stdio:  3.0x avg, 2.7x p99 (binary encoding over pipes)
+  NDA/stdio vs NDA/shmem:   7.2x avg, 8.9x p99 (stdio pipe cost for binary frames)
+  Encoding speedup: 6.7x (binary TLV vs JSON, same shmem transport)
+  Transport speedup: 21.7x (shmem vs stdio pipes, same JSON encoding)
+  JSON/HTTP vs JSON/stdio:  1.0x avg, 1.1x p99 (HTTP transport overhead on JSON)
+  JSON/HTTP vs NDA/shmem:   21.0x avg, 21.3x p99 (full stack cost: JSON + HTTP + Axum)
+  Node/stdio vs JSON/stdio: 2.3x avg, 1.3x p99 (Node.js vs Rust service layer)
+  Node/stdio vs NDA/shmem:  9.6x avg, 18.4x p99 (full cross-stack cost)
+  Node/HTTP vs JSON/HTTP:   2.3x avg, 1.4x p99 (Node.js vs Rust HTTP service)
+  Node/HTTP vs NDA/shmem:   9.0x avg, 14.9x p99 (full cross-stack HTTP cost)
+  NDA/HTTP vs JSON/HTTP:   2.4x avg, 2.0x p99 (binary encoding savings over HTTP)
+  NDA/HTTP vs NDA/shmem:   8.7x avg, 10.9x p99 (HTTP transport overhead for binary)
+
+─── Tools/Call (64B) ──────────────────────────────────────────
+                              NDA/shmem   JSON/stdio   JSON/shmem    NDA/stdio    JSON/HTTP   Node/stdio    Node/HTTP     NDA/HTTP
+  1st call                      0.004 ms      0.023 ms      0.007 ms      0.018 ms      0.082 ms      0.075 ms      0.047 ms      0.060 ms
+  2nd call                      0.004 ms      0.024 ms      0.007 ms      0.016 ms      0.062 ms      0.041 ms      0.075 ms      0.064 ms
+  Warm avg                      0.004 ms      0.023 ms      0.007 ms      0.020 ms      0.055 ms      0.031 ms      0.049 ms      0.057 ms
+  Warm p50                      0.004 ms      0.023 ms      0.007 ms      0.019 ms      0.052 ms      0.030 ms      0.043 ms      0.055 ms
+  Warm p95                      0.004 ms      0.026 ms      0.007 ms      0.025 ms      0.072 ms      0.042 ms      0.069 ms      0.070 ms
+  Warm p99                      0.010 ms      0.031 ms      0.011 ms      0.035 ms      0.086 ms      0.056 ms      0.114 ms      0.081 ms
+  Warm throughput              238757 r/s      43869 r/s     145699 r/s      50807 r/s      18085 r/s      31977 r/s      20419 r/s      17583 r/s
+
+  Avg speedup:  5.4x faster (NDA/shmem vs JSON/stdio)
+  P99 speedup:  3.2x faster
+  NDA/stdio vs JSON/stdio:  1.2x avg, 0.9x p99 (binary encoding over pipes)
+  NDA/stdio vs NDA/shmem:   4.7x avg, 3.6x p99 (stdio pipe cost for binary frames)
+  Encoding speedup: 1.6x (binary TLV vs JSON, same shmem transport)
+  Transport speedup: 5.4x (shmem vs stdio pipes, same JSON encoding)
+  JSON/HTTP vs JSON/stdio:  0.4x avg, 0.4x p99 (HTTP transport overhead on JSON)
+  JSON/HTTP vs NDA/shmem:   13.2x avg, 8.9x p99 (full stack cost: JSON + HTTP + Axum)
+  Node/stdio vs JSON/stdio: 0.7x avg, 0.6x p99 (Node.js vs Rust service layer)
+  Node/stdio vs NDA/shmem:  7.5x avg, 5.7x p99 (full cross-stack cost)
+  Node/HTTP vs JSON/HTTP:   1.1x avg, 0.8x p99 (Node.js vs Rust HTTP service)
+  Node/HTTP vs NDA/shmem:   11.7x avg, 11.8x p99 (full cross-stack HTTP cost)
+  NDA/HTTP vs JSON/HTTP:   1.0x avg, 1.1x p99 (binary encoding savings over HTTP)
+  NDA/HTTP vs NDA/shmem:   13.6x avg, 8.4x p99 (HTTP transport overhead for binary)
+
+─── Health/Check ──────────────────────────────────────────
+                              NDA/shmem   JSON/stdio   JSON/shmem    NDA/stdio    JSON/HTTP   Node/stdio    Node/HTTP     NDA/HTTP
+  1st call                      0.003 ms      0.022 ms      0.006 ms      0.018 ms      0.042 ms      0.029 ms      0.064 ms      0.055 ms
+  2nd call                      0.003 ms      0.022 ms      0.006 ms      0.018 ms      0.041 ms      0.022 ms      0.060 ms      0.057 ms
+  Warm avg                      0.003 ms      0.021 ms      0.006 ms      0.018 ms      0.050 ms      0.027 ms      0.063 ms      0.048 ms
+  Warm p50                      0.003 ms      0.021 ms      0.006 ms      0.017 ms      0.045 ms      0.026 ms      0.061 ms      0.045 ms
+  Warm p95                      0.003 ms      0.024 ms      0.006 ms      0.020 ms      0.073 ms      0.036 ms      0.089 ms      0.060 ms
+  Warm p99                      0.004 ms      0.028 ms      0.007 ms      0.025 ms      0.120 ms      0.054 ms      0.117 ms      0.076 ms
+  Warm throughput              340303 r/s      48077 r/s     172181 r/s      57088 r/s      20083 r/s      36748 r/s      15797 r/s      21035 r/s
+
+  Avg speedup:  7.1x faster (NDA/shmem vs JSON/stdio)
+  P99 speedup:  7.0x faster
+  NDA/stdio vs JSON/stdio:  1.2x avg, 1.1x p99 (binary encoding over pipes)
+  NDA/stdio vs NDA/shmem:   6.0x avg, 6.2x p99 (stdio pipe cost for binary frames)
+  Encoding speedup: 2.0x (binary TLV vs JSON, same shmem transport)
+  Transport speedup: 7.1x (shmem vs stdio pipes, same JSON encoding)
+  JSON/HTTP vs JSON/stdio:  0.4x avg, 0.2x p99 (HTTP transport overhead on JSON)
+  JSON/HTTP vs NDA/shmem:   16.9x avg, 30.0x p99 (full stack cost: JSON + HTTP + Axum)
+  Node/stdio vs JSON/stdio: 0.8x avg, 0.5x p99 (Node.js vs Rust service layer)
+  Node/stdio vs NDA/shmem:  9.3x avg, 13.6x p99 (full cross-stack cost)
+  Node/HTTP vs JSON/HTTP:   0.8x avg, 1.0x p99 (Node.js vs Rust HTTP service)
+  Node/HTTP vs NDA/shmem:   21.5x avg, 29.2x p99 (full cross-stack HTTP cost)
+  NDA/HTTP vs JSON/HTTP:   1.0x avg, 1.6x p99 (binary encoding savings over HTTP)
+  NDA/HTTP vs NDA/shmem:   16.2x avg, 18.9x p99 (HTTP transport overhead for binary)
+
+─── Payload Scaling: bench_echo ──────────────────────────────────────────
+
+     Payload   NDA/shmem JSON/stdio JSON/shmem  NDA/stdio  JSON/HTTP Node/stdio  Node/HTTP   NDA/HTTP     Avg Δ    P99 Δ
+  ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+       256 B     0.004 ms    0.023 ms    0.007 ms    0.021 ms    0.063 ms    0.029 ms    0.049 ms    0.054 ms     5.5x    4.8x
+        1 KB     0.005 ms    0.024 ms    0.007 ms    0.023 ms    0.058 ms    0.032 ms    0.051 ms    0.058 ms     4.5x    6.1x
+        4 KB     0.007 ms    0.027 ms    0.009 ms    0.028 ms    0.061 ms    0.039 ms    0.059 ms    0.059 ms     4.0x    5.5x
+
+─── tools/list Payload Scaling: registry size (NDA/shmem vs JSON/shmem) ──
+
+  (JSON/stdio excluded: its tools/list paginates at 100 tools,
+   so payloads would not be comparable at larger registries.)
+
+      +tools  tools  NDA bytes JSON bytes     NDA/shmem   JSON/shmem  Speedup
+  ──────────────────────────────────────────────────────────────────────────────
+           0     17       8214       7800       0.007 ms      0.058 ms     8.1x
+          32     49      18070      17176       0.013 ms      0.126 ms     9.4x
+          64     81      27926      26552       0.036 ms      0.241 ms     6.8x
+         128    145      47638      45304       0.059 ms      0.313 ms     5.3x
+
+─── Merkle Hashing (SHA-256) Cost ─────────────────────────────────────
+
+  Every NDA frame includes a SHA-256 Merkle root over the payload.
+  This measures the hashing overhead in isolation:
+
+     Payload  SHA-256 (ns)  Per frame (µs)
+  ──────────────────────────────────────────
+        32 B        45.8 ns       0.046 µs
+        64 B        70.6 ns       0.071 µs
+       128 B        98.5 ns       0.099 µs
+       256 B       152.6 ns       0.153 µs
+        1 KB       497.2 ns       0.497 µs
+        4 KB      1833.7 ns       1.834 µs
+       16 KB      7348.4 ns       7.348 µs
+       64 KB     29638.1 ns      29.638 µs
+        2 MB    946753.8 ns     946.754 µs
+
+  Frame assembly: with Merkle vs without (client-side only):
+
+         Payload     With hash     Hash cost       No hash    Hash %
+  ──────────────────────────────────────────────────────────────────
+     ping (null)       76.9 ns       52.7 ns       24.2 ns    68.5%
+       64 B args       88.2 ns       63.2 ns       25.0 ns    71.6%
+      256 B args      176.5 ns      148.9 ns       27.6 ns    84.4%
+       1 KB args      535.1 ns      501.8 ns       33.3 ns    93.8%
+       4 KB args     1951.4 ns     1884.9 ns       66.4 ns    96.6%
+      16 KB args     7693.9 ns     7503.9 ns      190.0 ns    97.5%
+      64 KB args    31157.2 ns    29982.0 ns     1175.2 ns    96.2%
+       2 MB args  1337612.2 ns   940298.4 ns   397313.8 ns    70.3%
+
+  Merkle cost as fraction of total NDA pipeline round-trip:
+
+  (Each round-trip hashes request + validates response = 2x SHA-256)
+
+  NDA/shmem:
+     Payload    Total RT      Merkle  Merkle %
+  ──────────────────────────────────────────────
+  ping (null)    3.596 µs    0.000 µs     0.0%
+        64 B    4.188 µs    0.141 µs     3.4%
+       256 B    4.228 µs    0.305 µs     7.2%
+        1 KB    5.192 µs    0.995 µs    19.2%
+        4 KB    6.790 µs    3.667 µs    54.0%
+       16 KB   13.691 µs   14.697 µs   107.3%
+
+  NDA/stdio:
+     Payload    Total RT      Merkle  Merkle %
+  ──────────────────────────────────────────────
+  ping (null)   14.995 µs    0.000 µs     0.0%
+        64 B   19.682 µs    0.141 µs     0.7%
+       256 B   20.822 µs    0.305 µs     1.5%
+        1 KB   23.232 µs    0.995 µs     4.3%
+        4 KB   27.654 µs    3.667 µs    13.3%
+       16 KB   49.593 µs   14.697 µs    29.6%
+       64 KB  179.349 µs   59.276 µs    33.1%
+        2 MB  7716.986 µs  1893.508 µs    24.5%
+
+  NDA/HTTP:
+     Payload    Total RT      Merkle  Merkle %
+  ──────────────────────────────────────────────
+  ping (null)   48.754 µs    0.000 µs     0.0%
+        64 B   56.872 µs    0.141 µs     0.2%
+       256 B   53.742 µs    0.305 µs     0.6%
+        1 KB   57.944 µs    0.995 µs     1.7%
+        4 KB   58.506 µs    3.667 µs     6.3%
+       16 KB   70.046 µs   14.697 µs    21.0%
+       64 KB  125.363 µs   59.276 µs    47.3%
+        2 MB  7234.872 µs  1893.508 µs    26.2%
+
+  (NDA/shmem 64 KB+ omitted: exceeds 60 KB shmem output buffer)
+========================================================================
+  SUMMARY
+========================================================================
+
+  Pipeline             1st call     Warm avg     Warm P99     vs NDA/shmem
+  ─────────────────────────────────────────────────────────────────────────────────
+  NDA/shmem           0.003 ms      0.004 ms      0.007 ms   (baseline)
+  NDA/stdio           0.017 ms      0.017 ms      0.030 ms   4.9x avg, 4.4x p99
+  JSON/shmem          0.006 ms      0.006 ms      0.010 ms   1.7x avg (encoding cost only)
+  JSON/stdio          0.021 ms      0.021 ms      0.029 ms   5.8x avg, 4.2x p99
+  JSON/HTTP           0.058 ms      0.051 ms      0.094 ms   14.4x avg, 13.5x p99
+  Node/stdio          0.099 ms      0.029 ms      0.063 ms   8.0x avg, 9.1x p99
+  Node/HTTP           0.077 ms      0.057 ms      0.130 ms   15.8x avg, 18.7x p99
+  NDA/HTTP            0.068 ms      0.051 ms      0.084 ms   14.3x avg, 12.0x p99
+
+  What's being measured:
+    NDA/shmem:  TLV encode → SHA-256 → mmap write → SetEvent → server processes
+                → mmap write → SetEvent → client reads. No JSON parsing anywhere.
+    NDA/stdio:  TLV encode → SHA-256 → pipe write → pipe read → server processes
+                → pipe write → pipe read → TLV decode. Same binary encoding, pipes for transport.
+    JSON/shmem: serde_json stringify → mmap write → SetEvent → server parses
+                → mmap write → SetEvent → client JSON parses. Same shmem, JSON encoding cost.
+    JSON/stdio: serde_json stringify → pipe write → thread recv → channel send →
+                serde_json parse → handle → serde_json stringify → pipe write →
+                pipe read → JSON parse. Two JSON serialize+parse cycles per request.
+    JSON/HTTP:  serde_json stringify → HTTP POST → TCP write → Axum router →
+                middleware stack → serde_json parse → handle → serde_json
+                stringify → HTTP response → TCP read → JSON parse.
+    Node/stdio: JSON.stringify → stdin write → Node.js readline → JSON.parse →
+                handleRequest → JSON.stringify → stdout write → readline parse.
+    Node/HTTP:  JSON.stringify → HTTP POST → TCP write → Node.js http server →
+                JSON.parse → handleRequest → JSON.stringify → HTTP response →
+                TCP read → JSON parse.
+    NDA/HTTP:   TLV encode → SHA-256 → HTTP POST (octet-stream) → TCP write →
+                Axum binary endpoint → TLV decode → process → TLV encode →
+                SHA-256 → HTTP response → TCP read → TLV decode.
+
+  Shmem buffer limits: input ≤ 4080 bytes, output ≤ 61440 bytes
+  (4KB input / 61KB output — sufficient for typical MCP tool calls)

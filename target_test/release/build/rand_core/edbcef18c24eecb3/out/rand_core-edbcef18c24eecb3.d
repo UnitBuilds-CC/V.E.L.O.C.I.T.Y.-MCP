@@ -1,0 +1,11 @@
+C:\Users\ian\Documents\MCP\target_test\release\build\rand_core/edbcef18c24eecb3\out\rand_core-edbcef18c24eecb3.d: C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_core-0.9.5\src\lib.rs C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_core-0.9.5\src\block.rs C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_core-0.9.5\src\impls.rs C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_core-0.9.5\src\le.rs C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_core-0.9.5\src\os.rs
+
+C:\Users\ian\Documents\MCP\target_test\release\build\rand_core/edbcef18c24eecb3\out\librand_core-edbcef18c24eecb3.rlib: C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_core-0.9.5\src\lib.rs C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_core-0.9.5\src\block.rs C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_core-0.9.5\src\impls.rs C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_core-0.9.5\src\le.rs C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_core-0.9.5\src\os.rs
+
+C:\Users\ian\Documents\MCP\target_test\release\build\rand_core/edbcef18c24eecb3\out\librand_core-edbcef18c24eecb3.rmeta: C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_core-0.9.5\src\lib.rs C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_core-0.9.5\src\block.rs C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_core-0.9.5\src\impls.rs C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_core-0.9.5\src\le.rs C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_core-0.9.5\src\os.rs
+
+C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_core-0.9.5\src\lib.rs:
+C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_core-0.9.5\src\block.rs:
+C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_core-0.9.5\src\impls.rs:
+C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_core-0.9.5\src\le.rs:
+C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_core-0.9.5\src\os.rs:

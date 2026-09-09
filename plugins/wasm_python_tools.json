@@ -1,0 +1,80 @@
+{
+  "name": "wasm-python-tools",
+  "version": "1.0.0",
+  "tools": [
+    {
+      "name": "py_text_analyzer",
+      "description": "Analyze text and return statistics: word count, character count, line count, unique words",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Text to analyze"
+          }
+        },
+        "required": ["text"]
+      },
+      "executor": {
+        "executor_type": "wasm",
+        "language": "python",
+        "source": "def py_text_analyzer(args):\n    text = args.get('text', '')\n    words = text.split()\n    return {'words': len(words), 'chars': len(text), 'lines': text.count('\\n') + 1 if text else 0, 'unique_words': len(set(w.lower() for w in words))}\n",
+        "timeout": 5
+      }
+    },
+    {
+      "name": "py_unit_converter",
+      "description": "Convert between units: temperature (C/F/K), length (m/ft/in/km/mi)",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "number",
+            "description": "Numeric value to convert"
+          },
+          "from_unit": {
+            "type": "string",
+            "description": "Source unit (celsius, fahrenheit, kelvin, meter, foot, inch, km, mile)"
+          },
+          "to_unit": {
+            "type": "string",
+            "description": "Target unit"
+          }
+        },
+        "required": ["value", "from_unit", "to_unit"]
+      },
+      "executor": {
+        "executor_type": "wasm",
+        "language": "python",
+        "source": "def py_unit_converter(args):\n    v = args.get('value', 0)\n    f = args.get('from_unit', '')\n    t = args.get('to_unit', '')\n    temp = {'celsius': 'c', 'fahrenheit': 'f', 'kelvin': 'k'}\n    length = {'meter': 'm', 'foot': 'ft', 'inch': 'in', 'km': 'km', 'mile': 'mi'}\n    if f in temp and t in temp:\n        c = v if temp[f] == 'c' else (v - 32) * 5/9 if temp[f] == 'f' else v - 273.15\n        r = c if temp[t] == 'c' else c * 9/5 + 32 if temp[t] == 'f' else c + 273.15\n        return {'result': round(r, 4), 'from': f, 'to': t}\n    if f in length and t in length:\n        to_m = {'m': 1, 'ft': 0.3048, 'in': 0.0254, 'km': 1000, 'mi': 1609.344}\n        meters = v * to_m[length[f]]\n        r = meters / to_m[length[t]]\n        return {'result': round(r, 6), 'from': f, 'to': t}\n    return {'error': 'incompatible units'}\n",
+        "timeout": 5
+      }
+    },
+    {
+      "name": "py_list_operations",
+      "description": "Perform list operations: sort, reverse, unique, min, max, sum, average",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": ["sort", "reverse", "unique", "min", "max", "sum", "average"],
+            "description": "Operation to perform"
+          },
+          "items": {
+            "type": "array",
+            "items": {"type": "number"},
+            "description": "List of numbers"
+          }
+        },
+        "required": ["operation", "items"]
+      },
+      "executor": {
+        "executor_type": "wasm",
+        "language": "python",
+        "source": "def py_list_operations(args):\n    op = args.get('operation', '')\n    items = args.get('items', [])\n    if op == 'sort': return {'result': sorted(items)}\n    if op == 'reverse': return {'result': list(reversed(items))}\n    if op == 'unique': return {'result': sorted(set(items))}\n    if op == 'min': return {'result': min(items)}\n    if op == 'max': return {'result': max(items)}\n    if op == 'sum': return {'result': sum(items)}\n    if op == 'average': return {'result': sum(items) / len(items) if items else 0}\n    return {'error': 'unknown operation'}\n",
+        "timeout": 5
+      }
+    }
+  ]
+}

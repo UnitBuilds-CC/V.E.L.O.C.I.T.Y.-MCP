@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::error::Error;
-use wasmer::{FunctionEnv, Instance, Memory, Module, Store, Value};
+use wasmer::{Function, FunctionEnv, Instance, Memory, Module, Store, Value};
 
 use super::wasi::{WasiEnv, build_wasi_imports};
 use super::WasmRuntime;
@@ -17,6 +17,7 @@ pub struct LuaRuntime {
     #[allow(dead_code)]
     env: FunctionEnv<WasiEnv>,
     tools: HashMap<String, String>,
+    call_tool_fn: Option<Function>,
 }
 
 const EXEC_SLOT: u64 = 512 * 1024;
@@ -48,6 +49,7 @@ impl LuaRuntime {
             memory,
             env,
             tools: HashMap::new(),
+            call_tool_fn: None,
         })
     }
 
@@ -142,6 +144,7 @@ impl WasmRuntime for LuaRuntime {
         if result != 0 {
             return Err(format!("lua_wasi_init() failed with code {}", result).into());
         }
+        self.call_tool_fn = Some(self.instance.exports.get_function("lua_wasi_call_tool")?.clone());
         Ok(())
     }
 
@@ -188,24 +191,17 @@ impl WasmRuntime for LuaRuntime {
             return Err(format!("Unknown Lua tool: {}", name).into());
         }
 
-        // Write args to ARGS_SLOT
+        // Write args to ARGS_SLOT and tool name to NAME_SLOT
         let args_bytes = args_json.as_bytes();
-        self.memory.view(&self.store).write(ARGS_SLOT, args_bytes)?;
-
-        // Write tool name to NAME_SLOT
         let name_bytes = name.as_bytes();
+        self.memory.view(&self.store).write(ARGS_SLOT, args_bytes)?;
         self.memory.view(&self.store).write(NAME_SLOT, name_bytes)?;
 
-        // Call lua_wasi_set_args(ptr, len)
-        let set_args_fn = self.instance.exports.get_function("lua_wasi_set_args")?;
-        set_args_fn.call(&mut self.store, &[
+        // Single WASI call: lua_wasi_call_tool(args_ptr, args_len, name_ptr, name_len)
+        let call_fn = self.call_tool_fn.as_ref().unwrap();
+        let result = call_fn.call(&mut self.store, &[
             Value::I32(ARGS_SLOT as i32),
             Value::I32(args_bytes.len() as i32),
-        ])?;
-
-        // Call lua_wasi_call_tool(name_ptr, name_len)
-        let call_fn = self.instance.exports.get_function("lua_wasi_call_tool")?;
-        let result = call_fn.call(&mut self.store, &[
             Value::I32(NAME_SLOT as i32),
             Value::I32(name_bytes.len() as i32),
         ])?;

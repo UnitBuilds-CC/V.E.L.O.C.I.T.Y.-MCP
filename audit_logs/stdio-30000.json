@@ -1,0 +1,47 @@
+[
+  {
+    "sequence": 1,
+    "timestamp_ms": 1788418614618,
+    "tool_name": "convert_to_nda_tool",
+    "duration_us": 42,
+    "outcome": "Success",
+    "transport": "stdio",
+    "session_id": "stdio-30000"
+  },
+  {
+    "sequence": 2,
+    "timestamp_ms": 1788418614618,
+    "tool_name": "convert_to_nda_tool",
+    "duration_us": 8,
+    "outcome": "Success",
+    "transport": "stdio",
+    "session_id": "stdio-30000"
+  },
+  {
+    "sequence": 3,
+    "timestamp_ms": 1788418614618,
+    "tool_name": "convert_to_nda_tool",
+    "duration_us": 6,
+    "outcome": "Success",
+    "transport": "stdio",
+    "session_id": "stdio-30000"
+  },
+  {
+    "sequence": 4,
+    "timestamp_ms": 1788418614619,
+    "tool_name": "file_read",
+    "duration_us": 227,
+    "outcome": "Success",
+    "transport": "stdio",
+    "session_id": "stdio-30000"
+  },
+  {
+    "sequence": 5,
+    "timestamp_ms": 1788418614619,
+    "tool_name": "get_file_info",
+    "duration_us": 138,
+    "outcome": "Success",
+    "transport": "stdio",
+    "session_id": "stdio-30000"
+  }
+]

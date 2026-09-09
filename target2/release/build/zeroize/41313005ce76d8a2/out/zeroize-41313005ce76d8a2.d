@@ -1,0 +1,11 @@
+C:\Users\ian\Documents\MCP\target2\release\build\zeroize/41313005ce76d8a2\out\zeroize-41313005ce76d8a2.d: C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\zeroize-1.9.0\src\lib.rs C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\zeroize-1.9.0\src\x86.rs C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\zeroize-1.9.0\src\barrier.rs C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\zeroize-1.9.0\src\stack.rs C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\zeroize-1.9.0\src\../README.md
+
+C:\Users\ian\Documents\MCP\target2\release\build\zeroize/41313005ce76d8a2\out\libzeroize-41313005ce76d8a2.rlib: C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\zeroize-1.9.0\src\lib.rs C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\zeroize-1.9.0\src\x86.rs C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\zeroize-1.9.0\src\barrier.rs C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\zeroize-1.9.0\src\stack.rs C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\zeroize-1.9.0\src\../README.md
+
+C:\Users\ian\Documents\MCP\target2\release\build\zeroize/41313005ce76d8a2\out\libzeroize-41313005ce76d8a2.rmeta: C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\zeroize-1.9.0\src\lib.rs C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\zeroize-1.9.0\src\x86.rs C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\zeroize-1.9.0\src\barrier.rs C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\zeroize-1.9.0\src\stack.rs C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\zeroize-1.9.0\src\../README.md
+
+C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\zeroize-1.9.0\src\lib.rs:
+C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\zeroize-1.9.0\src\x86.rs:
+C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\zeroize-1.9.0\src\barrier.rs:
+C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\zeroize-1.9.0\src\stack.rs:
+C:\Users\ian\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\zeroize-1.9.0\src\../README.md:

@@ -404,12 +404,19 @@ int lua_wasi_register_wrapper(const char *name_ptr, size_t name_len,
     return 0;
 }
 
-/* lua_wasi_call_tool(name_ptr, name_len) -> int
- * Calls the pre-compiled wrapper for the named tool.
- * Args must be written to args_buf before calling.
+/* lua_wasi_call_tool(args_ptr, args_n, name_ptr, name_len) -> int
+ * Single-call protocol: reads args from WASM memory, looks up pre-compiled
+ * wrapper, executes it. Replaces the old two-call set_args + call_tool pattern.
  */
-int lua_wasi_call_tool(const char *name_ptr, size_t name_len) {
+int lua_wasi_call_tool(const char *args_ptr, size_t args_n,
+                       const char *name_ptr, size_t name_len) {
     if (L == NULL) return -1;
+
+    /* Copy args directly from WASM memory into our parse buffer */
+    if (args_n >= ARGS_BUF_SIZE) args_n = ARGS_BUF_SIZE - 1;
+    memcpy(args_buf, args_ptr, args_n);
+    args_buf[args_n] = '\0';
+    args_len = args_n;
 
     output_reset();
 
@@ -423,15 +430,13 @@ int lua_wasi_call_tool(const char *name_ptr, size_t name_len) {
 
     /* Look up the tool by name */
     lua_pushlstring(L, name_ptr, name_len);
-    lua_rawget(L, -2);  /* get wrappers_table[name] */
+    lua_rawget(L, -2);
     if (lua_isnil(L, -1)) {
         lua_pop(L, 2);
         output_append("Unknown tool", 12);
         return -1;
     }
-    /* Stack: wrappers_table, compiled_func */
 
-    /* Call the wrapper (0 args, 0 results) */
     int status = lua_pcall(L, 0, 0, 0);
     if (status != LUA_OK) {
         const char *err = lua_tostring(L, -1);

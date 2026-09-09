@@ -1,0 +1,11 @@
+[
+  {
+    "sequence": 1,
+    "timestamp_ms": 1788447934894,
+    "tool_name": "text_transform",
+    "duration_us": 113907,
+    "outcome": "Success",
+    "transport": "stdio",
+    "session_id": "stdio-9588"
+  }
+]

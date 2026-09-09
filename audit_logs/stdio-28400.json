@@ -1,0 +1,20 @@
+[
+  {
+    "sequence": 1,
+    "timestamp_ms": 1788418513274,
+    "tool_name": "convert_to_nda_tool",
+    "duration_us": 41,
+    "outcome": "Success",
+    "transport": "stdio",
+    "session_id": "stdio-28400"
+  },
+  {
+    "sequence": 2,
+    "timestamp_ms": 1788418513274,
+    "tool_name": "file_read",
+    "duration_us": 200,
+    "outcome": "Success",
+    "transport": "stdio",
+    "session_id": "stdio-28400"
+  }
+]

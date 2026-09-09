@@ -1344,29 +1344,29 @@ fn bench_cross_language_tools() {
             Err(e) => println!("    JS ERROR: {}", e),
         }
 
-        // Warm benchmark: evaluate JS tool repeatedly
-        let bench_js = r#"JSON.stringify({size:64,payload:"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"})"#;
-        let bench_bytes = bench_js.as_bytes();
-        let bench_ptr: i32 = rt.exec_slot_ptr();
-        rt.write_to_exec_slot(bench_bytes).expect("write bench code");
+        // Warm benchmark: call_tool with pre-compiled wrapper
+        let tool_source = r#"
+            function bench_tool(args) {
+                return {size: 64, payload: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"};
+            }
+        "#;
+        rt.register_tool("bench_tool", tool_source).expect("register bench_tool");
 
+        let bench_args = r#"{"text": "hello"}"#;
         let iterations = 10_000;
         let start = Instant::now();
         let mut qjs_checksum: u32 = 0;
         for _ in 0..iterations {
-            let handle = rt.eval_at(bench_ptr, bench_bytes.len() as i32).unwrap();
-            if rt.check_exception(handle).unwrap().is_none() {
-                if let Some(sl) = rt.string_len(handle).unwrap() {
-                    qjs_checksum = qjs_checksum.wrapping_add(sl);
-                }
+            match rt.call_tool("bench_tool", bench_args) {
+                Ok(result) => qjs_checksum = qjs_checksum.wrapping_add(result.len() as u32),
+                Err(e) => { println!("    CALL ERROR: {}", e); break; }
             }
-            rt.free_value(handle).unwrap();
         }
         let qjs_ns_val = start.elapsed().as_nanos() as f64 / iterations as f64;
         black_box(qjs_checksum);
         quickjs_ns = qjs_ns_val;
         quickjs_available = true;
-        println!("    {:>10} iterations:  {:.1} ns/call  ({:.2}M calls/s)",
+        println!("    {:>10} iterations (call_tool):  {:.1} ns/call  ({:.2}M calls/s)",
             iterations, quickjs_ns, 1000.0 / quickjs_ns);
         println!("    Overhead vs native Rust: {:.1}x", quickjs_ns / native_ns);
         if wasm_available {
@@ -1402,13 +1402,24 @@ fn bench_cross_language_tools() {
             Err(e) => println!("    PY ERROR: {}", e),
         }
 
-        let bench_py = "print('x' * 64)";
+        let tool_source = "def bench_tool(args):\n    return {'size': 64, 'payload': 'hello'}\n";
+        mp_rt.register_tool("bench_tool", tool_source).expect("register bench_tool");
+
+        let bench_args = r#"{"text": "hello"}"#;
         let iterations = 1000;
-        let (mp_ns_val, mp_checksum) = mp_rt.bench_exec_repeated(bench_py, iterations);
+        let start = Instant::now();
+        let mut mp_checksum: u32 = 0;
+        for _ in 0..iterations {
+            match mp_rt.call_tool("bench_tool", bench_args) {
+                Ok(result) => mp_checksum = mp_checksum.wrapping_add(result.len() as u32),
+                Err(e) => { println!("    CALL ERROR: {}", e); break; }
+            }
+        }
+        let mp_ns_val = start.elapsed().as_nanos() as f64 / iterations as f64;
         black_box(mp_checksum);
         micropython_ns = mp_ns_val;
         micropython_available = true;
-        println!("    {:>10} iterations:  {:.1} ns/call  ({:.0}K calls/s)",
+        println!("    {:>10} iterations (call_tool):  {:.1} ns/call  ({:.0}K calls/s)",
             iterations, micropython_ns, 1_000_000.0 / micropython_ns);
         println!("    Overhead vs native Rust: {:.0}x", micropython_ns / native_ns);
         if wasm_available {
@@ -1446,13 +1457,24 @@ fn bench_cross_language_tools() {
             Err(e) => println!("    LUA ERROR: {}", e),
         }
 
-        let bench_lua = "print(string.rep('x', 64))";
+        let tool_source = "function bench_tool(args)\n    return {size = 64, payload = 'hello'}\nend\n";
+        lua_rt.register_tool("bench_tool", tool_source).expect("register bench_tool");
+
+        let bench_args = r#"{"text": "hello"}"#;
         let lua_iterations = 1000;
-        let (lua_ns_val, lua_checksum) = lua_rt.bench_exec_repeated(bench_lua, lua_iterations);
+        let start = Instant::now();
+        let mut lua_checksum: u32 = 0;
+        for _ in 0..lua_iterations {
+            match lua_rt.call_tool("bench_tool", bench_args) {
+                Ok(result) => lua_checksum = lua_checksum.wrapping_add(result.len() as u32),
+                Err(e) => { println!("    CALL ERROR: {}", e); break; }
+            }
+        }
+        let lua_ns_val = start.elapsed().as_nanos() as f64 / lua_iterations as f64;
         black_box(lua_checksum);
         lua_ns = lua_ns_val;
         lua_available = true;
-        println!("    {:>10} iterations:  {:.1} ns/call  ({:.0}K calls/s)",
+        println!("    {:>10} iterations (call_tool):  {:.1} ns/call  ({:.0}K calls/s)",
             lua_iterations, lua_ns, 1_000_000.0 / lua_ns);
         println!("    Overhead vs native Rust: {:.0}x", lua_ns / native_ns);
         if wasm_available {

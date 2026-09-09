@@ -1,0 +1,31 @@
+{
+  "name": "text-transform",
+  "version": "1.0.0",
+  "tools": [
+    {
+      "name": "text_transform",
+      "description": "Transform text: upper, lower, reverse, or slug case",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["upper", "lower", "reverse", "slug"],
+            "description": "Transformation to apply"
+          },
+          "input": {
+            "type": "string",
+            "description": "Text to transform"
+          }
+        },
+        "required": ["action", "input"]
+      },
+      "executor": {
+        "executor_type": "process",
+        "command": "node",
+        "args": ["plugins/text_transform.js", "--action", "{{action}}", "--input", "{{input}}"],
+        "timeout": 10
+      }
+    }
+  ]
+}
