@@ -262,7 +262,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_micropython_precompiled_tool() {
         let wasm = std::fs::read(wasm_path()).expect("MicroPython WASM not found");
         let mut rt = MicroPythonRuntime::cold_start(&wasm).expect("cold start failed");
@@ -275,6 +274,32 @@ mod tests {
 
         let result2 = rt.call_tool("add_numbers", r#"{"a": 10, "b": 20}"#).expect("call failed");
         assert!(result2.contains("30"), "Expected 30 in result: {}", result2);
+
+        let result3 = rt.call_tool("add_numbers", r#"{"a": 100, "b": 200}"#).expect("call 3 failed");
+        assert!(result3.contains("300"), "Expected 300 in result: {}", result3);
+
+        let result4 = rt.call_tool("add_numbers", r#"{"a": 1000, "b": 2000}"#).expect("call 4 failed");
+        assert!(result4.contains("3000"), "Expected 3000 in result: {}", result4);
+
+        let result5 = rt.call_tool("add_numbers", r#"{"a": 5, "b": 5}"#).expect("call 5 failed");
+        assert!(result5.contains("10"), "Expected 10 in result: {}", result5);
+
+        rt.destroy().unwrap();
+    }
+
+    #[test]
+    fn test_micropython_gc_stress() {
+        let wasm = std::fs::read(wasm_path()).expect("MicroPython WASM not found");
+        let mut rt = MicroPythonRuntime::cold_start(&wasm).expect("cold start failed");
+
+        let source = "def bench_tool(args):\n    return {'size': 64, 'payload': 'hello'}\n";
+        rt.register_tool("bench_tool", source).expect("register failed");
+
+        for i in 0..100 {
+            let result = rt.call_tool("bench_tool", r#"{"text": "hello"}"#)
+                .unwrap_or_else(|_| panic!("call {} failed", i));
+            assert!(result.contains("hello"), "call {} missing 'hello': {}", i, result);
+        }
 
         rt.destroy().unwrap();
     }

@@ -77,17 +77,12 @@ fn main() {
     bench_runtime("Lua/WASM", &mut lua_rt, lua_source, r#"{"text": "hello"}"#);
 
     // MicroPython
-    // SKIPPED: MicroPython crashes after 2-3 calls due to WASM setjmp/longjmp limitation
-    // The optimization works (first 2 calls succeed), but repeated calls trigger exceptions
-    // that cannot unwind the stack in WASM. This is a fundamental WASM port limitation.
-    /*
     let mp_wasm = std::fs::read("bench_tools/micropython_wasm/micropython-1.24.1/ports/webassembly/build-wasi/micropython.wasm")
         .expect("micropython.wasm not found");
     let mut mp_rt = MicroPythonRuntime::new(&mp_wasm).expect("MicroPythonRuntime::new");
     mp_rt.init().expect("init failed");
     let mp_source = "def bench_tool(args):\n    return {'size': 64, 'payload': 'hello'}\n";
     bench_runtime("MicroPython/WASM", &mut mp_rt, mp_source, r#"{"text": "hello"}"#);
-    */
 
     // QuickJS
     let qjs_wasm = std::fs::read("bench_tools/quickjs_wasm/quickjs.wasm").expect("quickjs.wasm not found");

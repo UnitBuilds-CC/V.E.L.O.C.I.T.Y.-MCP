@@ -151,6 +151,15 @@ mp_uint_t mp_hal_stdout_tx_strn(const char *str, size_t len) {
  * happens at the top level (in mp_wasi_exec) where there are no stack roots. */
 static bool gc_collect_pending = false;
 
+/* Forward declarations for tool registry (defined below) — needed so
+ * gc_collect_top_level can scan compiled wrappers as GC roots. */
+#define MAX_TOOLS 64
+static struct {
+    char name[64];
+    mp_obj_t compiled_wrapper;
+} tool_registry[MAX_TOOLS];
+static int tool_count = 0;
+
 size_t gc_get_max_new_split(void) {
     return 128 * 1024 * 1024;
 }
@@ -163,6 +172,9 @@ static void gc_collect_top_level(void) {
     if (gc_collect_pending) {
         gc_collect_pending = false;
         gc_collect_start();
+        for (int i = 0; i < tool_count; i++) {
+            gc_collect_root((void **)&tool_registry[i].compiled_wrapper, 1);
+        }
         gc_collect_end();
     }
 }
@@ -211,14 +223,6 @@ MP_DEFINE_CONST_FUN_OBJ_KW(mp_builtin_open_obj, 1, mp_builtin_open);
 #define ARGS_BUF_SIZE 4096
 static char args_buf[ARGS_BUF_SIZE];
 static size_t args_len = 0;
-
-/* Tool registry: store pre-compiled wrapper module functions */
-#define MAX_TOOLS 64
-static struct {
-    char name[64];
-    mp_obj_t compiled_wrapper;
-} tool_registry[MAX_TOOLS];
-static int tool_count = 0;
 
 /* Minimal JSON parser producing mp_obj_t values */
 typedef struct {

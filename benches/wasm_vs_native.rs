@@ -139,23 +139,22 @@ fn wasm_hot_call_micropython(wasm_bytes: &[u8]) -> Option<f64> {
     let mut rt = MicroPythonRuntime::cold_start(wasm_bytes).ok()?;
     rt.register_tool("text_analyze", PY_TOOL_SOURCE).ok()?;
 
-    // Use bench_exec_repeated for accurate measurement (bypasses JSON overhead)
-    let py_code = r#"
-import json
-args = {"text": "The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs. How vexingly quick daft zebras jump. Bright vixens jump; dozy fowl quack."}
-text = args.get('text', '')
-words = text.split()
-result = {'word_count': len(words), 'char_count': len(text), 'line_count': len(text.split('\n')) if text else 0}
-print(json.dumps(result))
-"#;
-
     // warmup
-    let _ = rt.register_tool("text_analyze", PY_TOOL_SOURCE);
-    for _ in 0..5 {
+    for _ in 0..WARMUP_CALLS {
         let _ = rt.call_tool("text_analyze", BENCH_INPUT_JSON);
     }
 
-    let (ns, _checksum) = rt.bench_exec_repeated(py_code, 500);
+    // measurement - use call_tool() like Lua/QuickJS for consistency
+    let iters = 500;
+    let start = Instant::now();
+    let mut checksum: u32 = 0;
+    for _ in 0..iters {
+        if let Ok(result) = rt.call_tool("text_analyze", BENCH_INPUT_JSON) {
+            checksum = checksum.wrapping_add(result.len() as u32);
+        }
+    }
+    let ns = start.elapsed().as_nanos() as f64 / iters as f64;
+    std::hint::black_box(checksum);
     Some(ns)
 }
 
