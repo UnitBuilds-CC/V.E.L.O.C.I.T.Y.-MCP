@@ -1,0 +1,26 @@
+{
+  "name": "wasm-typescript-tools",
+  "version": "1.0.0",
+  "tools": [
+    {
+      "name": "ts_text_stats",
+      "description": "TypeScript text statistics: char count, word count, uppercase form",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Input text to analyze"
+          }
+        },
+        "required": ["text"]
+      },
+      "executor": {
+        "executor_type": "wasm",
+        "language": "typescript",
+        "source": "function ts_text_stats(args: any) { var text = args.text || ''; var words = text.split(' '); return { chars: text.length, words: words.length, upper: text.toUpperCase() }; }",
+        "timeout": 5
+      }
+    }
+  ]
+}

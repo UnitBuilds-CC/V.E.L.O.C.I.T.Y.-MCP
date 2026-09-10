@@ -1,0 +1,26 @@
+{
+  "name": "wasm-r-tools",
+  "version": "1.0.0",
+  "tools": [
+    {
+      "name": "r_hello",
+      "description": "Demo greeting from the minimal R/WASM interpreter. This runtime is a simplified script interpreter: a built-in demo wrapper runs at call time (tool source is not executed) and arguments are not passed through.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Unused placeholder argument (not passed to the interpreter)"
+          }
+        },
+        "required": ["text"]
+      },
+      "executor": {
+        "executor_type": "wasm",
+        "language": "r",
+        "source": "return(\"r tool ready\")",
+        "timeout": 5
+      }
+    }
+  ]
+}

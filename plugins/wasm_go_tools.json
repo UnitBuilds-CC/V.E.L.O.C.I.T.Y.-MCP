@@ -1,0 +1,26 @@
+{
+  "name": "wasm-go-tools",
+  "version": "1.0.0",
+  "tools": [
+    {
+      "name": "go_text_stats",
+      "description": "Go (TinyGo) text statistics: word, char and line counts. Compiled standalone tool, loaded from the configured go WASM path.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Input text to analyze"
+          }
+        },
+        "required": ["text"]
+      },
+      "executor": {
+        "executor_type": "wasm",
+        "language": "go",
+        "source_file": "bench_tools/tinygo_wasm/tool.wasm",
+        "timeout": 5
+      }
+    }
+  ]
+}

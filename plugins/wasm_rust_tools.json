@@ -1,0 +1,26 @@
+{
+  "name": "wasm-rust-tools",
+  "version": "1.0.0",
+  "tools": [
+    {
+      "name": "rust_text_stats",
+      "description": "Rust (wasm32-wasi) text statistics: word, char and line counts. Compiled example tool, loaded from the configured rust WASM path.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Input text to analyze"
+          }
+        },
+        "required": ["text"]
+      },
+      "executor": {
+        "executor_type": "wasm",
+        "language": "rust",
+        "source": "bench_tools/rust_wasm/example_tool.wasm",
+        "timeout": 5
+      }
+    }
+  ]
+}

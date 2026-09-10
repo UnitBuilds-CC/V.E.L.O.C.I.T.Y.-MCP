@@ -1,0 +1,26 @@
+{
+  "name": "wasm-ruby-tools",
+  "version": "1.0.0",
+  "tools": [
+    {
+      "name": "rb_text_stats",
+      "description": "Ruby text statistics: char count, word count, uppercase form",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Input text to analyze"
+          }
+        },
+        "required": ["text"]
+      },
+      "executor": {
+        "executor_type": "wasm",
+        "language": "ruby",
+        "source": "def rb_text_stats(args)\n  text = args['text'].to_s\n  {'chars' => text.length, 'words' => text.split.length, 'upper' => text.upcase}\nend\n",
+        "timeout": 5
+      }
+    }
+  ]
+}
