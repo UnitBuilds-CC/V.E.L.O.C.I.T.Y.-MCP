@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WASM Runtime Performance Comparison</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #FFF8E7 0%, #F0FFF4 100%);
+            color: #2D3748;
+            padding: 2rem;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: #2C5F7C;
+            margin-bottom: 0.5rem;
+            font-size: 2rem;
+        }
+        .subtitle {
+            color: #4A5568;
+            margin-bottom: 2rem;
+            font-size: 1rem;
+        }
+        .chart-container {
+            background: white;
+            border-radius: 12px;
+            padding: 2rem;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07);
+            margin-bottom: 2rem;
+        }
+        .chart-wrapper {
+            position: relative;
+            height: 500px;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1.5rem;
+            margin-top: 2rem;
+        }
+        .stat-card {
+            background: white;
+            border-radius: 12px;
+            padding: 1.5rem;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07);
+        }
+        .stat-card h3 {
+            color: #2C5F7C;
+            margin-bottom: 1rem;
+            font-size: 1.1rem;
+        }
+        .tier {
+            margin-bottom: 1rem;
+        }
+        .tier-label {
+            font-weight: 600;
+            color: #4A5568;
+            margin-bottom: 0.5rem;
+        }
+        .tier-fastest { border-left: 4px solid #48BB78; padding-left: 1rem; }
+        .tier-mid { border-left: 4px solid #4299E1; padding-left: 1rem; }
+        .tier-slowest { border-left: 4px solid #ED8936; padding-left: 1rem; }
+        .runtime-list {
+            color: #718096;
+            font-size: 0.95rem;
+            line-height: 1.6;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+        }
+        th, td {
+            padding: 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid #E2E8F0;
+        }
+        th {
+            background: #F7FAFC;
+            color: #2C5F7C;
+            font-weight: 600;
+        }
+        tr:hover {
+            background: #F7FAFC;
+        }
+        .value {
+            font-family: 'Courier New', monospace;
+            font-weight: 600;
+        }
+        .fastest { color: #48BB78; }
+        .slowest { color: #ED8936; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>WASM Runtime Performance Comparison</h1>
+        <p class="subtitle">Tool call latency benchmark — 12 language runtimes on Wasmer 5.x</p>
+        <p class="subtitle" style="font-size: 0.85rem;">Source: <code>cargo bench --bench wasm_tool_latency</code> — warm path, 100 calls per runtime, Windows x64</p>
+
+        <div class="chart-container">
+            <div class="chart-wrapper">
+                <canvas id="latencyChart"></canvas>
+            </div>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <h3>Performance Tiers</h3>
+                <div class="tier tier-fastest">
+                    <div class="tier-label">Fastest (1.3-1.7 µs P50)</div>
+                    <div class="runtime-list">Rust, R, Julia</div>
+                </div>
+                <div class="tier tier-mid">
+                    <div class="tier-label">Mid-range (2.5-4.9 µs P50)</div>
+                    <div class="runtime-list">Perl, PHP, Java, C#, MicroPython, Lua, Ruby</div>
+                </div>
+                <div class="tier tier-slowest">
+                    <div class="tier-label">Heavier (5.0-7.5 µs P50)</div>
+                    <div class="runtime-list">QuickJS, TypeScript</div>
+                </div>
+            </div>
+
+            <div class="stat-card">
+                <h3>Key Findings</h3>
+                <table>
+                    <tr>
+                        <td>Fastest runtime</td>
+                        <td class="value fastest">Rust — 1.3 µs</td>
+                    </tr>
+                    <tr>
+                        <td>Slowest runtime</td>
+                        <td class="value slowest">TypeScript — 7.5 µs</td>
+                    </tr>
+                    <tr>
+                        <td>Spread (fastest/slowest)</td>
+                        <td class="value">5.8x</td>
+                    </tr>
+                    <tr>
+                        <td>QuickJS batched vs legacy path</td>
+                        <td class="value fastest">~1.5x faster</td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+
+        <div class="chart-container" style="margin-top: 2rem;">
+            <h3 style="color: #2C5F7C; margin-bottom: 1rem;">Detailed Results</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Runtime</th>
+                        <th>P50 (µs)</th>
+                        <th>P95 (µs)</th>
+                        <th>P99 (µs)</th>
+                        <th>Tier</th>
+                    </tr>
+                </thead>
+                <tbody id="resultsTable"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        const data = [
+            { name: 'Rust', p50: 1.3, p95: 1.6, p99: 2.0, tier: 'fastest' },
+            { name: 'R', p50: 1.5, p95: 1.7, p99: 3.7, tier: 'fastest' },
+            { name: 'Julia', p50: 1.7, p95: 3.1, p99: 3.7, tier: 'fastest' },
+            { name: 'Perl', p50: 2.5, p95: 2.7, p99: 3.7, tier: 'mid' },
+            { name: 'PHP', p50: 2.6, p95: 3.7, p99: 19.6, tier: 'mid' },
+            { name: 'Java', p50: 2.8, p95: 3.1, p99: 3.7, tier: 'mid' },
+            { name: 'C#', p50: 3.4, p95: 4.0, p99: 6.2, tier: 'mid' },
+            { name: 'MicroPython', p50: 3.5, p95: 5.1, p99: 26.1, tier: 'mid' },
+            { name: 'Lua', p50: 4.6, p95: 5.9, p99: 18.4, tier: 'mid' },
+            { name: 'Ruby', p50: 4.9, p95: 6.3, p99: 41.7, tier: 'mid' },
+            { name: 'QuickJS', p50: 5.0, p95: 5.8, p99: 23.5, tier: 'slowest' },
+            { name: 'TypeScript', p50: 7.5, p95: 8.2, p99: 55.4, tier: 'slowest' },
+        ];
+
+        const tierColors = {
+            fastest: { bg: 'rgba(72, 187, 120, 0.8)', border: '#48BB78' },
+            mid: { bg: 'rgba(66, 153, 225, 0.8)', border: '#4299E1' },
+            slowest: { bg: 'rgba(237, 137, 54, 0.8)', border: '#ED8936' },
+        };
+
+        const ctx = document.getElementById('latencyChart').getContext('2d');
+        new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: data.map(d => d.name),
+                datasets: [
+                    {
+                        label: 'P50 (µs)',
+                        data: data.map(d => d.p50),
+                        backgroundColor: data.map(d => tierColors[d.tier].bg),
+                        borderColor: data.map(d => tierColors[d.tier].border),
+                        borderWidth: 2,
+                        borderRadius: 6,
+                    },
+                    {
+                        label: 'P95 (µs)',
+                        data: data.map(d => d.p95),
+                        backgroundColor: 'rgba(160, 174, 192, 0.4)',
+                        borderColor: '#A0AEC0',
+                        borderWidth: 1,
+                        borderRadius: 4,
+                    },
+                    {
+                        label: 'P99 (µs)',
+                        data: data.map(d => d.p99),
+                        backgroundColor: 'rgba(203, 213, 224, 0.3)',
+                        borderColor: '#CBD5E0',
+                        borderWidth: 1,
+                        borderRadius: 4,
+                    },
+                ],
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        position: 'top',
+                        labels: {
+                            font: { size: 13 },
+                            padding: 20,
+                        },
+                    },
+                    title: {
+                        display: true,
+                        text: 'Tool Call Latency by Runtime (lower is better)',
+                        font: { size: 16, weight: '600' },
+                        color: '#2C5F7C',
+                        padding: { bottom: 20 },
+                    },
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: 'Latency (µs)',
+                            font: { size: 13, weight: '600' },
+                            color: '#4A5568',
+                        },
+                        grid: {
+                            color: 'rgba(0, 0, 0, 0.05)',
+                        },
+                    },
+                    x: {
+                        grid: {
+                            display: false,
+                        },
+                    },
+                },
+            },
+        });
+
+        const tbody = document.getElementById('resultsTable');
+        data.forEach(d => {
+            const tierLabel = d.tier === 'fastest' ? '⚡ Fast' : d.tier === 'mid' ? '● Mid' : '▼ Heavy';
+            const tierClass = d.tier === 'fastest' ? 'fastest' : d.tier === 'slowest' ? 'slowest' : '';
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td><strong>${d.name}/WASM</strong></td>
+                <td class="value ${tierClass}">${d.p50.toFixed(1)}</td>
+                <td class="value">${d.p95.toFixed(1)}</td>
+                <td class="value">${d.p99.toFixed(1)}</td>
+                <td>${tierLabel}</td>
+            `;
+            tbody.appendChild(row);
+        });
+    </script>
+</body>
+</html>
