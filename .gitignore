@@ -19,3 +19,20 @@ desktop.ini
 
 # MicroPython WASI (extracted from tarball by build.sh)
 bench_tools/micropython_wasm/micropython-1.24.1/
+
+# C object files (WASI shim build intermediates)
+*.o
+
+# Toy-interpreter WASM intermediates (rebuilt from *_wasi.c by build.sh)
+bench_tools/perl_wasm/perl_wasi.wasm
+bench_tools/php_wasm/php_wasi.wasm
+bench_tools/r_wasm/r_wasi.wasm
+
+# npm dependencies
+node_modules/
+
+# mruby build tree (rebuilt by build_mruby.sh; ruby.wasm output IS tracked)
+bench_tools/mruby_wasm/mruby-src/
+bench_tools/mruby_wasm/build_manual/
+bench_tools/mruby_wasm/host-bin/
+bench_tools/mruby_wasm/mruby-host.tar.gz
