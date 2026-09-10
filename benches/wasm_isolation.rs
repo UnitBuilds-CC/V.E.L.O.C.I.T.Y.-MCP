@@ -1,7 +1,6 @@
 //! WASM Runtime Isolation Benchmark
 //!
-//! Measures Wasmer vs Wasmtime across four dimensions to identify where
-//! the performance delta originates:
+//! Measures Wasmer performance across four dimensions:
 //!
 //!   1. Memory-only:    write + read linear memory, no function calls
 //!   2. Trampoline-only: call prepare_call() (atomic store), no memory access
@@ -31,9 +30,7 @@ fn make_input() -> Vec<u8> {
     .unwrap()
 }
 
-// ─── Wasmer ──────────────────────────────────────────────────────────────────
-
-fn bench_wasmer_memory(wasm_bytes: &[u8]) -> f64 {
+fn bench_memory(wasm_bytes: &[u8]) -> f64 {
     let engine = wasmer::Engine::from(wasmer::Cranelift::default());
     let module = wasmer::Module::new(&engine, wasm_bytes).unwrap();
     let mut store = wasmer::Store::new(engine);
@@ -53,7 +50,7 @@ fn bench_wasmer_memory(wasm_bytes: &[u8]) -> f64 {
     ns
 }
 
-fn bench_wasmer_trampoline(wasm_bytes: &[u8]) -> f64 {
+fn bench_trampoline(wasm_bytes: &[u8]) -> f64 {
     let engine = wasmer::Engine::from(wasmer::Cranelift::default());
     let module = wasmer::Module::new(&engine, wasm_bytes).unwrap();
     let mut store = wasmer::Store::new(engine);
@@ -72,7 +69,7 @@ fn bench_wasmer_trampoline(wasm_bytes: &[u8]) -> f64 {
     start.elapsed().as_nanos() as f64 / WARM_ITERS as f64
 }
 
-fn bench_wasmer_execute(wasm_bytes: &[u8]) -> f64 {
+fn bench_execute(wasm_bytes: &[u8]) -> f64 {
     let engine = wasmer::Engine::from(wasmer::Cranelift::default());
     let module = wasmer::Module::new(&engine, wasm_bytes).unwrap();
     let mut store = wasmer::Store::new(engine);
@@ -108,7 +105,7 @@ fn bench_wasmer_execute(wasm_bytes: &[u8]) -> f64 {
     ns
 }
 
-fn bench_wasmer_combined(wasm_bytes: &[u8]) -> f64 {
+fn bench_combined(wasm_bytes: &[u8]) -> f64 {
     let engine = wasmer::Engine::from(wasmer::Cranelift::default());
     let module = wasmer::Module::new(&engine, wasm_bytes).unwrap();
     let mut store = wasmer::Store::new(engine);
@@ -148,156 +145,30 @@ fn bench_wasmer_combined(wasm_bytes: &[u8]) -> f64 {
     ns
 }
 
-// ─── Wasmtime ────────────────────────────────────────────────────────────────
-
-fn bench_wasmtime_memory(wasm_bytes: &[u8]) -> f64 {
-    let engine = wasmtime::Engine::default();
-    let module = wasmtime::Module::new(&engine, wasm_bytes).unwrap();
-    let mut store = wasmtime::Store::new(&engine, ());
-    let mut linker = wasmtime::Linker::new(&engine);
-    let instance = linker.instantiate(&mut store, &module).unwrap();
-    let memory = instance.get_memory(&mut store, "memory").unwrap();
-
-    let input = make_input();
-    let mut buf = vec![0u8; 256];
-
-    let start = Instant::now();
-    for _ in 0..WARM_ITERS {
-        memory.write(&mut store, INPUT_PTR, &input).unwrap();
-        memory.read(&store, INPUT_PTR, &mut buf).unwrap();
-    }
-    let ns = start.elapsed().as_nanos() as f64 / WARM_ITERS as f64;
-    black_box(buf);
-    ns
-}
-
-fn bench_wasmtime_trampoline(wasm_bytes: &[u8]) -> f64 {
-    let engine = wasmtime::Engine::default();
-    let module = wasmtime::Module::new(&engine, wasm_bytes).unwrap();
-    let mut store = wasmtime::Store::new(&engine, ());
-    let mut linker = wasmtime::Linker::new(&engine);
-    let instance = linker.instantiate(&mut store, &module).unwrap();
-    let prepare_fn = instance
-        .get_typed_func::<(), ()>(&mut store, "prepare_call")
-        .unwrap();
-
-    let start = Instant::now();
-    for _ in 0..WARM_ITERS {
-        prepare_fn.call(&mut store, ()).unwrap();
-    }
-    start.elapsed().as_nanos() as f64 / WARM_ITERS as f64
-}
-
-fn bench_wasmtime_execute(wasm_bytes: &[u8]) -> f64 {
-    let engine = wasmtime::Engine::default();
-    let module = wasmtime::Module::new(&engine, wasm_bytes).unwrap();
-    let mut store = wasmtime::Store::new(&engine, ());
-    let mut linker = wasmtime::Linker::new(&engine);
-    let instance = linker.instantiate(&mut store, &module).unwrap();
-    let memory = instance.get_memory(&mut store, "memory").unwrap();
-    let prepare_fn = instance
-        .get_typed_func::<(), ()>(&mut store, "prepare_call")
-        .unwrap();
-    let execute_fn = instance
-        .get_typed_func::<(i32, i32), i64>(&mut store, "tool_execute")
-        .unwrap();
-
-    let input = make_input();
-    let input_ptr = INPUT_PTR as i32;
-    let input_len = input.len() as i32;
-    memory.write(&mut store, INPUT_PTR, &input).unwrap();
-
-    let mut checksum: u32 = 0;
-    let start = Instant::now();
-    for _ in 0..WARM_ITERS {
-        prepare_fn.call(&mut store, ()).unwrap();
-        let r = execute_fn.call(&mut store, (input_ptr, input_len)).unwrap();
-        checksum = checksum.wrapping_add(r as u32);
-    }
-    let ns = start.elapsed().as_nanos() as f64 / WARM_ITERS as f64;
-    black_box(checksum);
-    ns
-}
-
-fn bench_wasmtime_combined(wasm_bytes: &[u8]) -> f64 {
-    let engine = wasmtime::Engine::default();
-    let module = wasmtime::Module::new(&engine, wasm_bytes).unwrap();
-    let mut store = wasmtime::Store::new(&engine, ());
-    let mut linker = wasmtime::Linker::new(&engine);
-    let instance = linker.instantiate(&mut store, &module).unwrap();
-    let memory = instance.get_memory(&mut store, "memory").unwrap();
-    let prepare_fn = instance
-        .get_typed_func::<(), ()>(&mut store, "prepare_call")
-        .unwrap();
-    let execute_fn = instance
-        .get_typed_func::<(i32, i32), i64>(&mut store, "tool_execute")
-        .unwrap();
-
-    let input = make_input();
-    let input_ptr = INPUT_PTR as i32;
-    let input_len = input.len() as i32;
-
-    let mut checksum: u32 = 0;
-    let start = Instant::now();
-    for _ in 0..WARM_ITERS {
-        prepare_fn.call(&mut store, ()).unwrap();
-        memory.write(&mut store, INPUT_PTR, &input).unwrap();
-        let r = execute_fn.call(&mut store, (input_ptr, input_len)).unwrap();
-        let rp = (r >> 32) as u32;
-        let rl = (r & 0xFFFF_FFFF) as u32;
-        let mut buf = vec![0u8; rl as usize];
-        memory.read(&store, rp as usize, &mut buf).unwrap();
-        checksum = checksum.wrapping_add(buf.len() as u32);
-    }
-    let ns = start.elapsed().as_nanos() as f64 / WARM_ITERS as f64;
-    black_box(checksum);
-    ns
-}
-
-// ─── Main ────────────────────────────────────────────────────────────────────
-
 fn main() {
     let wasm_bytes = load_wasm();
-    println!("WASM Runtime Isolation Benchmark");
-    println!("=================================");
+    println!("WASM Runtime Isolation Benchmark (Wasmer)");
+    println!("==========================================");
     println!("Module size: {} bytes", wasm_bytes.len());
     println!("Iterations:  {}\n", WARM_ITERS);
 
-    // Run each test 3x and take the median to reduce noise
-    let tests: &[(&str, fn(&[u8]) -> f64, fn(&[u8]) -> f64)] = &[
-        ("Memory (write+read, no calls)", bench_wasmer_memory, bench_wasmtime_memory),
-        ("Trampoline (prepare_call only)", bench_wasmer_trampoline, bench_wasmtime_trampoline),
-        ("Execute (prepare+call, no read)", bench_wasmer_execute, bench_wasmtime_execute),
-        ("Combined (full pipeline)", bench_wasmer_combined, bench_wasmtime_combined),
+    let tests: &[(&str, fn(&[u8]) -> f64)] = &[
+        ("Memory (write+read, no calls)", bench_memory),
+        ("Trampoline (prepare_call only)", bench_trampoline),
+        ("Execute (prepare+call, no read)", bench_execute),
+        ("Combined (full pipeline)", bench_combined),
     ];
 
-    println!(
-        "{:<40} {:>10} {:>10} {:>8} {:>8}",
-        "Test", "Wasmer", "Wasmtime", "Delta", "Ratio"
-    );
-    println!("{:-<86}", "");
+    println!("{:<40} {:>12}", "Test", "Wasmer (ns)");
+    println!("{:-<54}", "");
 
-    for (name, wasmer_fn, wasmtime_fn) in tests {
-        let mut wasmer_results = [0.0f64; 3];
-        let mut wasmtime_results = [0.0f64; 3];
-
+    for (name, bench_fn) in tests {
+        let mut results = [0.0f64; 3];
         for i in 0..3 {
-            wasmer_results[i] = wasmer_fn(&wasm_bytes);
-            wasmtime_results[i] = wasmtime_fn(&wasm_bytes);
+            results[i] = bench_fn(&wasm_bytes);
         }
-        wasmer_results.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        wasmtime_results.sort_by(|a, b| a.partial_cmp(b).unwrap());
-
-        let w = wasmer_results[1];
-        let t = wasmtime_results[1];
-        let delta = w - t;
-        let ratio = w / t;
-
-        println!(
-            "{:<40} {:>8.1}ns {:>8.1}ns {:>+7.1}ns {:>7.2}x",
-            name, w, t, delta, ratio
-        );
+        results.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let median = results[1];
+        println!("{:<40} {:>10.1}ns", name, median);
     }
-
-    println!("\nKey: Delta > 0 means Wasmer is slower. Ratio > 1.0 means Wasmer is slower.");
 }

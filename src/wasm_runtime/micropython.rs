@@ -13,7 +13,7 @@ use super::WasmRuntime;
 const PYSTACK_SIZE: i32 = 16384;
 const HEAP_SIZE: i32 = 256 * 1024;
 
-const EXEC_SLOT: u64 = 64 * 1024;   // 64KB - for source code
+const EXEC_SLOT: u64 = 512 * 1024;   // 512KB - for source code
 const ARGS_SLOT: u64 = 4 * 1024;    // 4KB - for tool args JSON
 const NAME_SLOT: u64 = 8 * 1024;    // 8KB - for tool name
 
@@ -39,6 +39,12 @@ impl MicroPythonRuntime {
 
         let memory = instance.exports.get_memory("memory")?.clone();
         env.as_mut(&mut store).memory = Some(memory.clone());
+
+        let current_pages = memory.view(&store).size();
+        let needed_pages = ((EXEC_SLOT + 64 * 1024) / 65536 + 1) as u32;
+        if current_pages.0 < needed_pages {
+            memory.grow(&mut store, wasmer::Pages(needed_pages - current_pages.0))?;
+        }
 
         Ok(Self {
             store,

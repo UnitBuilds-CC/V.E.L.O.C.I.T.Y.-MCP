@@ -99,7 +99,6 @@ proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
 serial_test = "3.0"
 tempfile = "3.10"
-wasmtime = "29"
 
 [[bench]]
 name = "protocol_bench"

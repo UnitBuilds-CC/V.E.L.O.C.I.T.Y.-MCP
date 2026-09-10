@@ -17,7 +17,12 @@ static char args_buf[ARGS_BUF_SIZE];
 static size_t args_len = 0;
 
 #define EXEC_SLOT_SIZE (64 * 1024)
+#define TOOL_SRC_SIZE (4 * 1024)
 static int csharp_initialized = 0;
+static char tool_source[TOOL_SRC_SIZE];
+static size_t tool_source_len = 0;
+static char _result[1024];
+static int _result_set = 0;
 
 static void output_reset(void) {
     output_len = 0;
@@ -173,6 +178,32 @@ static int exec_assignment(const char **p, const char *varname) {
     return 0;
 }
 
+static int exec_return(const char **p) {
+    *p += 6;
+    *p = skip_ws(*p);
+    if (**p == '"') {
+        (*p)++;
+        char buf[1024];
+        int i = 0;
+        while (**p && **p != '"' && i < sizeof(buf) - 1) {
+            if (**p == '\\' && *(*p + 1) == '"') {
+                buf[i++] = '"';
+                *p += 2;
+            } else {
+                buf[i++] = **p;
+                (*p)++;
+            }
+        }
+        buf[i] = '\0';
+        if (**p == '"') (*p)++;
+        strncpy(_result, buf, sizeof(_result) - 1);
+        _result_set = 1;
+    }
+    while (**p && **p != ';' && **p != '\n') (*p)++;
+    if (**p == ';') (*p)++;
+    return 0;
+}
+
 static int exec_csharp(const char *src) {
     const char *p = src;
 
@@ -180,7 +211,9 @@ static int exec_csharp(const char *src) {
         p = skip_ws(p);
         if (!*p) break;
 
-        if (strncmp(p, "Console.WriteLine", 17) == 0) {
+        if (strncmp(p, "return", 6) == 0 && isspace((unsigned char)p[6])) {
+            exec_return(&p);
+        } else if (strncmp(p, "Console.WriteLine", 17) == 0) {
             p += 17;
             exec_console_writeline(&p);
         } else if (strncmp(p, "Console.Write", 13) == 0) {
@@ -224,20 +257,24 @@ static int exec_csharp(const char *src) {
     return 0;
 }
 
-int csharp_wasi_init(void) {
+int dotnet_wasi_init(void) {
     if (csharp_initialized) return 0;
     var_count = 0;
+    tool_source_len = 0;
+    tool_source[0] = '\0';
+    _result[0] = '\0';
+    _result_set = 0;
     csharp_initialized = 1;
     output_reset();
     return 0;
 }
 
-int csharp_wasi_exec(const char *src, size_t len) {
+int dotnet_wasi_exec(const char *src, size_t len) {
     if (!csharp_initialized) return -1;
 
     output_reset();
 
-    char buf[EXEC_SLOT_SIZE];
+    static char buf[EXEC_SLOT_SIZE];
     if (len >= sizeof(buf)) len = sizeof(buf) - 1;
     memcpy(buf, src, len);
     buf[len] = '\0';
@@ -245,15 +282,15 @@ int csharp_wasi_exec(const char *src, size_t len) {
     return exec_csharp(buf);
 }
 
-const char *csharp_wasi_get_output(void) {
+const char *dotnet_wasi_get_output(void) {
     return output_buf;
 }
 
-size_t csharp_wasi_get_output_len(void) {
+size_t dotnet_wasi_get_output_len(void) {
     return output_len;
 }
 
-int csharp_wasi_set_args(const char *ptr, size_t len) {
+int dotnet_wasi_set_args(const char *ptr, size_t len) {
     if (len >= ARGS_BUF_SIZE) len = ARGS_BUF_SIZE - 1;
     memcpy(args_buf, ptr, len);
     args_buf[len] = '\0';
@@ -261,29 +298,45 @@ int csharp_wasi_set_args(const char *ptr, size_t len) {
     return 0;
 }
 
-int csharp_wasi_register_tool(const char *name_ptr, size_t name_len,
+int dotnet_wasi_register_tool(const char *name_ptr, size_t name_len,
                               const char *src_ptr, size_t src_len) {
+    if (src_len >= TOOL_SRC_SIZE) src_len = TOOL_SRC_SIZE - 1;
+    memcpy(tool_source, src_ptr, src_len);
+    tool_source[src_len] = '\0';
+    tool_source_len = src_len;
     (void)name_ptr; (void)name_len;
-    (void)src_ptr; (void)src_len;
     return 0;
 }
 
-int csharp_wasi_call_tool(const char *args_ptr, size_t args_n,
+int dotnet_wasi_call_tool(const char *args_ptr, size_t args_n,
                           const char *name_ptr, size_t name_len) {
     if (!csharp_initialized) return -1;
 
     if (args_n >= ARGS_BUF_SIZE) args_n = ARGS_BUF_SIZE - 1;
     memcpy(args_buf, args_ptr, args_n);
     args_buf[args_n] = '\0';
+    args_len = args_n;
 
     output_reset();
+    _result[0] = '\0';
+    _result_set = 0;
 
-    (void)name_ptr; (void)name_len;
+    if (tool_source_len > 0) {
+        exec_csharp(tool_source);
+    }
+
+    if (_result_set) {
+        output_reset();
+        char json[2048];
+        int jlen = snprintf(json, sizeof(json), "{\"message\":\"%s\"}", _result);
+        output_append(json, jlen);
+        output_append_str("\n");
+    }
 
     return 0;
 }
 
-void csharp_wasi_destroy(void) {
+void dotnet_wasi_destroy(void) {
     if (csharp_initialized) {
         var_count = 0;
         csharp_initialized = 0;

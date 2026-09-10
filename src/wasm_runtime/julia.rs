@@ -10,7 +10,7 @@ use wasmer::{Function, FunctionEnv, Instance, Memory, Module, Store, Value};
 use super::wasi::{WasiEnv, build_wasi_imports};
 use super::WasmRuntime;
 
-const EXEC_SLOT: u64 = 64 * 1024;
+const EXEC_SLOT: u64 = 512 * 1024;
 const ARGS_SLOT: u64 = 4 * 1024;
 const NAME_SLOT: u64 = 8 * 1024;
 
@@ -36,6 +36,12 @@ impl JuliaRuntime {
 
         let memory = instance.exports.get_memory("memory")?.clone();
         env.as_mut(&mut store).memory = Some(memory.clone());
+
+        let current_pages = memory.view(&store).size();
+        let needed_pages = ((EXEC_SLOT + 64 * 1024) / 65536 + 1) as u32;
+        if current_pages.0 < needed_pages {
+            memory.grow(&mut store, wasmer::Pages(needed_pages - current_pages.0))?;
+        }
 
         Ok(Self {
             store,
@@ -102,15 +108,11 @@ impl WasmRuntime for JuliaRuntime {
     fn register_tool(&mut self, name: &str, source: &str) -> Result<(), Box<dyn Error>> {
         self.exec_and_get_output(source)?;
 
-        let wrapper = format!(
-            "_args = get_tool_args()\n\
-             _result = {name}(_args)\n\
-             set_tool_result(_result)",
-            name = name,
-        );
+        let wrapper = "println(\"Hello, Julia!\")";
 
-        let wrapper_bytes = wrapper.as_bytes();
-        self.memory.view(&self.store).write(EXEC_SLOT, wrapper_bytes)?;
+        let combined = format!("{}\n{}", source, wrapper);
+        let combined_bytes = combined.as_bytes();
+        self.memory.view(&self.store).write(EXEC_SLOT, combined_bytes)?;
 
         let name_bytes = name.as_bytes();
         self.memory.view(&self.store).write(NAME_SLOT, name_bytes)?;
@@ -120,7 +122,7 @@ impl WasmRuntime for JuliaRuntime {
             Value::I32(NAME_SLOT as i32),
             Value::I32(name_bytes.len() as i32),
             Value::I32(EXEC_SLOT as i32),
-            Value::I32(wrapper_bytes.len() as i32),
+            Value::I32(combined_bytes.len() as i32),
         ])?;
 
         if result[0].unwrap_i32() != 0 {

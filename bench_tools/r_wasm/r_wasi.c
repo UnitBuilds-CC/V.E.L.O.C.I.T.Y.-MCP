@@ -17,7 +17,12 @@ static char args_buf[ARGS_BUF_SIZE];
 static size_t args_len = 0;
 
 #define EXEC_SLOT_SIZE (64 * 1024)
+#define TOOL_SRC_SIZE (4 * 1024)
 static int r_initialized = 0;
+static char tool_source[TOOL_SRC_SIZE];
+static size_t tool_source_len = 0;
+static char _result[1024];
+static int _result_set = 0;
 
 static void output_reset(void) {
     output_len = 0;
@@ -88,13 +93,14 @@ static int exec_print(const char **p) {
     int i = 0;
 
     while (**p && **p != ')' && i < sizeof(buf) - 1) {
-        if (**p == '"') {
+        if (**p == '"' || **p == '\'') {
+            char quote = **p;
             (*p)++;
-            while (**p && **p != '"' && i < sizeof(buf) - 1) {
+            while (**p && **p != quote && i < sizeof(buf) - 1) {
                 buf[i++] = **p;
                 (*p)++;
             }
-            if (**p == '"') (*p)++;
+            if (**p == quote) (*p)++;
         } else {
             buf[i++] = **p;
             (*p)++;
@@ -118,9 +124,10 @@ static int exec_cat(const char **p) {
     int i = 0;
 
     while (**p && **p != ')' && i < sizeof(buf) - 1) {
-        if (**p == '"') {
+        if (**p == '"' || **p == '\'') {
+            char quote = **p;
             (*p)++;
-            while (**p && **p != '"' && i < sizeof(buf) - 1) {
+            while (**p && **p != quote && i < sizeof(buf) - 1) {
                 if (**p == '\\' && *(*p + 1) == 'n') {
                     buf[i++] = '\n';
                     (*p) += 2;
@@ -129,7 +136,7 @@ static int exec_cat(const char **p) {
                     (*p)++;
                 }
             }
-            if (**p == '"') (*p)++;
+            if (**p == quote) (*p)++;
         } else if (**p == ',') {
             (*p)++;
             *p = skip_ws(*p);
@@ -204,6 +211,38 @@ static int exec_assignment(const char **p, const char *varname) {
     return 0;
 }
 
+static int exec_return(const char **p) {
+    *p += 6;
+    *p = skip_ws(*p);
+    if (**p == '(') {
+        (*p)++;
+        *p = skip_ws(*p);
+        if (**p == '"') {
+            (*p)++;
+            char buf[1024];
+            int i = 0;
+            while (**p && **p != '"' && i < sizeof(buf) - 1) {
+                if (**p == '\\' && *(*p + 1) == '"') {
+                    buf[i++] = '"';
+                    *p += 2;
+                } else {
+                    buf[i++] = **p;
+                    (*p)++;
+                }
+            }
+            buf[i] = '\0';
+            if (**p == '"') (*p)++;
+            strncpy(_result, buf, sizeof(_result) - 1);
+            _result_set = 1;
+        }
+        while (**p && **p != ')') (*p)++;
+        if (**p == ')') (*p)++;
+    }
+    while (**p && **p != '\n') (*p)++;
+    if (**p == '\n') (*p)++;
+    return 0;
+}
+
 static int exec_r(const char *src) {
     const char *p = src;
 
@@ -221,6 +260,8 @@ static int exec_r(const char *src) {
             p += 5;
             char result[256];
             exec_paste(&p, result, sizeof(result));
+        } else if (strncmp(p, "return", 6) == 0 && (isspace((unsigned char)p[6]) || p[6] == '(')) {
+            exec_return(&p);
         } else if (isalpha((unsigned char)*p) || *p == '.') {
             char varname[64];
             int i = 0;
@@ -246,6 +287,10 @@ static int exec_r(const char *src) {
 int r_wasi_init(void) {
     if (r_initialized) return 0;
     var_count = 0;
+    tool_source_len = 0;
+    tool_source[0] = '\0';
+    _result[0] = '\0';
+    _result_set = 0;
     r_initialized = 1;
     output_reset();
     return 0;
@@ -256,7 +301,7 @@ int r_wasi_exec(const char *src, size_t len) {
 
     output_reset();
 
-    char buf[EXEC_SLOT_SIZE];
+    static char buf[EXEC_SLOT_SIZE];
     if (len >= sizeof(buf)) len = sizeof(buf) - 1;
     memcpy(buf, src, len);
     buf[len] = '\0';
@@ -282,8 +327,11 @@ int r_wasi_set_args(const char *ptr, size_t len) {
 
 int r_wasi_register_tool(const char *name_ptr, size_t name_len,
                          const char *src_ptr, size_t src_len) {
+    if (src_len >= TOOL_SRC_SIZE) src_len = TOOL_SRC_SIZE - 1;
+    memcpy(tool_source, src_ptr, src_len);
+    tool_source[src_len] = '\0';
+    tool_source_len = src_len;
     (void)name_ptr; (void)name_len;
-    (void)src_ptr; (void)src_len;
     return 0;
 }
 
@@ -294,11 +342,25 @@ int r_wasi_call_tool(const char *args_ptr, size_t args_n,
     if (args_n >= ARGS_BUF_SIZE) args_n = ARGS_BUF_SIZE - 1;
     memcpy(args_buf, args_ptr, args_n);
     args_buf[args_n] = '\0';
+    args_len = args_n;
 
     output_reset();
+    _result[0] = '\0';
+    _result_set = 0;
+
+    if (tool_source_len > 0) {
+        exec_r(tool_source);
+    }
+
+    if (_result_set) {
+        output_reset();
+        char json[2048];
+        int jlen = snprintf(json, sizeof(json), "{\"message\":\"%s\"}", _result);
+        output_append(json, jlen);
+        output_append_str("\n");
+    }
 
     (void)name_ptr; (void)name_len;
-
     return 0;
 }
 

@@ -17,7 +17,12 @@ static char args_buf[ARGS_BUF_SIZE];
 static size_t args_len = 0;
 
 #define EXEC_SLOT_SIZE (64 * 1024)
+#define TOOL_SRC_SIZE (4 * 1024)
 static int julia_initialized = 0;
+static char tool_source[TOOL_SRC_SIZE];
+static size_t tool_source_len = 0;
+static char _result[1024];
+static int _result_set = 0;
 
 static void output_reset(void) {
     output_len = 0;
@@ -209,6 +214,10 @@ static int exec_julia(const char *src) {
 int julia_wasi_init(void) {
     if (julia_initialized) return 0;
     var_count = 0;
+    tool_source_len = 0;
+    tool_source[0] = '\0';
+    _result[0] = '\0';
+    _result_set = 0;
     julia_initialized = 1;
     output_reset();
     return 0;
@@ -219,7 +228,7 @@ int julia_wasi_exec(const char *src, size_t len) {
 
     output_reset();
 
-    char buf[EXEC_SLOT_SIZE];
+    static char buf[EXEC_SLOT_SIZE];
     if (len >= sizeof(buf)) len = sizeof(buf) - 1;
     memcpy(buf, src, len);
     buf[len] = '\0';
@@ -245,8 +254,11 @@ int julia_wasi_set_args(const char *ptr, size_t len) {
 
 int julia_wasi_register_tool(const char *name_ptr, size_t name_len,
                              const char *src_ptr, size_t src_len) {
+    if (src_len >= TOOL_SRC_SIZE) src_len = TOOL_SRC_SIZE - 1;
+    memcpy(tool_source, src_ptr, src_len);
+    tool_source[src_len] = '\0';
+    tool_source_len = src_len;
     (void)name_ptr; (void)name_len;
-    (void)src_ptr; (void)src_len;
     return 0;
 }
 
@@ -257,11 +269,17 @@ int julia_wasi_call_tool(const char *args_ptr, size_t args_n,
     if (args_n >= ARGS_BUF_SIZE) args_n = ARGS_BUF_SIZE - 1;
     memcpy(args_buf, args_ptr, args_n);
     args_buf[args_n] = '\0';
+    args_len = args_n;
 
     output_reset();
+    _result[0] = '\0';
+    _result_set = 0;
+
+    if (tool_source_len > 0) {
+        exec_julia(tool_source);
+    }
 
     (void)name_ptr; (void)name_len;
-
     return 0;
 }
 

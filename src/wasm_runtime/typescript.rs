@@ -25,35 +25,42 @@ impl TypeScriptRuntime {
         let mut js = String::new();
         let mut in_type_annotation = false;
         let mut in_interface = false;
-        let mut brace_depth = 0;
+        let mut brace_depth: i32 = 0;
 
         for line in ts_source.lines() {
             let trimmed = line.trim();
 
-            // Skip interface/type declarations
             if trimmed.starts_with("interface ") || trimmed.starts_with("type ") {
                 in_interface = true;
             }
 
             if in_interface {
-                brace_depth += line.matches('{').count();
-                brace_depth -= line.matches('}').count();
+                brace_depth += line.matches('{').count() as i32;
+                brace_depth -= line.matches('}').count() as i32;
                 if brace_depth == 0 && line.contains('}') {
                     in_interface = false;
                 }
                 continue;
             }
 
-            // Strip type annotations from function parameters and return types
             let mut result = String::new();
             let mut chars = line.chars().peekable();
 
             while let Some(ch) = chars.next() {
-                if ch == ':' && !in_type_annotation {
-                    // Check if this is a type annotation (not an object literal)
+                if ch == '{' {
+                    brace_depth += 1;
+                    result.push(ch);
+                    continue;
+                }
+                if ch == '}' {
+                    brace_depth -= 1;
+                    result.push(ch);
+                    continue;
+                }
+
+                if ch == ':' && !in_type_annotation && brace_depth == 0 {
                     let next: String = chars.clone().take(10).collect();
                     if next.trim_start().starts_with(|c: char| c.is_alphabetic() || c == '{' || c == '[' || c == '(') {
-                        // Skip until we hit a comma, closing paren, or equals
                         in_type_annotation = true;
                         continue;
                     }
@@ -70,7 +77,6 @@ impl TypeScriptRuntime {
                 result.push(ch);
             }
 
-            // Strip 'as' type assertions
             let result = result.replace(" as ", " ");
 
             js.push_str(&result);
