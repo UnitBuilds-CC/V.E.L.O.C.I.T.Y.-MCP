@@ -354,6 +354,37 @@ fn default_perl_wasm_path() -> String {
     "bench_tools/perl_wasm/perl.wasm".to_string()
 }
 
+impl WasmRuntimesConfig {
+    /// Resolve a language name to (enabled, effective WASM path).
+    ///
+    /// Uses the configured path when set, otherwise the built-in default.
+    /// Returns `None` for unknown language names.
+    pub fn resolve_language(&self, language: &str) -> Option<(bool, String)> {
+        let (lang, default_path) = match language {
+            "javascript" => (&self.javascript, default_quickjs_wasm_path()),
+            "python" => (&self.python, default_micropython_wasm_path()),
+            "lua" => (&self.lua, default_lua_wasm_path()),
+            "go" => (&self.go, default_tinygo_wasm_path()),
+            "ruby" => (&self.ruby, default_ruby_wasm_path()),
+            "rust" => (&self.rust, default_rust_wasm_path()),
+            "typescript" => (&self.typescript, default_typescript_wasm_path()),
+            "php" => (&self.php, default_php_wasm_path()),
+            "csharp" => (&self.csharp, default_csharp_wasm_path()),
+            "java" => (&self.java, default_java_wasm_path()),
+            "r" => (&self.r, default_r_wasm_path()),
+            "julia" => (&self.julia, default_julia_wasm_path()),
+            "perl" => (&self.perl, default_perl_wasm_path()),
+            _ => return None,
+        };
+        let path = if lang.wasm_path.is_empty() {
+            default_path
+        } else {
+            lang.wasm_path.clone()
+        };
+        Some((lang.enabled, path))
+    }
+}
+
 impl ServerConfig {
     /// Load configuration from a TOML file.
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, String> {

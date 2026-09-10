@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{info, error, warn};
 
-use velocity_mcp::{protocol, registry, benchmark, audit, config::ServerConfig};
+use velocity_mcp::{protocol, registry, benchmark, audit, config::ServerConfig, plugins};
 
 /// Server version string, referenced by all protocol handlers and help text.
 pub const VERSION: &str = velocity_mcp::VERSION;
@@ -134,6 +134,8 @@ fn main() {
         }
         process::exit(1);
     }
+
+    plugins::set_wasm_runtimes_config(config.wasm_runtimes.clone());
 
     let mode = cli_mode.unwrap_or(&config.mode);
     let buffer_path = cli_buffer_path.unwrap_or(&config.buffer_path);

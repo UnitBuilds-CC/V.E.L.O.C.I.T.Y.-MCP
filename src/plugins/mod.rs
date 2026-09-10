@@ -364,11 +364,20 @@ fn execute_wasm_plugin_tool(tool: &PluginTool, arguments: &Value) -> Result<Stri
     let language = executor.language.as_deref()
         .ok_or_else(|| "WASM executor requires 'language' field".to_string())?;
 
-    let source = resolve_wasm_source(executor)?;
-
     match language {
-        "go" => execute_standalone_wasm_tool(executor, arguments),
+        "go" => {
+            let (enabled, default_path) = wasm_runtimes_config()
+                .resolve_language("go")
+                .ok_or_else(|| "Unsupported WASM language: go".to_string())?;
+            if !enabled {
+                return Err("WASM language 'go' is disabled in configuration".to_string());
+            }
+            let source_file = executor.source_file.as_deref().unwrap_or(&default_path);
+            execute_standalone_wasm_tool(source_file, arguments)
+        }
         _ => {
+            let source = resolve_wasm_source(executor)?;
+
             let mut cache = WASM_RUNTIME_CACHE.lock()
                 .map_err(|e| format!("WASM runtime cache poisoned: {}", e))?;
 
@@ -408,25 +417,58 @@ fn resolve_wasm_source(executor: &PluginExecutor) -> Result<String, String> {
     }
 }
 
-fn create_wasm_runtime(language: &str) -> Result<Box<dyn crate::wasm_runtime::WasmRuntime>, String> {
-    let (wasm_path, lang_name): (&str, &str) = match language {
-        "javascript" => ("bench_tools/quickjs_wasm/quickjs.wasm", "javascript"),
-        "python" => ("bench_tools/micropython_wasm/wasi-reactor/build/micropython.wasm", "python"),
-        "lua" => ("bench_tools/lua_wasm/lua.wasm", "lua"),
-        _ => return Err(format!("Unsupported WASM language: {}", language)),
-    };
+static WASM_RUNTIMES_CONFIG: std::sync::OnceLock<crate::config::WasmRuntimesConfig> =
+    std::sync::OnceLock::new();
 
-    let wasm_bytes = std::fs::read(wasm_path)
+/// Provide the server's WASM runtime configuration to the plugin registry.
+///
+/// Must be called before plugins load; later calls are ignored so the
+/// first configuration wins for the process lifetime.
+pub fn set_wasm_runtimes_config(config: crate::config::WasmRuntimesConfig) {
+    let _ = WASM_RUNTIMES_CONFIG.set(config);
+}
+
+fn wasm_runtimes_config() -> &'static crate::config::WasmRuntimesConfig {
+    WASM_RUNTIMES_CONFIG.get_or_init(crate::config::WasmRuntimesConfig::default)
+}
+
+fn create_wasm_runtime(language: &str) -> Result<Box<dyn crate::wasm_runtime::WasmRuntime>, String> {
+    let (enabled, wasm_path) = wasm_runtimes_config()
+        .resolve_language(language)
+        .ok_or_else(|| format!("Unsupported WASM language: {}", language))?;
+    if !enabled {
+        return Err(format!("WASM language '{}' is disabled in configuration", language));
+    }
+
+    let wasm_bytes = std::fs::read(&wasm_path)
         .map_err(|e| format!("Failed to read WASM module '{}': {}", wasm_path, e))?;
 
-    let mut runtime: Box<dyn crate::wasm_runtime::WasmRuntime> = match lang_name {
+    let mut runtime: Box<dyn crate::wasm_runtime::WasmRuntime> = match language {
         "javascript" => Box::new(crate::wasm_runtime::quickjs::QuickJsRuntime::new(&wasm_bytes)
             .map_err(|e| format!("QuickJS init failed: {}", e))?),
+        "typescript" => Box::new(crate::wasm_runtime::typescript::TypeScriptRuntime::new(&wasm_bytes)
+            .map_err(|e| format!("TypeScript init failed: {}", e))?),
         "python" => Box::new(crate::wasm_runtime::micropython::MicroPythonRuntime::new(&wasm_bytes)
             .map_err(|e| format!("MicroPython init failed: {}", e))?),
         "lua" => Box::new(crate::wasm_runtime::lua::LuaRuntime::new(&wasm_bytes)
             .map_err(|e| format!("Lua init failed: {}", e))?),
-        _ => unreachable!(),
+        "ruby" => Box::new(crate::wasm_runtime::ruby::RubyRuntime::new(&wasm_bytes)
+            .map_err(|e| format!("Ruby init failed: {}", e))?),
+        "rust" => Box::new(crate::wasm_runtime::rust::RustRuntime::new(&wasm_bytes)
+            .map_err(|e| format!("Rust init failed: {}", e))?),
+        "php" => Box::new(crate::wasm_runtime::php::PhpRuntime::new(&wasm_bytes)
+            .map_err(|e| format!("PHP init failed: {}", e))?),
+        "csharp" => Box::new(crate::wasm_runtime::csharp::CSharpRuntime::new(&wasm_bytes)
+            .map_err(|e| format!("C# init failed: {}", e))?),
+        "java" => Box::new(crate::wasm_runtime::java::JavaRuntime::new(&wasm_bytes)
+            .map_err(|e| format!("Java init failed: {}", e))?),
+        "r" => Box::new(crate::wasm_runtime::r::RRuntime::new(&wasm_bytes)
+            .map_err(|e| format!("R init failed: {}", e))?),
+        "julia" => Box::new(crate::wasm_runtime::julia::JuliaRuntime::new(&wasm_bytes)
+            .map_err(|e| format!("Julia init failed: {}", e))?),
+        "perl" => Box::new(crate::wasm_runtime::perl::PerlRuntime::new(&wasm_bytes)
+            .map_err(|e| format!("Perl init failed: {}", e))?),
+        _ => return Err(format!("Unsupported WASM language: {}", language)),
     };
 
     runtime.init()
@@ -436,11 +478,8 @@ fn create_wasm_runtime(language: &str) -> Result<Box<dyn crate::wasm_runtime::Wa
     Ok(runtime)
 }
 
-fn execute_standalone_wasm_tool(executor: &PluginExecutor, arguments: &Value) -> Result<String, String> {
+fn execute_standalone_wasm_tool(source_file: &str, arguments: &Value) -> Result<String, String> {
     use wasmer::{FunctionEnv, Instance, Store, Value as WasmValue};
-
-    let source_file = executor.source_file.as_deref()
-        .ok_or("Go WASM tools require 'source_file' (compiled .wasm path)")?;
 
     let current_mtime = std::fs::metadata(source_file)
         .ok().and_then(|m| m.modified().ok());
