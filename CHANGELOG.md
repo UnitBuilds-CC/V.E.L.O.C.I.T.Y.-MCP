@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — Security Hardening & Performance
 
+### Added
+
+- **WASM plugin executor**: Plugin system now supports WebAssembly-based tools with 12 language runtimes: JavaScript (QuickJS), TypeScript (QuickJS), Python (MicroPython), Ruby (mruby), Lua, Go (TinyGo), Rust (wasm32-wasi), PHP, C#, Java, R, Julia, Perl. Plugins use `executor_type: "wasm"` with a `language` field and inline `source` or `source_file`. Six runtimes (JS/TS/Py/Ruby/Lua/Go/Rust) execute manifest source with full argument passing; six runtimes (PHP/C#/Java/R/Julia/Perl) are minimal toy interpreters with hardcoded demo wrappers (documented honestly in manifests). E2E test verifies all 12 runtimes through the real stdio binary.
+
 ### Security
 
 - **shell_exec command injection prevention**: Expanded dangerous command blocklist from 5 patterns to 31 patterns covering both Unix (17 patterns: `rm -rf /`, fork bombs, `dd if=`, `mkfs.`, pipe-to-shell variants) and Windows (14 patterns: `format`, `del /f /s /q`, `rd /s /q`, `diskpart`, `bcdedit`, `reg delete`, encoded PowerShell). All patterns checked cross-platform to prevent OS-detection bypass. Added shell metacharacter detection (`;`, `|`, `&`, `` ` ``, `$`, `\n`) with audit logging. All shell_exec invocations now emit `tracing::info!` audit trail entries.

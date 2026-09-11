@@ -173,6 +173,41 @@ Create a `manifest.json` file in your plugin directory:
 }
 ```
 
+### WASM Plugin Manifest
+
+For WASM-based plugins, use the `wasm` executor type with a supported language:
+
+```json
+{
+  "name": "my-wasm-plugin",
+  "version": "1.0.0",
+  "tools": [
+    {
+      "name": "my_wasm_tool",
+      "description": "A tool running in WebAssembly",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Input text"
+          }
+        },
+        "required": ["text"]
+      },
+      "executor": {
+        "executor_type": "wasm",
+        "language": "javascript",
+        "source": "function my_tool(args) { return { result: args.text.toUpperCase() }; }",
+        "timeout": 5
+      }
+    }
+  ]
+}
+```
+
+Supported WASM languages: `javascript`, `typescript`, `python`, `ruby`, `lua`, `go`, `rust`, `php`, `csharp`, `java`, `r`, `julia`, `perl`.
+
 ### Marketplace Metadata
 
 For marketplace listing, create a `marketplace.json` file:

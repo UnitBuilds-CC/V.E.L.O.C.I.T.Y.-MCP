@@ -595,6 +595,7 @@ velocity_mcp marketplace review --id "author.plugin-name"
 | **Python** | Python | Scripts and modules executed via Python runtime |
 | **Node.js** | JavaScript/TypeScript | Executed via Node.js runtime |
 | **Rust** | Rust | Native compiled plugins with direct API access |
+| **WASM** | 12 languages | WebAssembly runtimes: JavaScript, TypeScript, Python, Ruby, Lua, Go, Rust, PHP, C#, Java, R, Julia, Perl |
 
 ### Plugin Security
 

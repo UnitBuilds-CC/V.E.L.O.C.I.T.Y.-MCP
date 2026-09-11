@@ -85,7 +85,7 @@ That's it! Your MCP server is running. Now configure your client.
 ### 🔌 Extensibility
 - **Plugin marketplace** with install/update/review system
 - **Dynamic plugin loading** without restart
-- **Multi-language plugin support** (Python, Node.js, Rust)
+- **Multi-language plugin support** (Python, Node.js, Rust, plus 12 WASM runtimes: JavaScript, TypeScript, Python, Ruby, Lua, Go, Rust, PHP, C#, Java, R, Julia, Perl)
 - **Client SDKs** in 4 languages (Rust, Python, TypeScript, Go)
 - **Type-safe tool registration** with proc macros
 
@@ -98,7 +98,7 @@ That's it! Your MCP server is running. Now configure your client.
 - **NDA/shmem** - Combined binary + shmem for maximum throughput
 
 ### 📦 Production Ready
-- **703 passing tests** with 89.79% line coverage
+- **799 passing tests** with 89.79% line coverage
 - **Zero warnings**, zero errors
 - **Cross-platform** (Windows, Linux, macOS)
 - **Docker** and **Kubernetes** deployment ready
