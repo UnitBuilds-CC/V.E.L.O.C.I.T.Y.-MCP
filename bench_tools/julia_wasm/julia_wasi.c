@@ -99,6 +99,21 @@ static int exec_println(const char **p) {
                 if (**p == '\\' && *(*p + 1) == 'n') {
                     buf[i++] = '\n';
                     (*p) += 2;
+                } else if (**p == '$') {
+                    (*p)++;
+                    char varname[64];
+                    int j = 0;
+                    while (**p && (isalnum((unsigned char)**p) || **p == '_') && j < (int)sizeof(varname) - 1) {
+                        varname[j++] = **p;
+                        (*p)++;
+                    }
+                    varname[j] = '\0';
+                    const char *val = get_var(varname);
+                    int vlen = strlen(val);
+                    if (i + vlen < (int)sizeof(buf) - 1) {
+                        memcpy(buf + i, val, vlen);
+                        i += vlen;
+                    }
                 } else {
                     buf[i++] = **p;
                     (*p)++;
@@ -131,8 +146,25 @@ static int exec_print(const char **p) {
         if (**p == '"') {
             (*p)++;
             while (**p && **p != '"' && i < sizeof(buf) - 1) {
-                buf[i++] = **p;
-                (*p)++;
+                if (**p == '$') {
+                    (*p)++;
+                    char varname[64];
+                    int j = 0;
+                    while (**p && (isalnum((unsigned char)**p) || **p == '_') && j < (int)sizeof(varname) - 1) {
+                        varname[j++] = **p;
+                        (*p)++;
+                    }
+                    varname[j] = '\0';
+                    const char *val = get_var(varname);
+                    int vlen = strlen(val);
+                    if (i + vlen < (int)sizeof(buf) - 1) {
+                        memcpy(buf + i, val, vlen);
+                        i += vlen;
+                    }
+                } else {
+                    buf[i++] = **p;
+                    (*p)++;
+                }
             }
             if (**p == '"') (*p)++;
         } else {
@@ -176,6 +208,47 @@ static int exec_assignment(const char **p, const char *varname) {
     return 0;
 }
 
+static int exec_return(const char **p) {
+    *p += 6;
+    *p = skip_ws(*p);
+    if (**p == '"') {
+        (*p)++;
+        char buf[1024];
+        int i = 0;
+        while (**p && **p != '"' && i < (int)sizeof(buf) - 1) {
+            if (**p == '\\' && *(*p + 1) == '"') {
+                buf[i++] = '"';
+                *p += 2;
+            } else if (**p == '$') {
+                (*p)++;
+                char varname[64];
+                int j = 0;
+                while (**p && (isalnum((unsigned char)**p) || **p == '_') && j < (int)sizeof(varname) - 1) {
+                    varname[j++] = **p;
+                    (*p)++;
+                }
+                varname[j] = '\0';
+                const char *val = get_var(varname);
+                int vlen = strlen(val);
+                if (i + vlen < (int)sizeof(buf) - 1) {
+                    memcpy(buf + i, val, vlen);
+                    i += vlen;
+                }
+            } else {
+                buf[i++] = **p;
+                (*p)++;
+            }
+        }
+        buf[i] = '\0';
+        if (**p == '"') (*p)++;
+        strncpy(_result, buf, sizeof(_result) - 1);
+        _result_set = 1;
+    }
+    while (**p && **p != '\n') (*p)++;
+    if (**p == '\n') (*p)++;
+    return 0;
+}
+
 static int exec_julia(const char *src) {
     const char *p = src;
 
@@ -189,6 +262,8 @@ static int exec_julia(const char *src) {
         } else if (strncmp(p, "print", 5) == 0 && (isspace((unsigned char)p[5]) || p[5] == '(')) {
             p += 5;
             exec_print(&p);
+        } else if (strncmp(p, "return", 6) == 0 && (isspace((unsigned char)p[6]))) {
+            exec_return(&p);
         } else if (isalpha((unsigned char)*p) || *p == '_') {
             char varname[64];
             int i = 0;
@@ -262,6 +337,64 @@ int julia_wasi_register_tool(const char *name_ptr, size_t name_len,
     return 0;
 }
 
+/* Parse JSON args and set as Julia variables */
+static void parse_json_args(void) {
+    const char *p = args_buf;
+    p = skip_ws(p);
+    if (*p != '{') return;
+    p++;
+
+    while (*p && *p != '}') {
+        p = skip_ws(p);
+        if (*p == '"') {
+            p++;
+            char key[64];
+            int ki = 0;
+            while (*p && *p != '"' && ki < (int)sizeof(key) - 1) {
+                if (*p == '\\' && *(p + 1)) {
+                    p++;
+                }
+                key[ki++] = *p++;
+            }
+            key[ki] = '\0';
+            if (*p == '"') p++;
+
+            p = skip_ws(p);
+            if (*p == ':') p++;
+            p = skip_ws(p);
+
+            char value[256];
+            int vi = 0;
+            if (*p == '"') {
+                p++;
+                while (*p && *p != '"' && vi < (int)sizeof(value) - 1) {
+                    if (*p == '\\' && *(p + 1)) {
+                        p++;
+                    }
+                    value[vi++] = *p++;
+                }
+                value[vi] = '\0';
+                if (*p == '"') p++;
+            } else {
+                while (*p && *p != ',' && *p != '}' && vi < (int)sizeof(value) - 1) {
+                    value[vi++] = *p++;
+                }
+                value[vi] = '\0';
+                while (vi > 0 && isspace((unsigned char)value[vi - 1])) {
+                    value[--vi] = '\0';
+                }
+            }
+
+            set_var(key, value);
+
+            p = skip_ws(p);
+            if (*p == ',') p++;
+        } else {
+            break;
+        }
+    }
+}
+
 int julia_wasi_call_tool(const char *args_ptr, size_t args_n,
                          const char *name_ptr, size_t name_len) {
     if (!julia_initialized) return -1;
@@ -275,8 +408,18 @@ int julia_wasi_call_tool(const char *args_ptr, size_t args_n,
     _result[0] = '\0';
     _result_set = 0;
 
+    parse_json_args();
+
     if (tool_source_len > 0) {
         exec_julia(tool_source);
+    }
+
+    if (_result_set) {
+        output_reset();
+        char json[2048];
+        int jlen = snprintf(json, sizeof(json), "{\"message\":\"%s\"}", _result);
+        output_append(json, jlen);
+        output_append_str("\n");
     }
 
     (void)name_ptr; (void)name_len;

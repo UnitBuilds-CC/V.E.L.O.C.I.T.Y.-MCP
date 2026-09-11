@@ -99,6 +99,22 @@ static int exec_console_writeline(const char **p) {
                 if (**p == '\\' && *(*p + 1) == 'n') {
                     buf[i++] = '\n';
                     (*p) += 2;
+                } else if (**p == '{') {
+                    (*p)++;
+                    char varname[64];
+                    int j = 0;
+                    while (**p && **p != '}' && j < (int)sizeof(varname) - 1) {
+                        varname[j++] = **p;
+                        (*p)++;
+                    }
+                    varname[j] = '\0';
+                    if (**p == '}') (*p)++;
+                    const char *val = get_var(varname);
+                    int vlen = strlen(val);
+                    if (i + vlen < (int)sizeof(buf) - 1) {
+                        memcpy(buf + i, val, vlen);
+                        i += vlen;
+                    }
                 } else {
                     buf[i++] = **p;
                     (*p)++;
@@ -185,10 +201,26 @@ static int exec_return(const char **p) {
         (*p)++;
         char buf[1024];
         int i = 0;
-        while (**p && **p != '"' && i < sizeof(buf) - 1) {
+        while (**p && **p != '"' && i < (int)sizeof(buf) - 1) {
             if (**p == '\\' && *(*p + 1) == '"') {
                 buf[i++] = '"';
                 *p += 2;
+            } else if (**p == '{') {
+                (*p)++;
+                char varname[64];
+                int j = 0;
+                while (**p && **p != '}' && j < (int)sizeof(varname) - 1) {
+                    varname[j++] = **p;
+                    (*p)++;
+                }
+                varname[j] = '\0';
+                if (**p == '}') (*p)++;
+                const char *val = get_var(varname);
+                int vlen = strlen(val);
+                if (i + vlen < (int)sizeof(buf) - 1) {
+                    memcpy(buf + i, val, vlen);
+                    i += vlen;
+                }
             } else {
                 buf[i++] = **p;
                 (*p)++;
@@ -308,6 +340,59 @@ int dotnet_wasi_register_tool(const char *name_ptr, size_t name_len,
     return 0;
 }
 
+static void parse_json_args(void) {
+    const char *p = args_buf;
+    p = skip_ws(p);
+    if (*p != '{') return;
+    p++;
+
+    while (*p && *p != '}') {
+        p = skip_ws(p);
+        if (*p == '"') {
+            p++;
+            char key[64];
+            int ki = 0;
+            while (*p && *p != '"' && ki < (int)sizeof(key) - 1) {
+                if (*p == '\\' && *(p + 1)) { p++; }
+                key[ki++] = *p++;
+            }
+            key[ki] = '\0';
+            if (*p == '"') p++;
+
+            p = skip_ws(p);
+            if (*p == ':') p++;
+            p = skip_ws(p);
+
+            char value[256];
+            int vi = 0;
+            if (*p == '"') {
+                p++;
+                while (*p && *p != '"' && vi < (int)sizeof(value) - 1) {
+                    if (*p == '\\' && *(p + 1)) { p++; }
+                    value[vi++] = *p++;
+                }
+                value[vi] = '\0';
+                if (*p == '"') p++;
+            } else {
+                while (*p && *p != ',' && *p != '}' && vi < (int)sizeof(value) - 1) {
+                    value[vi++] = *p++;
+                }
+                value[vi] = '\0';
+                while (vi > 0 && isspace((unsigned char)value[vi - 1])) {
+                    value[--vi] = '\0';
+                }
+            }
+
+            set_var(key, value);
+
+            p = skip_ws(p);
+            if (*p == ',') p++;
+        } else {
+            break;
+        }
+    }
+}
+
 int dotnet_wasi_call_tool(const char *args_ptr, size_t args_n,
                           const char *name_ptr, size_t name_len) {
     if (!csharp_initialized) return -1;
@@ -320,6 +405,8 @@ int dotnet_wasi_call_tool(const char *args_ptr, size_t args_n,
     output_reset();
     _result[0] = '\0';
     _result_set = 0;
+
+    parse_json_args();
 
     if (tool_source_len > 0) {
         exec_csharp(tool_source);
