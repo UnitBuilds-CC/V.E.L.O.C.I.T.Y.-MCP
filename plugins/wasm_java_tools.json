@@ -18,7 +18,7 @@
       "executor": {
         "executor_type": "wasm",
         "language": "java",
-        "source": "return \"Hello, {name}!\";",
+        "source": "set_tool_result(\"Hello, \" + name + \"!\");",
         "timeout": 5
       }
     }

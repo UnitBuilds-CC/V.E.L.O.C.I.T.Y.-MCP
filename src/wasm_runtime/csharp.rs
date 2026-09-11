@@ -196,7 +196,7 @@ mod tests {
         let wasm = std::fs::read(wasm_path()).expect(".NET WASM not found");
         let mut rt = CSharpRuntime::cold_start(&wasm).expect("cold start failed");
 
-        let source = "static object greet(dynamic args) { return new { message = $\"Hello, {args.name}!\" }; }";
+        let source = "set_tool_result(\"Hello, \" + name + \"!\");";
         rt.register_tool("greet", source).expect("register failed");
 
         let result = rt.call_tool("greet", r#"{"name": "C#"}"#).expect("call failed");

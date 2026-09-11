@@ -197,7 +197,7 @@ mod tests {
         let wasm = std::fs::read(wasm_path()).expect("Java WASM not found");
         let mut rt = JavaRuntime::cold_start(&wasm).expect("cold start failed");
 
-        let source = "static Map<String,Object> greet(Map<String,Object> args) { return Map.of(\"message\", \"Hello, \" + args.get(\"name\") + \"!\"); }";
+        let source = "set_tool_result(\"Hello, \" + name + \"!\");";
         rt.register_tool("greet", source).expect("register failed");
 
         let result = rt.call_tool("greet", r#"{"name": "Java"}"#).expect("call failed");

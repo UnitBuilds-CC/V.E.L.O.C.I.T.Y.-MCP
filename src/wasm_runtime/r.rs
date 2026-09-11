@@ -196,7 +196,7 @@ mod tests {
         let wasm = std::fs::read(wasm_path()).expect("R WASM not found");
         let mut rt = RRuntime::cold_start(&wasm).expect("cold start failed");
 
-        let source = "greet <- function(args) { list(message = paste0('Hello, ', args$name, '!')) }";
+        let source = "set_tool_result(\"Hello, \" + name + \"!\")";
         rt.register_tool("greet", source).expect("register failed");
 
         let result = rt.call_tool("greet", r#"{"name": "R"}"#).expect("call failed");

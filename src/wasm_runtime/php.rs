@@ -196,7 +196,7 @@ mod tests {
         let wasm = std::fs::read(wasm_path()).expect("PHP WASM not found");
         let mut rt = PhpRuntime::cold_start(&wasm).expect("cold start failed");
 
-        let source = "<?php function greet($args) { return ['message' => 'Hello, ' . ($args['name'] ?? 'world') . '!']; }";
+        let source = "<?php set_tool_result(\"Hello, \" . $name . \"!\");";
         rt.register_tool("greet", source).expect("register failed");
 
         let result = rt.call_tool("greet", r#"{"name": "PHP"}"#).expect("call failed");

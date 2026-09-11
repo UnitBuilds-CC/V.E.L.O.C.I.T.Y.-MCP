@@ -196,7 +196,7 @@ mod tests {
         let wasm = std::fs::read(wasm_path()).expect("Julia WASM not found");
         let mut rt = JuliaRuntime::cold_start(&wasm).expect("cold start failed");
 
-        let source = "function greet(args) Dict(\"message\" => \"Hello, \" * args[\"name\"] * \"!\") end";
+        let source = "set_tool_result(\"Hello, \" + name + \"!\")";
         rt.register_tool("greet", source).expect("register failed");
 
         let result = rt.call_tool("greet", r#"{"name": "Julia"}"#).expect("call failed");

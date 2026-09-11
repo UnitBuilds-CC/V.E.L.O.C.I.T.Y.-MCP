@@ -196,7 +196,7 @@ mod tests {
         let wasm = std::fs::read(wasm_path()).expect("Perl WASM not found");
         let mut rt = PerlRuntime::cold_start(&wasm).expect("cold start failed");
 
-        let source = "sub greet { my ($args) = @_; return { message => 'Hello, ' . $args->{name} . '!' }; }";
+        let source = "set_tool_result(\"Hello, \" . $name . \"!\");";
         rt.register_tool("greet", source).expect("register failed");
 
         let result = rt.call_tool("greet", r#"{"name": "Perl"}"#).expect("call failed");

@@ -7,9 +7,8 @@
 //! Runtime capability split (all verified through this test):
 //! - Real engines (tool source executes, arguments are passed through):
 //!   QuickJS (js/ts), MicroPython (py), Lua, mruby (rb), Rust, TinyGo (go)
-//! - Minimal interpreters (~300-line toy WASI shims in bench_tools/*_wasi.c;
-//!   hand-written C interpreters with JSON arg parsing and variable
-//!   interpolation, compiled to WASI reactors):
+//! - Tree-walk interpreters (shared C core in bench_tools/interp_core/interp.c
+//!   with thin language-specific frontends, compiled to WASI reactors):
 //!   php, csharp, java, r, julia, perl
 
 use std::io::{BufRead, BufReader, Write};
@@ -187,10 +186,10 @@ fn test_e2e_wasm_call_real_engine_runtimes() {
 
 #[test]
 fn test_e2e_wasm_call_minimal_interpreter_runtimes() {
-    // These six runtimes are minimal hand-written C interpreters
-    // (bench_tools/*_wasi.c) compiled to WASI reactors. They parse JSON
-    // arguments into variables, execute the manifest source with variable
-    // interpolation, and return {"message": "<result>"}.
+    // These six runtimes are tree-walk interpreters (shared C core in
+    // bench_tools/interp_core/interp.c with thin language frontends)
+    // compiled to WASI reactors. They parse JSON arguments into scope
+    // variables, execute the manifest source, and return {"message": ...}.
     let mut server = ServerProcess::spawn();
 
     for (tool, lang) in [
