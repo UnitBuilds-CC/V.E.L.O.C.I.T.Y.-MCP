@@ -106,13 +106,8 @@ impl WasmRuntime for CSharpRuntime {
     }
 
     fn register_tool(&mut self, name: &str, source: &str) -> Result<(), Box<dyn Error>> {
-        self.exec_and_get_output(source)?;
-
-        let wrapper = "return \"Hello, C#!\";";
-
-        let combined = format!("{}\n{}", source, wrapper);
-        let combined_bytes = combined.as_bytes();
-        self.memory.view(&self.store).write(EXEC_SLOT, combined_bytes)?;
+        let source_bytes = source.as_bytes();
+        self.memory.view(&self.store).write(EXEC_SLOT, source_bytes)?;
 
         let name_bytes = name.as_bytes();
         self.memory.view(&self.store).write(NAME_SLOT, name_bytes)?;
@@ -122,7 +117,7 @@ impl WasmRuntime for CSharpRuntime {
             Value::I32(NAME_SLOT as i32),
             Value::I32(name_bytes.len() as i32),
             Value::I32(EXEC_SLOT as i32),
-            Value::I32(combined_bytes.len() as i32),
+            Value::I32(source_bytes.len() as i32),
         ])?;
 
         if result[0].unwrap_i32() != 0 {
