@@ -8,8 +8,8 @@
 //! - Real engines (tool source executes, arguments are passed through):
 //!   QuickJS (js/ts), MicroPython (py), Lua, mruby (rb), Rust, TinyGo (go)
 //! - Minimal interpreters (~300-line toy WASI shims in bench_tools/*_wasi.c;
-//!   register_tool stores a built-in demo wrapper that runs instead of the
-//!   tool source, and arguments are never exposed to the interpreted code):
+//!   hand-written C interpreters with JSON arg parsing and variable
+//!   interpolation, compiled to WASI reactors):
 //!   php, csharp, java, r, julia, perl
 
 use std::io::{BufRead, BufReader, Write};
@@ -137,12 +137,12 @@ fn test_e2e_wasm_tools_listed() {
         "ts_text_stats",
         "rb_text_stats",
         "rust_text_stats",
-        "php_hello",
-        "csharp_hello",
-        "java_hello",
-        "r_hello",
-        "julia_hello",
-        "perl_hello",
+        "php_greet",
+        "csharp_greet",
+        "java_greet",
+        "r_greet",
+        "julia_greet",
+        "perl_greet",
         "go_text_stats",
     ];
     for tool in expected {
@@ -187,31 +187,27 @@ fn test_e2e_wasm_call_real_engine_runtimes() {
 
 #[test]
 fn test_e2e_wasm_call_minimal_interpreter_runtimes() {
-    // These six runtimes are minimal script interpreters (bench_tools/*_wasi.c).
-    // register_tool stores a built-in demo wrapper that executes instead of the
-    // tool source, and arguments are copied but never exposed to the script.
-    // The assertions pin that real, current behavior through the live binary —
-    // a regression here means the plumbing (plugin manifest -> registry ->
-    // runtime -> WASM -> JSON-RPC) broke, not the tool logic.
+    // These six runtimes are minimal hand-written C interpreters
+    // (bench_tools/*_wasi.c) compiled to WASI reactors. They parse JSON
+    // arguments into variables, execute the manifest source with variable
+    // interpolation, and return {"message": "<result>"}.
     let mut server = ServerProcess::spawn();
 
-    // php/csharp/java/r/perl wrappers use `return "..."` which the shims wrap
-    // as {"message": "<result>"}.
-    for (tool, greeting) in [
-        ("php_hello", "Hello, PHP!"),
-        ("csharp_hello", "Hello, C#!"),
-        ("java_hello", "Hello, Java!"),
-        ("r_hello", "Hello, R!"),
-        ("perl_hello", "Hello, Perl!"),
+    for (tool, lang) in [
+        ("php_greet", "PHP"),
+        ("csharp_greet", "C#"),
+        ("java_greet", "Java"),
+        ("r_greet", "R"),
+        ("julia_greet", "Julia"),
+        ("perl_greet", "Perl"),
     ] {
-        let result = server.call_tool(tool, json!({"text": SAMPLE_TEXT}));
-        assert_eq!(result["message"], greeting, "{} result: {}", tool, result);
+        let result = server.call_tool(tool, json!({"name": "World"}));
+        assert_eq!(
+            result["message"], "Hello, World!",
+            "{} ({}): expected 'Hello, World!' got: {}",
+            tool, lang, result
+        );
     }
-
-    // Julia registers source + wrapper combined, so the manifest source
-    // genuinely executes at call time, followed by the demo greeting.
-    let text = server.call_tool_raw("julia_hello", json!({"text": SAMPLE_TEXT}));
-    assert_eq!(text, "julia tool ready\nHello, Julia!", "julia result: {}", text);
 }
 
 #[test]
