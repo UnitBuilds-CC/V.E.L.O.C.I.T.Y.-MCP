@@ -5,22 +5,59 @@
 //! QuickJS-specific `env` imports.
 
 use std::collections::VecDeque;
+use std::fs::{File, OpenOptions};
+use std::io::{Read as IoRead, Seek};
+use std::path::PathBuf;
 use wasmer::{Function, FunctionEnv, FunctionEnvMut, Imports, Memory, Store};
 use wasmer::imports;
 
 const ERRNO_BADF: i32 = 8;
 const ERRNO_AGAIN: i32 = 6;
+const ERRNO_NOENT: i32 = 44;
+const ERRNO_PERM: i32 = 63;
+const ERRNO_INVAL: i32 = 28;
 
 /// Environment shared between host WASI functions and the WASM guest.
 /// Holds a reference to the guest's linear memory, set after instantiation.
 /// When `wasm-networking` is enabled, also holds TCP socket state.
 /// Stdin input buffer allows fd_read(fd=0) to read from host-provided data.
+/// Filesystem support via preopened directories and file descriptors.
 #[derive(Clone)]
 pub struct WasiEnv {
     pub memory: Option<Memory>,
     pub stdin_buffer: std::sync::Arc<std::sync::Mutex<VecDeque<u8>>>,
+    pub fs_state: std::sync::Arc<std::sync::Mutex<WasiFsState>>,
     #[cfg(feature = "wasm-networking")]
     pub socket_state: std::sync::Arc<std::sync::Mutex<super::wasi_net::WasiSocketState>>,
+}
+
+/// Minimal WASI filesystem state.
+/// Tracks open files and preopened directories.
+pub struct WasiFsState {
+    pub files: std::collections::HashMap<i32, File>,
+    pub preopens: Vec<PathBuf>,
+    next_fd: i32,
+}
+
+impl WasiFsState {
+    pub fn new() -> Self {
+        Self {
+            files: std::collections::HashMap::new(),
+            preopens: Vec::new(),
+            next_fd: 3, // Start after stdin(0), stdout(1), stderr(2)
+        }
+    }
+
+    pub fn with_preopen(mut self, path: PathBuf) -> Self {
+        self.preopens.push(path);
+        self
+    }
+
+    fn alloc_fd(&mut self) -> i32 {
+        let fd = self.next_fd;
+        self.next_fd += 1;
+        fd
+    }
 }
 
 impl WasiEnv {
@@ -28,11 +65,21 @@ impl WasiEnv {
         Self {
             memory: None,
             stdin_buffer: std::sync::Arc::new(std::sync::Mutex::new(VecDeque::new())),
+            fs_state: std::sync::Arc::new(std::sync::Mutex::new(WasiFsState::new())),
             #[cfg(feature = "wasm-networking")]
             socket_state: std::sync::Arc::new(std::sync::Mutex::new(
                 super::wasi_net::WasiSocketState::new(),
             )),
         }
+    }
+
+    /// Add a preopened directory for filesystem access.
+    pub fn with_preopen(self, path: PathBuf) -> Self {
+        {
+            let mut guard = self.fs_state.lock().unwrap();
+            guard.preopens.push(path);
+        }
+        self
     }
 
     /// Push bytes into the stdin buffer for fd_read(fd=0) to consume.
@@ -140,8 +187,43 @@ pub fn build_wasi_imports(store: &mut Store, env: &FunctionEnv<WasiEnv>) -> Impo
         |env: FunctionEnvMut<WasiEnv>, fd: i32, iovs_ptr: i32, iovs_len: i32, nwritten_ptr: i32| -> i32 {
             let mem = env.data().memory.as_ref().unwrap().clone();
             let view = mem.view(&env);
-            let mut total_written: u32 = 0;
 
+            // File descriptors (fd >= 3) - write to files
+            if fd >= 3 {
+                use std::io::Write;
+                let fs_state = env.data().fs_state.clone();
+                let mut guard = fs_state.lock().unwrap();
+                
+                let file = match guard.files.get_mut(&fd) {
+                    Some(f) => f,
+                    None => return ERRNO_BADF,
+                };
+
+                let mut total_written: u32 = 0;
+                for i in 0..iovs_len as u64 {
+                    let base = (iovs_ptr as u64) + i * 8;
+                    let mut ptr_bytes = [0u8; 4];
+                    let mut len_bytes = [0u8; 4];
+                    view.read(base, &mut ptr_bytes).unwrap();
+                    view.read(base + 4, &mut len_bytes).unwrap();
+                    let buf_ptr = u32::from_le_bytes(ptr_bytes) as u64;
+                    let buf_len = u32::from_le_bytes(len_bytes) as usize;
+
+                    if buf_len > 0 {
+                        let mut data = vec![0u8; buf_len];
+                        view.read(buf_ptr, &mut data).unwrap();
+                        match file.write(&data) {
+                            Ok(n) => total_written += n as u32,
+                            Err(_) => break,
+                        }
+                    }
+                }
+                view.write(nwritten_ptr as u64, &total_written.to_le_bytes()).unwrap();
+                return 0;
+            }
+
+            // stdout/stderr
+            let mut total_written: u32 = 0;
             for i in 0..iovs_len as u64 {
                 let iov_base_offset = (iovs_ptr as u64) + i * 8;
                 let iov_len_offset = iov_base_offset + 4;
@@ -176,6 +258,7 @@ pub fn build_wasi_imports(store: &mut Store, env: &FunctionEnv<WasiEnv>) -> Impo
             let mem = env.data().memory.as_ref().unwrap().clone();
             let view = mem.view(&env);
 
+            // Socket fds (fd >= SOCKET_FD_BASE)
             if fd >= SOCKET_FD_BASE {
                 let state = env.data().socket_state.clone();
                 let mut guard = state.lock().unwrap();
@@ -200,30 +283,64 @@ pub fn build_wasi_imports(store: &mut Store, env: &FunctionEnv<WasiEnv>) -> Impo
                     }
                 }
                 view.write(nwritten_ptr as u64, &total_sent.to_le_bytes()).unwrap();
-                0
-            } else {
+                return 0;
+            }
+
+            // File descriptors (fd >= 3 and < SOCKET_FD_BASE)
+            if fd >= 3 && fd < SOCKET_FD_BASE {
+                let fs_state = env.data().fs_state.clone();
+                let mut guard = fs_state.lock().unwrap();
+                
+                let file = match guard.files.get_mut(&fd) {
+                    Some(f) => f,
+                    None => return ERRNO_BADF,
+                };
+
                 let mut total_written: u32 = 0;
                 for i in 0..iovs_len as u64 {
-                    let iov_base_offset = (iovs_ptr as u64) + i * 8;
-                    let iov_len_offset = iov_base_offset + 4;
-                    let mut buf_ptr_bytes = [0u8; 4];
-                    let mut buf_len_bytes = [0u8; 4];
-                    view.read(iov_base_offset, &mut buf_ptr_bytes).unwrap();
-                    view.read(iov_len_offset, &mut buf_len_bytes).unwrap();
-                    let buf_ptr = u32::from_le_bytes(buf_ptr_bytes) as u64;
-                    let buf_len = u32::from_le_bytes(buf_len_bytes) as usize;
+                    let base = (iovs_ptr as u64) + i * 8;
+                    let mut ptr_bytes = [0u8; 4];
+                    let mut len_bytes = [0u8; 4];
+                    view.read(base, &mut ptr_bytes).unwrap();
+                    view.read(base + 4, &mut len_bytes).unwrap();
+                    let buf_ptr = u32::from_le_bytes(ptr_bytes) as u64;
+                    let buf_len = u32::from_le_bytes(len_bytes) as usize;
+
                     if buf_len > 0 {
                         let mut data = vec![0u8; buf_len];
                         view.read(buf_ptr, &mut data).unwrap();
-                        if fd == 2 {
-                            eprint!("{}", String::from_utf8_lossy(&data));
+                        match file.write(&data) {
+                            Ok(n) => total_written += n as u32,
+                            Err(_) => break,
                         }
-                        total_written += buf_len as u32;
                     }
                 }
                 view.write(nwritten_ptr as u64, &total_written.to_le_bytes()).unwrap();
-                0
+                return 0;
             }
+
+            // stdout/stderr
+            let mut total_written: u32 = 0;
+            for i in 0..iovs_len as u64 {
+                let iov_base_offset = (iovs_ptr as u64) + i * 8;
+                let iov_len_offset = iov_base_offset + 4;
+                let mut buf_ptr_bytes = [0u8; 4];
+                let mut buf_len_bytes = [0u8; 4];
+                view.read(iov_base_offset, &mut buf_ptr_bytes).unwrap();
+                view.read(iov_len_offset, &mut buf_len_bytes).unwrap();
+                let buf_ptr = u32::from_le_bytes(buf_ptr_bytes) as u64;
+                let buf_len = u32::from_le_bytes(buf_len_bytes) as usize;
+                if buf_len > 0 {
+                    let mut data = vec![0u8; buf_len];
+                    view.read(buf_ptr, &mut data).unwrap();
+                    if fd == 2 {
+                        eprint!("{}", String::from_utf8_lossy(&data));
+                    }
+                    total_written += buf_len as u32;
+                }
+            }
+            view.write(nwritten_ptr as u64, &total_written.to_le_bytes()).unwrap();
+            0
         });
 
     #[cfg(not(feature = "wasm-networking"))]
@@ -334,47 +451,175 @@ pub fn build_wasi_imports(store: &mut Store, env: &FunctionEnv<WasiEnv>) -> Impo
     let fd_pwrite_fn = Function::new_typed(store, |_fd: i32, _iovs_ptr: i32, _iovs_len: i32, _offset: i64, _nwritten_ptr: i32| -> i32 { 8 });
     let fd_read_fn = Function::new_typed_with_env(store, env,
         |env: FunctionEnvMut<WasiEnv>, fd: i32, iovs_ptr: i32, iovs_len: i32, nread_ptr: i32| -> i32 {
-            if fd != 0 {
-                return ERRNO_BADF;
-            }
             let mem = env.data().memory.as_ref().unwrap().clone();
             let view = mem.view(&env);
-            let stdin_buf = env.data().stdin_buffer.clone();
-            let mut buf = stdin_buf.lock().unwrap();
 
-            if buf.is_empty() {
-                return ERRNO_AGAIN;
-            }
+            // stdin (fd=0) - read from buffer
+            if fd == 0 {
+                let stdin_buf = env.data().stdin_buffer.clone();
+                let mut buf = stdin_buf.lock().unwrap();
 
-            let mut total_read: u32 = 0;
-            for i in 0..iovs_len as u64 {
-                let base = (iovs_ptr as u64) + i * 8;
-                let mut ptr_bytes = [0u8; 4];
-                let mut len_bytes = [0u8; 4];
-                view.read(base, &mut ptr_bytes).unwrap();
-                view.read(base + 4, &mut len_bytes).unwrap();
-                let buf_ptr = u32::from_le_bytes(ptr_bytes) as u64;
-                let buf_len = u32::from_le_bytes(len_bytes) as usize;
-
-                if buf_len > 0 && !buf.is_empty() {
-                    let to_read = buf_len.min(buf.len());
-                    let data: Vec<u8> = buf.drain(..to_read).collect();
-                    view.write(buf_ptr, &data).unwrap();
-                    total_read += to_read as u32;
+                if buf.is_empty() {
+                    return ERRNO_AGAIN;
                 }
+
+                let mut total_read: u32 = 0;
+                for i in 0..iovs_len as u64 {
+                    let base = (iovs_ptr as u64) + i * 8;
+                    let mut ptr_bytes = [0u8; 4];
+                    let mut len_bytes = [0u8; 4];
+                    view.read(base, &mut ptr_bytes).unwrap();
+                    view.read(base + 4, &mut len_bytes).unwrap();
+                    let buf_ptr = u32::from_le_bytes(ptr_bytes) as u64;
+                    let buf_len = u32::from_le_bytes(len_bytes) as usize;
+
+                    if buf_len > 0 && !buf.is_empty() {
+                        let to_read = buf_len.min(buf.len());
+                        let data: Vec<u8> = buf.drain(..to_read).collect();
+                        view.write(buf_ptr, &data).unwrap();
+                        total_read += to_read as u32;
+                    }
+                }
+                view.write(nread_ptr as u64, &total_read.to_le_bytes()).unwrap();
+                return 0;
             }
-            view.write(nread_ptr as u64, &total_read.to_le_bytes()).unwrap();
-            0
+
+            // File descriptors (fd >= 3)
+            if fd >= 3 {
+                let fs_state = env.data().fs_state.clone();
+                let mut guard = fs_state.lock().unwrap();
+                
+                let file = match guard.files.get_mut(&fd) {
+                    Some(f) => f,
+                    None => return ERRNO_BADF,
+                };
+
+                let mut total_read: u32 = 0;
+                for i in 0..iovs_len as u64 {
+                    let base = (iovs_ptr as u64) + i * 8;
+                    let mut ptr_bytes = [0u8; 4];
+                    let mut len_bytes = [0u8; 4];
+                    view.read(base, &mut ptr_bytes).unwrap();
+                    view.read(base + 4, &mut len_bytes).unwrap();
+                    let buf_ptr = u32::from_le_bytes(ptr_bytes) as u64;
+                    let buf_len = u32::from_le_bytes(len_bytes) as usize;
+
+                    if buf_len > 0 {
+                        let mut buffer = vec![0u8; buf_len];
+                        match file.read(&mut buffer) {
+                            Ok(n) => {
+                                view.write(buf_ptr, &buffer[..n]).unwrap();
+                                total_read += n as u32;
+                                if n < buf_len {
+                                    break; // EOF
+                                }
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                }
+                view.write(nread_ptr as u64, &total_read.to_le_bytes()).unwrap();
+                return 0;
+            }
+
+            ERRNO_BADF
         });
     let fd_readdir_fn = Function::new_typed(store, |_fd: i32, _buf_ptr: i32, _buf_len: i32, _cookie: i64, _bufused_ptr: i32| -> i32 { 8 });
     let fd_renumber_fn = Function::new_typed(store, |_fd: i32, _to: i32| -> i32 { 8 });
     let fd_sync_fn = Function::new_typed(store, |_fd: i32| -> i32 { 8 });
-    let fd_tell_fn = Function::new_typed(store, |_fd: i32, _offset_ptr: i32| -> i32 { 8 });
+    let fd_tell_fn = Function::new_typed_with_env(store, env,
+        |env: FunctionEnvMut<WasiEnv>, fd: i32, offset_ptr: i32| -> i32 {
+            if fd >= 3 {
+                let fs_state = env.data().fs_state.clone();
+                let mut guard = fs_state.lock().unwrap();
+                
+                let file = match guard.files.get_mut(&fd) {
+                    Some(f) => f,
+                    None => return ERRNO_BADF,
+                };
+
+                match file.stream_position() {
+                    Ok(pos) => {
+                        let mem = env.data().memory.as_ref().unwrap().clone();
+                        mem.view(&env).write(offset_ptr as u64, &(pos as u64).to_le_bytes()).unwrap();
+                        0
+                    }
+                    Err(_) => ERRNO_INVAL,
+                }
+            } else {
+                ERRNO_BADF
+            }
+        });
     let path_create_directory_fn = Function::new_typed(store, |_fd: i32, _path_ptr: i32, _path_len: i32| -> i32 { 28 });
     let path_filestat_get_fn = Function::new_typed(store, |_fd: i32, _flags: i32, _path_ptr: i32, _path_len: i32, _stat_ptr: i32| -> i32 { 28 });
     let path_filestat_set_times_fn = Function::new_typed(store, |_fd: i32, _flags: i32, _path_ptr: i32, _path_len: i32, _atime: i64, _mtime: i64, _fst_flags: i32| -> i32 { 28 });
     let path_link_fn = Function::new_typed(store, |_old_fd: i32, _old_flags: i32, _old_path_ptr: i32, _old_path_len: i32, _new_fd: i32, _new_path_ptr: i32, _new_path_len: i32| -> i32 { 28 });
-    let path_open_fn = Function::new_typed(store, |_dirfd: i32, _dirflags: i32, _path_ptr: i32, _path_len: i32, _o_flags: i32, _fs_rights_base: i64, _fs_rights_inheriting: i64, _fd_flags: i32, _fd_ptr: i32| -> i32 { 28 });
+    let path_open_fn = Function::new_typed_with_env(store, env,
+        |env: FunctionEnvMut<WasiEnv>, dirfd: i32, _dirflags: i32, path_ptr: i32, path_len: i32, o_flags: i32, _fs_rights_base: i64, _fs_rights_inheriting: i64, _fd_flags: i32, fd_ptr: i32| -> i32 {
+            let mem = env.data().memory.as_ref().unwrap().clone();
+            let view = mem.view(&env);
+            
+            // Read path from WASM memory
+            let mut path_bytes = vec![0u8; path_len as usize];
+            view.read(path_ptr as u64, &mut path_bytes).unwrap();
+            let path_str = match std::str::from_utf8(&path_bytes) {
+                Ok(s) => s.trim_end_matches('\0'),
+                Err(_) => return ERRNO_INVAL,
+            };
+
+            // Check preopens - only allow access through preopened directories
+            let fs_state = env.data().fs_state.clone();
+            let mut guard = fs_state.lock().unwrap();
+            
+            let full_path = if dirfd == 3 {
+                // Use first preopen as root
+                if let Some(preopen) = guard.preopens.first() {
+                    preopen.join(path_str)
+                } else {
+                    return ERRNO_PERM;
+                }
+            } else {
+                PathBuf::from(path_str)
+            };
+
+            // Security: ensure path is within a preopened directory
+            let allowed = guard.preopens.iter().any(|preopen| {
+                full_path.starts_with(preopen)
+            });
+            if !allowed {
+                return ERRNO_PERM;
+            }
+
+            // Open the file
+            let mut options = OpenOptions::new();
+            
+            // Parse o_flags (WASI O flags)
+            let read = (o_flags & 1) != 0; // __WASI_OFLAGS_RDONLY
+            let write = (o_flags & 2) != 0; // __WASI_OFLAGS_WRONLY  
+            let create = (o_flags & 4) != 0; // __WASI_OFLAGS_CREAT
+            
+            if read && !write {
+                options.read(true);
+            } else if write && !read {
+                options.write(true).create(create).truncate(!create);
+            } else {
+                options.read(true).write(true).create(create).truncate(!create);
+            }
+
+            match options.open(&full_path) {
+                Ok(file) => {
+                    let fd = guard.alloc_fd();
+                    guard.files.insert(fd, file);
+                    view.write(fd_ptr as u64, &(fd as u32).to_le_bytes()).unwrap();
+                    0
+                }
+                Err(e) => match e.kind() {
+                    std::io::ErrorKind::NotFound => ERRNO_NOENT,
+                    std::io::ErrorKind::PermissionDenied => ERRNO_PERM,
+                    _ => ERRNO_INVAL,
+                }
+            }
+        });
     let path_readlink_fn = Function::new_typed(store, |_fd: i32, _path_ptr: i32, _path_len: i32, _buf_ptr: i32, _buf_len: i32, _bufused_ptr: i32| -> i32 { 28 });
     let path_remove_directory_fn = Function::new_typed(store, |_fd: i32, _path_ptr: i32, _path_len: i32| -> i32 { 28 });
     let path_rename_fn = Function::new_typed(store, |_fd: i32, _old_ptr: i32, _old_len: i32, _new_fd: i32, _new_ptr: i32, _new_len: i32| -> i32 { 28 });
