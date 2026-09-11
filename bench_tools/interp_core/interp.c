@@ -1067,20 +1067,20 @@ static AstNode *parse_primary(Parser *p) {
             name = tok_to_cstr(&p->current);
             advance(p);
         }
-        if (!match(p, TOK_LPAREN))
-            parser_error(p, "expected '(' after function keyword");
         char *params[32];
         int nparams = 0;
-        if (!check(p, TOK_RPAREN)) {
-            do {
-                if (check(p, TOK_IDENT)) {
-                    if (nparams < 32) params[nparams++] = tok_to_cstr(&p->current);
-                    advance(p);
-                }
-            } while (match(p, TOK_COMMA));
+        if (match(p, TOK_LPAREN)) {
+            if (!check(p, TOK_RPAREN)) {
+                do {
+                    if (check(p, TOK_IDENT)) {
+                        if (nparams < 32) params[nparams++] = tok_to_cstr(&p->current);
+                        advance(p);
+                    }
+                } while (match(p, TOK_COMMA));
+            }
+            if (!match(p, TOK_RPAREN))
+                parser_error(p, "expected ')' after parameters");
         }
-        if (!match(p, TOK_RPAREN))
-            parser_error(p, "expected ')' after parameters");
         AstNode *body = parse_statement(p);
         AstNode *n = (AstNode *)arena_alloc(sizeof(AstNode));
         n->type = AST_FUNC_DEF;
