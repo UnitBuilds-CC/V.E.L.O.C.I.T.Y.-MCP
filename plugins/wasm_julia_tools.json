@@ -3,22 +3,22 @@
   "version": "1.0.0",
   "tools": [
     {
-      "name": "julia_hello",
-      "description": "Demo greeting from the minimal Julia/WASM interpreter. This runtime is a simplified script interpreter: a built-in demo wrapper runs at call time (tool source is not executed) and arguments are not passed through.",
+      "name": "julia_greet",
+      "description": "Greeting tool powered by the Julia/WASM interpreter. Accepts a name argument and returns a personalized greeting.",
       "inputSchema": {
         "type": "object",
         "properties": {
-          "text": {
+          "name": {
             "type": "string",
-            "description": "Unused placeholder argument (not passed to the interpreter)"
+            "description": "Name to greet"
           }
         },
-        "required": ["text"]
+        "required": ["name"]
       },
       "executor": {
         "executor_type": "wasm",
         "language": "julia",
-        "source": "println(\"julia tool ready\")",
+        "source": "return \"Hello, $name!\"",
         "timeout": 5
       }
     }
