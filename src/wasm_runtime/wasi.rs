@@ -4,14 +4,42 @@
 //! interpreter WASM modules (QuickJS, MicroPython, Lua, etc.). Also provides
 //! QuickJS-specific `env` imports.
 
+use std::collections::VecDeque;
 use wasmer::{Function, FunctionEnv, FunctionEnvMut, Imports, Memory, Store};
 use wasmer::imports;
 
+const ERRNO_BADF: i32 = 8;
+const ERRNO_AGAIN: i32 = 6;
+
 /// Environment shared between host WASI functions and the WASM guest.
 /// Holds a reference to the guest's linear memory, set after instantiation.
+/// When `wasm-networking` is enabled, also holds TCP socket state.
+/// Stdin input buffer allows fd_read(fd=0) to read from host-provided data.
 #[derive(Clone)]
 pub struct WasiEnv {
     pub memory: Option<Memory>,
+    pub stdin_buffer: std::sync::Arc<std::sync::Mutex<VecDeque<u8>>>,
+    #[cfg(feature = "wasm-networking")]
+    pub socket_state: std::sync::Arc<std::sync::Mutex<super::wasi_net::WasiSocketState>>,
+}
+
+impl WasiEnv {
+    pub fn new() -> Self {
+        Self {
+            memory: None,
+            stdin_buffer: std::sync::Arc::new(std::sync::Mutex::new(VecDeque::new())),
+            #[cfg(feature = "wasm-networking")]
+            socket_state: std::sync::Arc::new(std::sync::Mutex::new(
+                super::wasi_net::WasiSocketState::new(),
+            )),
+        }
+    }
+
+    /// Push bytes into the stdin buffer for fd_read(fd=0) to consume.
+    pub fn push_stdin(&self, data: &[u8]) {
+        let mut buf = self.stdin_buffer.lock().unwrap();
+        buf.extend(data);
+    }
 }
 
 /// Build WASI + env imports for QuickJS-based runtimes.
@@ -107,6 +135,7 @@ pub fn build_wasi_imports(store: &mut Store, env: &FunctionEnv<WasiEnv>) -> Impo
             0
         });
 
+    #[cfg(not(feature = "wasm-networking"))]
     let fd_write_fn = Function::new_typed_with_env(store, env,
         |env: FunctionEnvMut<WasiEnv>, fd: i32, iovs_ptr: i32, iovs_len: i32, nwritten_ptr: i32| -> i32 {
             let mem = env.data().memory.as_ref().unwrap().clone();
@@ -139,8 +168,68 @@ pub fn build_wasi_imports(store: &mut Store, env: &FunctionEnv<WasiEnv>) -> Impo
             0
         });
 
+    #[cfg(feature = "wasm-networking")]
+    let fd_write_fn = Function::new_typed_with_env(store, env,
+        |env: FunctionEnvMut<WasiEnv>, fd: i32, iovs_ptr: i32, iovs_len: i32, nwritten_ptr: i32| -> i32 {
+            use super::wasi_net::SOCKET_FD_BASE;
+            use std::io::Write;
+            let mem = env.data().memory.as_ref().unwrap().clone();
+            let view = mem.view(&env);
+
+            if fd >= SOCKET_FD_BASE {
+                let state = env.data().socket_state.clone();
+                let mut guard = state.lock().unwrap();
+                let mut total_sent: u32 = 0;
+                for i in 0..iovs_len as u64 {
+                    let base = (iovs_ptr as u64) + i * 8;
+                    let mut ptr_bytes = [0u8; 4];
+                    let mut len_bytes = [0u8; 4];
+                    view.read(base, &mut ptr_bytes).unwrap();
+                    view.read(base + 4, &mut len_bytes).unwrap();
+                    let buf_ptr = u32::from_le_bytes(ptr_bytes) as u64;
+                    let buf_len = u32::from_le_bytes(len_bytes) as usize;
+                    if buf_len > 0 {
+                        let mut data = vec![0u8; buf_len];
+                        view.read(buf_ptr, &mut data).unwrap();
+                        if let Some(stream) = guard.sockets.get_mut(&fd) {
+                            match stream.write(&data) {
+                                Ok(n) => total_sent += n as u32,
+                                Err(_) => break,
+                            }
+                        }
+                    }
+                }
+                view.write(nwritten_ptr as u64, &total_sent.to_le_bytes()).unwrap();
+                0
+            } else {
+                let mut total_written: u32 = 0;
+                for i in 0..iovs_len as u64 {
+                    let iov_base_offset = (iovs_ptr as u64) + i * 8;
+                    let iov_len_offset = iov_base_offset + 4;
+                    let mut buf_ptr_bytes = [0u8; 4];
+                    let mut buf_len_bytes = [0u8; 4];
+                    view.read(iov_base_offset, &mut buf_ptr_bytes).unwrap();
+                    view.read(iov_len_offset, &mut buf_len_bytes).unwrap();
+                    let buf_ptr = u32::from_le_bytes(buf_ptr_bytes) as u64;
+                    let buf_len = u32::from_le_bytes(buf_len_bytes) as usize;
+                    if buf_len > 0 {
+                        let mut data = vec![0u8; buf_len];
+                        view.read(buf_ptr, &mut data).unwrap();
+                        if fd == 2 {
+                            eprint!("{}", String::from_utf8_lossy(&data));
+                        }
+                        total_written += buf_len as u32;
+                    }
+                }
+                view.write(nwritten_ptr as u64, &total_written.to_le_bytes()).unwrap();
+                0
+            }
+        });
+
+    #[cfg(not(feature = "wasm-networking"))]
     let fd_close_fn = Function::new_typed(store, |_fd: i32| -> i32 { 52 });
 
+    #[cfg(not(feature = "wasm-networking"))]
     let fd_fdstat_fn = Function::new_typed_with_env(store, env,
         |env: FunctionEnvMut<WasiEnv>, fd: i32, stat_ptr: i32| -> i32 {
             if fd == 1 || fd == 2 {
@@ -152,6 +241,39 @@ pub fn build_wasi_imports(store: &mut Store, env: &FunctionEnv<WasiEnv>) -> Impo
             } else {
                 8
             }
+        });
+
+    #[cfg(feature = "wasm-networking")]
+    let fd_close_fn = Function::new_typed_with_env(store, env,
+        |env: FunctionEnvMut<WasiEnv>, fd: i32| -> i32 {
+            use super::wasi_net::SOCKET_FD_BASE;
+            if fd >= SOCKET_FD_BASE {
+                let state = env.data().socket_state.clone();
+                if state.lock().unwrap().close(fd) { 0 } else { 8 }
+            } else { 52 }
+        });
+
+    #[cfg(feature = "wasm-networking")]
+    let fd_fdstat_fn = Function::new_typed_with_env(store, env,
+        |env: FunctionEnvMut<WasiEnv>, fd: i32, stat_ptr: i32| -> i32 {
+            use super::wasi_net::SOCKET_FD_BASE;
+            if fd == 1 || fd == 2 {
+                let mem = env.data().memory.as_ref().unwrap().clone();
+                let mut stat = [0u8; 24];
+                stat[0] = 2;
+                mem.view(&env).write(stat_ptr as u64, &stat).unwrap();
+                0
+            } else if fd >= SOCKET_FD_BASE {
+                let mem = env.data().memory.as_ref().unwrap().clone();
+                let guard = env.data().socket_state.lock().unwrap();
+                let file_type: u8 = if guard.is_socket_fd(fd) || guard.is_listener_fd(fd) {
+                    6 // SOCKET
+                } else { return 8; };
+                let mut stat = [0u8; 24];
+                stat[0] = file_type;
+                mem.view(&env).write(stat_ptr as u64, &stat).unwrap();
+                0
+            } else { 8 }
         });
 
     let fd_seek_fn = Function::new_typed(store, |_fd: i32, _offset: i64, _whence: i32, _result_ptr: i32| -> i32 { 52 });
@@ -210,7 +332,40 @@ pub fn build_wasi_imports(store: &mut Store, env: &FunctionEnv<WasiEnv>) -> Impo
     let fd_prestat_dir_name_fn = Function::new_typed(store, |_fd: i32, _path_ptr: i32, _path_len: i32| -> i32 { 8 });
     let fd_prestat_get_fn = Function::new_typed(store, |_fd: i32, _buf_ptr: i32| -> i32 { 8 });
     let fd_pwrite_fn = Function::new_typed(store, |_fd: i32, _iovs_ptr: i32, _iovs_len: i32, _offset: i64, _nwritten_ptr: i32| -> i32 { 8 });
-    let fd_read_fn = Function::new_typed(store, |_fd: i32, _iovs_ptr: i32, _iovs_len: i32, _nread_ptr: i32| -> i32 { 8 });
+    let fd_read_fn = Function::new_typed_with_env(store, env,
+        |env: FunctionEnvMut<WasiEnv>, fd: i32, iovs_ptr: i32, iovs_len: i32, nread_ptr: i32| -> i32 {
+            if fd != 0 {
+                return ERRNO_BADF;
+            }
+            let mem = env.data().memory.as_ref().unwrap().clone();
+            let view = mem.view(&env);
+            let stdin_buf = env.data().stdin_buffer.clone();
+            let mut buf = stdin_buf.lock().unwrap();
+
+            if buf.is_empty() {
+                return ERRNO_AGAIN;
+            }
+
+            let mut total_read: u32 = 0;
+            for i in 0..iovs_len as u64 {
+                let base = (iovs_ptr as u64) + i * 8;
+                let mut ptr_bytes = [0u8; 4];
+                let mut len_bytes = [0u8; 4];
+                view.read(base, &mut ptr_bytes).unwrap();
+                view.read(base + 4, &mut len_bytes).unwrap();
+                let buf_ptr = u32::from_le_bytes(ptr_bytes) as u64;
+                let buf_len = u32::from_le_bytes(len_bytes) as usize;
+
+                if buf_len > 0 && !buf.is_empty() {
+                    let to_read = buf_len.min(buf.len());
+                    let data: Vec<u8> = buf.drain(..to_read).collect();
+                    view.write(buf_ptr, &data).unwrap();
+                    total_read += to_read as u32;
+                }
+            }
+            view.write(nread_ptr as u64, &total_read.to_le_bytes()).unwrap();
+            0
+        });
     let fd_readdir_fn = Function::new_typed(store, |_fd: i32, _buf_ptr: i32, _buf_len: i32, _cookie: i64, _bufused_ptr: i32| -> i32 { 8 });
     let fd_renumber_fn = Function::new_typed(store, |_fd: i32, _to: i32| -> i32 { 8 });
     let fd_sync_fn = Function::new_typed(store, |_fd: i32| -> i32 { 8 });
@@ -225,14 +380,245 @@ pub fn build_wasi_imports(store: &mut Store, env: &FunctionEnv<WasiEnv>) -> Impo
     let path_rename_fn = Function::new_typed(store, |_fd: i32, _old_ptr: i32, _old_len: i32, _new_fd: i32, _new_ptr: i32, _new_len: i32| -> i32 { 28 });
     let path_symlink_fn = Function::new_typed(store, |_old_ptr: i32, _old_len: i32, _fd: i32, _new_ptr: i32, _new_len: i32| -> i32 { 28 });
     let path_unlink_file_fn = Function::new_typed(store, |_fd: i32, _path_ptr: i32, _path_len: i32| -> i32 { 28 });
+    #[cfg(not(feature = "wasm-networking"))]
     let poll_oneoff_fn = Function::new_typed(store, |_in_ptr: i32, _out_ptr: i32, _nsubscriptions: i32, _nevents_ptr: i32| -> i32 { 28 });
     let sched_yield_fn = Function::new_typed(store, || -> i32 { 0 });
+    #[cfg(not(feature = "wasm-networking"))]
     let sock_accept_fn = Function::new_typed(store, |_fd: i32, _flags: i32, _result_fd_ptr: i32| -> i32 { 28 });
+    #[cfg(not(feature = "wasm-networking"))]
     let sock_recv_fn = Function::new_typed(store, |_fd: i32, _ri_data_ptr: i32, _ri_data_len: i32, _ri_flags: i32, _ro_datalen_ptr: i32, _ro_flags_ptr: i32| -> i32 { 28 });
+    #[cfg(not(feature = "wasm-networking"))]
     let sock_send_fn = Function::new_typed(store, |_fd: i32, _si_data_ptr: i32, _si_data_len: i32, _si_flags: i32, _so_datalen_ptr: i32| -> i32 { 28 });
+    #[cfg(not(feature = "wasm-networking"))]
     let sock_shutdown_fn = Function::new_typed(store, |_fd: i32, _how: i32| -> i32 { 28 });
 
-    imports! {
+    #[cfg(feature = "wasm-networking")]
+    let poll_oneoff_fn = Function::new_typed_with_env(store, env,
+        |env: FunctionEnvMut<WasiEnv>, _in_ptr: i32, _out_ptr: i32, _nsubscriptions: i32, _nevents_ptr: i32| -> i32 {
+            use super::wasi_net::SOCKET_FD_BASE;
+            let mem = env.data().memory.as_ref().unwrap().clone();
+            let view = mem.view(&env);
+            let state = env.data().socket_state.clone();
+            let guard = state.lock().unwrap();
+
+            let in_ptr = _in_ptr;
+            let out_ptr = _out_ptr;
+            let nsubscriptions = _nsubscriptions;
+            let nevents_ptr = _nevents_ptr;
+
+            let sub_size: u64 = 48;
+            let event_size: u64 = 32;
+            let mut event_count: u32 = 0;
+
+            for i in 0..nsubscriptions as u64 {
+                let sub_base = (in_ptr as u64) + i * sub_size;
+                let mut userdata_bytes = [0u8; 8];
+                view.read(sub_base, &mut userdata_bytes).unwrap();
+                let userdata = u64::from_le_bytes(userdata_bytes);
+                let mut tag_bytes = [0u8; 1];
+                view.read(sub_base + 8, &mut tag_bytes).unwrap();
+                let tag = tag_bytes[0];
+                let event_base = (out_ptr as u64) + (event_count as u64) * event_size;
+
+                match tag {
+                    1 | 2 => {
+                        let mut fd_bytes = [0u8; 4];
+                        view.read(sub_base + 16, &mut fd_bytes).unwrap();
+                        let fd = i32::from_le_bytes(fd_bytes);
+                        let is_ready = fd < SOCKET_FD_BASE
+                            || guard.is_socket_fd(fd)
+                            || guard.is_listener_fd(fd);
+                        view.write(event_base, &userdata.to_le_bytes()).unwrap();
+                        view.write(event_base + 8, &0u16.to_le_bytes()).unwrap();
+                        view.write(event_base + 10, &tag.to_le_bytes()).unwrap();
+                        let nbytes: u64 = if is_ready { 1 } else { 0 };
+                        view.write(event_base + 16, &nbytes.to_le_bytes()).unwrap();
+                        view.write(event_base + 24, &0u16.to_le_bytes()).unwrap();
+                        event_count += 1;
+                    }
+                    0 => {
+                        let mut timeout_bytes = [0u8; 8];
+                        view.read(sub_base + 24, &mut timeout_bytes).unwrap();
+                        let timeout_ns = u64::from_le_bytes(timeout_bytes);
+                        let mut flags_bytes = [0u8; 2];
+                        view.read(sub_base + 40, &mut flags_bytes).unwrap();
+                        let flags = u16::from_le_bytes(flags_bytes);
+                        let is_relative = (flags & 1) != 0;
+                        if is_relative && timeout_ns > 0 {
+                            std::thread::sleep(std::time::Duration::from_nanos(timeout_ns));
+                        }
+                        view.write(event_base, &userdata.to_le_bytes()).unwrap();
+                        view.write(event_base + 8, &0u16.to_le_bytes()).unwrap();
+                        view.write(event_base + 10, &0u8.to_le_bytes()).unwrap();
+                        view.write(event_base + 16, &0u64.to_le_bytes()).unwrap();
+                        view.write(event_base + 24, &0u16.to_le_bytes()).unwrap();
+                        event_count += 1;
+                    }
+                    _ => {}
+                }
+            }
+            view.write(nevents_ptr as u64, &event_count.to_le_bytes()).unwrap();
+            0
+        });
+
+    #[cfg(feature = "wasm-networking")]
+    let sock_accept_fn = Function::new_typed_with_env(store, env,
+        |env: FunctionEnvMut<WasiEnv>, fd: i32, _flags: i32, result_fd_ptr: i32| -> i32 {
+            let mem = env.data().memory.as_ref().unwrap().clone();
+            let state = env.data().socket_state.clone();
+            let mut guard = state.lock().unwrap();
+            let result = guard.accept_tcp(fd);
+            drop(guard);
+            match result {
+                Ok(new_fd) => {
+                    mem.view(&env).write(result_fd_ptr as u64, &new_fd.to_le_bytes()).unwrap();
+                    0
+                }
+                Err(errno) => errno,
+            }
+        });
+
+    #[cfg(feature = "wasm-networking")]
+    let sock_recv_fn = Function::new_typed_with_env(store, env,
+        |env: FunctionEnvMut<WasiEnv>, fd: i32, ri_data_ptr: i32, ri_data_len: i32, _ri_flags: i32, ro_datalen_ptr: i32, ro_flags_ptr: i32| -> i32 {
+            use std::io::Read;
+            let mem = env.data().memory.as_ref().unwrap().clone();
+            let view = mem.view(&env);
+            let state = env.data().socket_state.clone();
+            let mut guard = state.lock().unwrap();
+            let stream = match guard.sockets.get_mut(&fd) {
+                Some(s) => s,
+                None => return 8,
+            };
+            let mut total_read: u32 = 0;
+            for i in 0..ri_data_len as u64 {
+                let base = (ri_data_ptr as u64) + i * 8;
+                let mut ptr_bytes = [0u8; 4];
+                let mut len_bytes = [0u8; 4];
+                view.read(base, &mut ptr_bytes).unwrap();
+                view.read(base + 4, &mut len_bytes).unwrap();
+                let buf_ptr = u32::from_le_bytes(ptr_bytes) as u64;
+                let buf_len = u32::from_le_bytes(len_bytes) as usize;
+                if buf_len > 0 {
+                    let mut buf = vec![0u8; buf_len];
+                    match stream.read(&mut buf) {
+                        Ok(n) => {
+                            if n > 0 { view.write(buf_ptr, &buf[..n]).unwrap(); }
+                            total_read += n as u32;
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(_) => return 62,
+                    }
+                }
+            }
+            view.write(ro_datalen_ptr as u64, &total_read.to_le_bytes()).unwrap();
+            view.write(ro_flags_ptr as u64, &0u32.to_le_bytes()).unwrap();
+            0
+        });
+
+    #[cfg(feature = "wasm-networking")]
+    let sock_send_fn = Function::new_typed_with_env(store, env,
+        |env: FunctionEnvMut<WasiEnv>, fd: i32, si_data_ptr: i32, si_data_len: i32, _si_flags: i32, so_datalen_ptr: i32| -> i32 {
+            use std::io::Write;
+            let mem = env.data().memory.as_ref().unwrap().clone();
+            let view = mem.view(&env);
+            let state = env.data().socket_state.clone();
+            let mut guard = state.lock().unwrap();
+            let stream = match guard.sockets.get_mut(&fd) {
+                Some(s) => s,
+                None => return 8,
+            };
+            let mut total_sent: u32 = 0;
+            for i in 0..si_data_len as u64 {
+                let base = (si_data_ptr as u64) + i * 8;
+                let mut ptr_bytes = [0u8; 4];
+                let mut len_bytes = [0u8; 4];
+                view.read(base, &mut ptr_bytes).unwrap();
+                view.read(base + 4, &mut len_bytes).unwrap();
+                let buf_ptr = u32::from_le_bytes(ptr_bytes) as u64;
+                let buf_len = u32::from_le_bytes(len_bytes) as usize;
+                if buf_len > 0 {
+                    let mut data = vec![0u8; buf_len];
+                    view.read(buf_ptr, &mut data).unwrap();
+                    match stream.write(&data) {
+                        Ok(n) => total_sent += n as u32,
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(_) => return 62,
+                    }
+                }
+            }
+            view.write(so_datalen_ptr as u64, &total_sent.to_le_bytes()).unwrap();
+            0
+        });
+
+    #[cfg(feature = "wasm-networking")]
+    let sock_shutdown_fn = Function::new_typed_with_env(store, env,
+        |env: FunctionEnvMut<WasiEnv>, fd: i32, how: i32| -> i32 {
+            let state = env.data().socket_state.clone();
+            let mut guard = state.lock().unwrap();
+            let stream = match guard.sockets.get_mut(&fd) {
+                Some(s) => s,
+                None => return 8,
+            };
+            use std::net::Shutdown;
+            let shutdown_how = match how {
+                0 => Shutdown::Read,
+                1 => Shutdown::Write,
+                2 => Shutdown::Both,
+                _ => return 8,
+            };
+            match stream.shutdown(shutdown_how) {
+                Ok(()) => 0,
+                Err(_) => 62,
+            }
+        });
+
+    #[cfg(feature = "wasm-networking")]
+    let tcp_connect_fn = Function::new_typed_with_env(store, env,
+        |env: FunctionEnvMut<WasiEnv>, host_ptr: i32, host_len: i32, port: i32| -> i32 {
+            use super::wasi_net::ERRNO_BADF;
+            let mem = env.data().memory.as_ref().unwrap().clone();
+            let view = mem.view(&env);
+            let mut host_bytes = vec![0u8; host_len as usize];
+            view.read(host_ptr as u64, &mut host_bytes).unwrap();
+            let host = match String::from_utf8(host_bytes) {
+                Ok(s) => s,
+                Err(_) => return -(ERRNO_BADF as i32),
+            };
+            let state = env.data().socket_state.clone();
+            let mut guard = state.lock().unwrap();
+            let result = guard.connect_tcp(&host, port as u16);
+            drop(guard);
+            match result {
+                Ok(fd) => fd,
+                Err(errno) => -(errno as i32),
+            }
+        });
+
+    #[cfg(feature = "wasm-networking")]
+    let tcp_listen_fn = Function::new_typed_with_env(store, env,
+        |env: FunctionEnvMut<WasiEnv>, host_ptr: i32, host_len: i32, port: i32| -> i32 {
+            use super::wasi_net::ERRNO_BADF;
+            let mem = env.data().memory.as_ref().unwrap().clone();
+            let view = mem.view(&env);
+            let mut host_bytes = vec![0u8; host_len as usize];
+            view.read(host_ptr as u64, &mut host_bytes).unwrap();
+            let host = match String::from_utf8(host_bytes) {
+                Ok(s) => s,
+                Err(_) => return -(ERRNO_BADF as i32),
+            };
+            let state = env.data().socket_state.clone();
+            let mut guard = state.lock().unwrap();
+            let result = guard.listen_tcp(&host, port as u16);
+            drop(guard);
+            match result {
+                Ok(fd) => fd,
+                Err(errno) => -(errno as i32),
+            }
+        });
+
+    #[allow(unused_mut)]
+    let mut imports = imports! {
         "wasi_snapshot_preview1" => {
             "clock_time_get" => clock_fn,
             "clock_res_get" => clock_res_fn,
@@ -280,6 +666,52 @@ pub fn build_wasi_imports(store: &mut Store, env: &FunctionEnv<WasiEnv>) -> Impo
             "sock_send" => sock_send_fn,
             "sock_shutdown" => sock_shutdown_fn,
         },
+    };
+
+    #[cfg(feature = "wasm-networking")]
+    {
+        imports.define("velocity_net", "tcp_connect", tcp_connect_fn);
+        imports.define("velocity_net", "tcp_listen", tcp_listen_fn);
     }
+
+    imports
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_stdin_buffer_push_and_read() {
+        let env = WasiEnv::new();
+        
+        // Push data into stdin buffer
+        env.push_stdin(b"hello world");
+        
+        // Verify data is in buffer
+        let buf = env.stdin_buffer.lock().unwrap();
+        assert_eq!(buf.len(), 11);
+        assert_eq!(&buf.iter().copied().collect::<Vec<_>>()[..], b"hello world");
+    }
+
+    #[test]
+    fn test_stdin_buffer_empty() {
+        let env = WasiEnv::new();
+        
+        // Buffer should be empty initially
+        let buf = env.stdin_buffer.lock().unwrap();
+        assert_eq!(buf.len(), 0);
+    }
+
+    #[test]
+    fn test_stdin_buffer_multiple_pushes() {
+        let env = WasiEnv::new();
+        
+        env.push_stdin(b"first");
+        env.push_stdin(b" second");
+        env.push_stdin(b" third");
+        
+        let buf = env.stdin_buffer.lock().unwrap();
+        assert_eq!(buf.len(), 18); // 5 + 7 + 6
+    }
+}
