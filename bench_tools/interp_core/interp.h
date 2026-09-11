@@ -337,6 +337,7 @@ struct Scope {
     ScopeEntry **buckets;
     int num_buckets;
     int size;
+    int refcount;
     Scope *parent;
 };
 
@@ -354,6 +355,8 @@ void interp_register_tool(const char *name_ptr, size_t name_len,
                           const char *src_ptr, size_t src_len);
 int interp_call_tool(const char *args_ptr, size_t args_len,
                      const char *name_ptr, size_t name_len);
+int interp_call_tool_binary(const char *tlv_ptr, size_t tlv_len,
+                            const char *name_ptr, size_t name_len);
 
 const char *interp_get_output(void);
 size_t interp_get_output_len(void);

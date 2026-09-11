@@ -22,6 +22,7 @@ http = ["axum", "tokio", "tokio-stream", "tower", "tower-http", "uuid", "rustls"
 oauth2 = ["ureq", "aes-gcm", "hmac"]
 database = ["rusqlite"]
 observability = ["opentelemetry", "opentelemetry-otlp", "opentelemetry-semantic-conventions", "tracing-opentelemetry"]
+wasm-networking = []
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -118,6 +119,10 @@ harness = false
 
 [[bench]]
 name = "wasm_tool_latency"
+harness = false
+
+[[bench]]
+name = "binary_protocol_bench"
 harness = false
 
 [profile.release]

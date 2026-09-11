@@ -200,6 +200,7 @@ static Value *value_ref(Value *v) {
 }
 
 static void value_free(Value *v);
+static void scope_free(Scope *s);
 
 static void value_deref(Value *v) {
     if (!v) return;
@@ -243,6 +244,7 @@ static void value_free(Value *v) {
             for (int i = 0; i < v->as.func->num_params; i++)
                 free(v->as.func->params[i].name);
             free(v->as.func->params);
+            scope_free(v->as.func->closure);
             free(v->as.func);
         }
         break;
@@ -458,12 +460,20 @@ static Scope *scope_new(Scope *parent) {
     s->num_buckets = INTERP_SCOPE_BUCKETS;
     s->buckets = (ScopeEntry **)calloc(s->num_buckets, sizeof(ScopeEntry *));
     s->size = 0;
+    s->refcount = 1;
     s->parent = parent;
+    return s;
+}
+
+static Scope *scope_ref(Scope *s) {
+    if (s) s->refcount++;
     return s;
 }
 
 static void scope_free(Scope *s) {
     if (!s) return;
+    s->refcount--;
+    if (s->refcount > 0) return;
     for (int i = 0; i < s->num_buckets; i++) {
         ScopeEntry *e = s->buckets[i];
         while (e) {
@@ -762,6 +772,9 @@ static int tokenize_one(Tokenizer *t, Token *tok) {
         if (t->current < t->end && *t->current == '=') {
             t->current++; t->col++; tok->len = 2;
             tok->type = TOK_EQ;
+        } else if (t->current < t->end && *t->current == '>') {
+            t->current++; t->col++; tok->len = 2;
+            tok->type = TOK_ARROW;
         } else {
             tok->type = TOK_ASSIGN;
         }
@@ -996,12 +1009,70 @@ static AstNode *parse_primary(Parser *p) {
         AstNode *elements[256];
         int count = 0;
         skip_stmt_newlines(p);
+        
+        // Check if this is actually a map literal (PHP associative array syntax)
+        int is_map = 0;
         if (!check(p, TOK_RBRACKET)) {
-            elements[count++] = parse_expr(p);
-            while (match(p, TOK_COMMA)) {
+            AstNode *first = parse_expr(p);
+            if (check(p, TOK_ARROW)) {
+                // This is a map literal, not an array
+                is_map = 1;
+                advance(p); // consume '=>'
+                AstNode *first_val = parse_expr(p);
+                
+                AstNode *keys[64];
+                AstNode *values[64];
+                int map_count = 0;
+                if (map_count < 64) {
+                    keys[map_count] = first;
+                    values[map_count] = first_val;
+                    map_count++;
+                }
                 skip_stmt_newlines(p);
-                if (check(p, TOK_RBRACKET)) break;
-                if (count < 256) elements[count++] = parse_expr(p);
+                while (match(p, TOK_COMMA)) {
+                    skip_stmt_newlines(p);
+                    if (check(p, TOK_RBRACKET)) break;
+                    AstNode *key;
+                    if (check(p, TOK_IDENT)) {
+                        key = parse_primary(p);
+                    } else if (check(p, TOK_STRING)) {
+                        key = parse_primary(p);
+                    } else {
+                        parser_error(p, "expected key in map literal at line %d", p->current.line);
+                        break;
+                    }
+                    if (!match(p, TOK_ARROW)) {
+                        parser_error(p, "expected '=>' in map literal at line %d", p->current.line);
+                        break;
+                    }
+                    AstNode *val = parse_expr(p);
+                    if (map_count < 64) {
+                        keys[map_count] = key;
+                        values[map_count] = val;
+                        map_count++;
+                    }
+                    skip_stmt_newlines(p);
+                }
+                skip_stmt_newlines(p);
+                if (!match(p, TOK_RBRACKET))
+                    parser_error(p, "expected ']' at line %d", p->current.line);
+                AstNode *n = (AstNode *)arena_alloc(sizeof(AstNode));
+                n->type = AST_MAP_LIT;
+                n->line = line; n->col = col;
+                n->as.map_lit.keys = (AstNode **)arena_alloc(map_count * sizeof(AstNode *));
+                n->as.map_lit.values = (AstNode **)arena_alloc(map_count * sizeof(AstNode *));
+                memcpy(n->as.map_lit.keys, keys, map_count * sizeof(AstNode *));
+                memcpy(n->as.map_lit.values, values, map_count * sizeof(AstNode *));
+                n->as.map_lit.count = map_count;
+                return n;
+            } else {
+                // Regular array literal
+                elements[count++] = first;
+                while (match(p, TOK_COMMA)) {
+                    skip_stmt_newlines(p);
+                    if (check(p, TOK_RBRACKET)) break;
+                    if (count < 256) elements[count++] = parse_expr(p);
+                }
             }
         }
         skip_stmt_newlines(p);
@@ -1033,8 +1104,8 @@ static AstNode *parse_primary(Parser *p) {
                     parser_error(p, "expected key in map literal at line %d", p->current.line);
                     break;
                 }
-                if (!match(p, TOK_COLON)) {
-                    parser_error(p, "expected ':' in map literal at line %d", p->current.line);
+                if (!match(p, TOK_COLON) && !match(p, TOK_ARROW)) {
+                    parser_error(p, "expected ':' or '=>' in map literal at line %d", p->current.line);
                     break;
                 }
                 AstNode *val = parse_expr(p);
@@ -1672,7 +1743,7 @@ static Value *eval_node(AstNode *node, Scope *scope) {
         for (int i = 0; i < node->as.block.count; i++) {
             value_deref(last);
             last = eval_node(node->as.block.stmts[i], block_scope);
-            if (g_has_return) break;
+            if (g_has_return || g_error[0]) break;
         }
         scope_free(block_scope);
         return last;
@@ -1721,11 +1792,11 @@ static Value *eval_node(AstNode *node, Scope *scope) {
         int iterations = 0;
         while (iterations < 100000) {
             Value *cond = eval_node(node->as.while_stmt.cond, scope);
-            if (!value_is_truthy(cond)) { value_deref(cond); break; }
+            if (!value_is_truthy(cond) || g_error[0]) { value_deref(cond); break; }
             value_deref(cond);
             value_deref(last);
             last = eval_node(node->as.while_stmt.body, scope);
-            if (g_has_return) break;
+            if (g_has_return || g_error[0]) break;
             iterations++;
         }
         return last;
@@ -1741,12 +1812,12 @@ static Value *eval_node(AstNode *node, Scope *scope) {
         while (iterations < 100000) {
             if (node->as.for_stmt.cond) {
                 Value *cond = eval_node(node->as.for_stmt.cond, for_scope);
-                if (!value_is_truthy(cond)) { value_deref(cond); break; }
+                if (!value_is_truthy(cond) || g_error[0]) { value_deref(cond); break; }
                 value_deref(cond);
             }
             value_deref(last);
             last = eval_node(node->as.for_stmt.body, for_scope);
-            if (g_has_return) break;
+            if (g_has_return || g_error[0]) break;
             if (node->as.for_stmt.step) {
                 Value *v = eval_node(node->as.for_stmt.step, for_scope);
                 value_deref(v);
@@ -1775,7 +1846,7 @@ static Value *eval_node(AstNode *node, Scope *scope) {
         for (int i = 0; i < node->as.func_def.num_params; i++)
             def->params[i].name = strdup(node->as.func_def.params[i]);
         def->body = node->as.func_def.body;
-        def->closure = scope;
+        def->closure = scope_ref(scope);
         Value *v = value_new_func(def);
         if (def->name) {
             scope_set(scope, def->name, v);
@@ -2612,6 +2683,245 @@ void interp_register_tool(const char *name_ptr, size_t name_len,
     (void)name_len;
 }
 
+/* ===== TLV Binary Protocol Decoder ===== */
+
+/* TLV tags for binary argument protocol */
+#define TLV_TAG_STRING  0x01
+#define TLV_TAG_INT     0x02
+#define TLV_TAG_BOOL    0x03
+#define TLV_TAG_NULL    0x04
+#define TLV_TAG_ARRAY   0x05
+#define TLV_TAG_OBJECT  0x06
+#define TLV_TAG_FLOAT   0x07
+
+/* Safety limits */
+#define TLV_MAX_DEPTH       32
+#define TLV_MAX_STRING_LEN  (10 * 1024 * 1024)  /* 10MB */
+#define TLV_MAX_ELEMENTS    100000
+
+typedef struct {
+    const uint8_t* data;
+    size_t pos;
+    size_t len;
+    int depth;
+    int element_count;
+} TlvParser;
+
+static inline uint8_t read_u8(TlvParser* p) {
+    if (p->pos >= p->len) return 0;
+    return p->data[p->pos++];
+}
+
+static inline uint16_t read_u16_be(TlvParser* p) {
+    if (p->pos + 1 >= p->len) return 0;
+    uint16_t val = ((uint16_t)p->data[p->pos] << 8) | p->data[p->pos + 1];
+    p->pos += 2;
+    return val;
+}
+
+static inline uint32_t read_u32_be(TlvParser* p) {
+    if (p->pos + 3 >= p->len) return 0;
+    uint32_t val = ((uint32_t)p->data[p->pos] << 24) |
+                   ((uint32_t)p->data[p->pos + 1] << 16) |
+                   ((uint32_t)p->data[p->pos + 2] << 8) |
+                   p->data[p->pos + 3];
+    p->pos += 4;
+    return val;
+}
+
+static inline int64_t read_i64_be(TlvParser* p) {
+    if (p->pos + 7 >= p->len) return 0;
+    int64_t val = 0;
+    for (int i = 0; i < 8; i++) {
+        val = (val << 8) | p->data[p->pos + i];
+    }
+    p->pos += 8;
+    return val;
+}
+
+static inline double read_f64_be(TlvParser* p) {
+    union {
+        uint64_t u;
+        double d;
+    } conv;
+    if (p->pos + 7 >= p->len) return 0.0;
+    conv.u = 0;
+    for (int i = 0; i < 8; i++) {
+        conv.u = (conv.u << 8) | p->data[p->pos + i];
+    }
+    p->pos += 8;
+    return conv.d;
+}
+
+/* Forward declaration for recursive parsing */
+static Value* tlv_decode_value(TlvParser* parser);
+
+static Value* tlv_decode_string(TlvParser* parser) {
+    uint32_t str_len = read_u32_be(parser);
+    if (str_len > TLV_MAX_STRING_LEN) {
+        return value_new_str("TLV string too long");
+    }
+    if (parser->pos + str_len > parser->len) {
+        return value_new_str("TLV truncated string");
+    }
+    Value* s = value_new_strn((const char*)(parser->data + parser->pos), str_len);
+    parser->pos += str_len;
+    return s;
+}
+
+static Value* tlv_decode_array(TlvParser* parser) {
+    uint32_t count = read_u32_be(parser);
+    Value* arr = value_new_array();
+    
+    for (uint32_t i = 0; i < count; i++) {
+        parser->element_count++;
+        if (parser->element_count > TLV_MAX_ELEMENTS) {
+            return arr;  /* Return what we have so far */
+        }
+        Value* item = tlv_decode_value(parser);
+        array_append(arr, item);
+    }
+    return arr;
+}
+
+static Value* tlv_decode_object(TlvParser* parser) {
+    uint32_t count = read_u32_be(parser);
+    Value* obj = value_new_map();
+    
+    for (uint32_t i = 0; i < count; i++) {
+        parser->element_count++;
+        if (parser->element_count > TLV_MAX_ELEMENTS) {
+            return obj;  /* Return what we have so far */
+        }
+        
+        /* Read key length and key string */
+        uint16_t key_len = read_u16_be(parser);
+        if (key_len > TLV_MAX_STRING_LEN || parser->pos + key_len > parser->len) {
+            return obj;
+        }
+        Value* key = value_new_strn((const char*)(parser->data + parser->pos), key_len);
+        parser->pos += key_len;
+        
+        /* Read value */
+        Value* value = tlv_decode_value(parser);
+        map_set(obj, key, value);
+    }
+    return obj;
+}
+
+static Value* tlv_decode_value(TlvParser* parser) {
+    if (parser->depth > TLV_MAX_DEPTH) {
+        return value_new_str("TLV depth exceeded");
+    }
+    
+    uint8_t tag = read_u8(parser);
+    
+    switch (tag) {
+        case TLV_TAG_STRING:
+            return tlv_decode_string(parser);
+        
+        case TLV_TAG_INT: {
+            int64_t val = read_i64_be(parser);
+            return value_new_int(val);
+        }
+        
+        case TLV_TAG_BOOL: {
+            uint8_t val = read_u8(parser);
+            return value_new_bool(val ? 1 : 0);
+        }
+        
+        case TLV_TAG_NULL:
+            return value_new_null();
+        
+        case TLV_TAG_ARRAY:
+            parser->depth++;
+            return tlv_decode_array(parser);
+        
+        case TLV_TAG_OBJECT:
+            parser->depth++;
+            return tlv_decode_object(parser);
+        
+        case TLV_TAG_FLOAT: {
+            double val = read_f64_be(parser);
+            return value_new_float(val);
+        }
+        
+        default: {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "Unknown TLV tag: 0x%02x", tag);
+            return value_new_str(buf);
+        }
+    }
+}
+
+/* interp_call_tool_binary(tlv_ptr, tlv_len, name_ptr, name_len) -> int
+ * Binary protocol version of call_tool: decodes TLV args directly into interpreter Values,
+ * then executes the pre-compiled tool with args available as scope variables.
+ */
+int interp_call_tool_binary(const char *tlv_ptr, size_t tlv_len,
+                             const char *name_ptr, size_t name_len) {
+    if (!g_initialized) return -1;
+
+    output_reset();
+    g_result[0] = '\0';
+    g_result_set = 0;
+
+    /* Decode TLV args directly into interpreter Value */
+    TlvParser parser = {
+        .data = (const uint8_t*)tlv_ptr,
+        .pos = 0,
+        .len = tlv_len,
+        .depth = 0,
+        .element_count = 0
+    };
+    
+    Value *args_map = tlv_decode_value(&parser);
+    if (!args_map || args_map->type != VAL_MAP) {
+        output_append("ERROR: TLV decode failed or not an object", 40);
+        return -1;
+    }
+
+    /* Bind decoded args to scope variables */
+    MapEntry *entries = args_map->map.entries;
+    for (int i = 0; i < args_map->map.count; i++) {
+        if (entries[i].key && entries[i].value) {
+            if (entries[i].key->type == VAL_STR) {
+                scope_set(g_current_scope, entries[i].key->str_val, entries[i].value);
+            }
+        }
+    }
+
+    /* Find and execute the named function */
+    char func_name[256];
+    if (name_len >= sizeof(func_name)) name_len = sizeof(func_name) - 1;
+    memcpy(func_name, name_ptr, name_len);
+    func_name[name_len] = '\0';
+
+    Value *func = scope_get(g_current_scope, func_name);
+    if (!func || func->type != VAL_FUNC) {
+        char msg[512];
+        snprintf(msg, sizeof(msg), "ERROR: Unknown tool '%s'", func_name);
+        output_append(msg, strlen(msg));
+        return -1;
+    }
+
+    /* Call the function with no arguments (args are in scope) */
+    Value *result = eval_call(func, NULL, 0, g_current_scope);
+    if (result) {
+        /* Convert result to JSON and store */
+        json_serialize(result, g_result, sizeof(g_result));
+        g_result_set = 1;
+        value_deref(result);
+    }
+
+    if (g_error[0]) {
+        output_append(g_error, strlen(g_error));
+        return -1;
+    }
+
+    return 0;
+}
+
 int interp_call_tool(const char *args_ptr, size_t args_n,
                      const char *name_ptr, size_t name_len) {
     if (!g_initialized) return -1;
@@ -2655,7 +2965,13 @@ int interp_call_tool(const char *args_ptr, size_t args_n,
     }
 
     /* Format output */
-    if (g_result_set) {
+    if (g_error[0]) {
+        output_reset();
+        char json[2048];
+        int jlen = snprintf(json, sizeof(json), "{\"error\":\"%s\"}", g_error);
+        output_append(json, jlen);
+        output_append_str("\n");
+    } else if (g_result_set) {
         output_reset();
         char json[8192];
         size_t pos = 0;
@@ -2670,12 +2986,6 @@ int interp_call_tool(const char *args_ptr, size_t args_n,
         value_deref(result_val);
         pos += snprintf(json + pos, sizeof(json) - pos, "}");
         output_append(json, pos);
-        output_append_str("\n");
-    } else if (g_error[0]) {
-        output_reset();
-        char json[2048];
-        int jlen = snprintf(json, sizeof(json), "{\"error\":\"%s\"}", g_error);
-        output_append(json, jlen);
         output_append_str("\n");
     }
 
