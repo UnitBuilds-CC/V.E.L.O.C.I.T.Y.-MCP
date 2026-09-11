@@ -42,7 +42,7 @@ impl RubyRuntime {
         let module = Module::new(&engine, wasm_bytes)?;
         let mut store = Store::new(engine);
 
-        let env = FunctionEnv::new(&mut store, WasiEnv { memory: None });
+        let env = FunctionEnv::new(&mut store, WasiEnv::new());
         let imports = build_wasi_imports(&mut store, &env);
         let instance = Instance::new(&mut store, &module, &imports)?;
 

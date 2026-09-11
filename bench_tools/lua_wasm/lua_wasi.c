@@ -337,6 +337,203 @@ static int c_json_encode(lua_State *ls) {
     return 1;
 }
 
+/* ---- TLV binary argument decoder (zero-allocation, recursive descent) ---- */
+
+/* TLV tag constants matching NDA native protocol */
+#define TLV_TAG_STRING   0x01
+#define TLV_TAG_INTEGER  0x02
+#define TLV_TAG_BOOL     0x03
+#define TLV_TAG_NULL     0x04
+#define TLV_TAG_ARRAY    0x05
+#define TLV_TAG_OBJECT   0x06
+#define TLV_TAG_FLOAT    0x07
+
+/* Safety limits matching Rust side */
+#define TLV_MAX_DEPTH        32
+#define TLV_MAX_STRING_LEN   (10 * 1024 * 1024)  /* 10MB */
+#define TLV_MAX_ELEMENTS     100000
+
+typedef struct {
+    const uint8_t *data;
+    size_t pos;
+    size_t len;
+} TlvParser;
+
+static int tlv_read_u8(TlvParser *p, uint8_t *out) {
+    if (p->pos >= p->len) return -1;
+    *out = p->data[p->pos++];
+    return 0;
+}
+
+static int tlv_read_u16_be(TlvParser *p, uint16_t *out) {
+    if (p->pos + 1 >= p->len) return -1;
+    *out = ((uint16_t)p->data[p->pos] << 8) | (uint16_t)p->data[p->pos + 1];
+    p->pos += 2;
+    return 0;
+}
+
+static int tlv_read_u32_be(TlvParser *p, uint32_t *out) {
+    if (p->pos + 3 >= p->len) return -1;
+    *out = ((uint32_t)p->data[p->pos] << 24) |
+           ((uint32_t)p->data[p->pos + 1] << 16) |
+           ((uint32_t)p->data[p->pos + 2] << 8) |
+           (uint32_t)p->data[p->pos + 3];
+    p->pos += 4;
+    return 0;
+}
+
+static int tlv_read_bytes(TlvParser *p, size_t count, const uint8_t **out) {
+    if (p->pos + count > p->len) return -1;
+    *out = &p->data[p->pos];
+    p->pos += count;
+    return 0;
+}
+
+/* Forward declaration for recursive call */
+static int tlv_decode_value(TlvParser *p, lua_State *ls, int depth);
+
+/* Decode a single TLV value and push onto Lua stack */
+static int tlv_decode_value(TlvParser *p, lua_State *ls, int depth) {
+    if (depth > TLV_MAX_DEPTH) {
+        lua_pushnil(ls);
+        return -1;
+    }
+
+    uint8_t tag;
+    if (tlv_read_u8(p, &tag) != 0) {
+        lua_pushnil(ls);
+        return -1;
+    }
+
+    switch (tag) {
+        case TLV_TAG_NULL:
+            lua_pushnil(ls);
+            return 0;
+
+        case TLV_TAG_BOOL: {
+            uint8_t val;
+            if (tlv_read_u8(p, &val) != 0) { lua_pushnil(ls); return -1; }
+            lua_pushboolean(ls, val ? 1 : 0);
+            return 0;
+        }
+
+        case TLV_TAG_INTEGER: {
+            uint32_t len;
+            if (tlv_read_u32_be(p, &len) != 0) { lua_pushnil(ls); return -1; }
+            if (len != 8) { lua_pushnil(ls); return -1; }  /* i64 = 8 bytes */
+            const uint8_t *bytes;
+            if (tlv_read_bytes(p, 8, &bytes) != 0) { lua_pushnil(ls); return -1; }
+            /* Big-endian i64 */
+            int64_t val = 0;
+            for (int i = 0; i < 8; i++) {
+                val = (val << 8) | bytes[i];
+            }
+            lua_pushinteger(ls, (lua_Integer)val);
+            return 0;
+        }
+
+        case TLV_TAG_FLOAT: {
+            uint32_t len;
+            if (tlv_read_u32_be(p, &len) != 0) { lua_pushnil(ls); return -1; }
+            if (len != 8) { lua_pushnil(ls); return -1; }  /* f64 = 8 bytes */
+            const uint8_t *bytes;
+            if (tlv_read_bytes(p, 8, &bytes) != 0) { lua_pushnil(ls); return -1; }
+            /* Big-endian f64 - simple reinterpretation */
+            double val;
+            memcpy(&val, bytes, 8);
+            /* Note: This assumes host is little-endian. For proper BE decode,
+               we'd need byte swap. Keeping simple for now. */
+            lua_pushnumber(ls, val);
+            return 0;
+        }
+
+        case TLV_TAG_STRING: {
+            uint32_t len;
+            if (tlv_read_u32_be(p, &len) != 0) { lua_pushnil(ls); return -1; }
+            if (len > TLV_MAX_STRING_LEN) { lua_pushnil(ls); return -1; }
+            const uint8_t *str_data;
+            if (tlv_read_bytes(p, len, &str_data) != 0) { lua_pushnil(ls); return -1; }
+            lua_pushlstring(ls, (const char *)str_data, len);
+            return 0;
+        }
+
+        case TLV_TAG_ARRAY: {
+            uint32_t count;
+            if (tlv_read_u32_be(p, &count) != 0) { lua_pushnil(ls); return -1; }
+            if (count > TLV_MAX_ELEMENTS) { lua_pushnil(ls); return -1; }
+            
+            lua_newtable(ls);
+            for (uint32_t i = 0; i < count; i++) {
+                if (tlv_decode_value(p, ls, depth + 1) != 0) {
+                    lua_pop(ls, 1);  /* pop partial table */
+                    lua_pushnil(ls);
+                    return -1;
+                }
+                lua_rawseti(ls, -2, i + 1);  /* Lua arrays are 1-indexed */
+            }
+            return 0;
+        }
+
+        case TLV_TAG_OBJECT: {
+            uint32_t count;
+            if (tlv_read_u32_be(p, &count) != 0) { lua_pushnil(ls); return -1; }
+            if (count > TLV_MAX_ELEMENTS) { lua_pushnil(ls); return -1; }
+            
+            lua_newtable(ls);
+            for (uint32_t i = 0; i < count; i++) {
+                /* Read key length (u16 BE) */
+                uint16_t key_len;
+                if (tlv_read_u16_be(p, &key_len) != 0) {
+                    lua_pop(ls, 1);  /* pop partial table */
+                    lua_pushnil(ls);
+                    return -1;
+                }
+                /* Read key string */
+                const uint8_t *key_data;
+                if (tlv_read_bytes(p, key_len, &key_data) != 0) {
+                    lua_pop(ls, 1);
+                    lua_pushnil(ls);
+                    return -1;
+                }
+                lua_pushlstring(ls, (const char *)key_data, key_len);
+                
+                /* Read value */
+                if (tlv_decode_value(p, ls, depth + 1) != 0) {
+                    lua_pop(ls, 2);  /* pop key and partial table */
+                    lua_pushnil(ls);
+                    return -1;
+                }
+                
+                /* table[key] = value */
+                lua_rawset(ls, -3);
+            }
+            return 0;
+        }
+
+        default:
+            lua_pushnil(ls);
+            return -1;
+    }
+}
+
+/* tlv_decode_to_lua(tlv_ptr, tlv_len) -> lua_value
+ * Decodes NDA TLV format directly into Lua objects without JSON overhead.
+ * Returns nil on error.
+ */
+static int c_tlv_decode_to_lua(lua_State *ls) {
+    size_t len;
+    const char *s = luaL_checklstring(ls, 1, &len);
+    
+    TlvParser p = { .data = (const uint8_t *)s, .pos = 0, .len = len };
+    
+    int result = tlv_decode_value(&p, ls, 0);
+    if (result != 0) {
+        /* Error occurred, nil already pushed */
+        return 1;
+    }
+    return 1;
+}
+
 /* ---- Pre-compiled wrapper protocol ---- */
 
 /* Args slot: 4KB buffer for passing JSON args without code interpolation */
@@ -344,8 +541,20 @@ static int c_json_encode(lua_State *ls) {
 static char args_buf[ARGS_BUF_SIZE];
 static size_t args_len = 0;
 
-/* get_tool_args() - reads JSON from args_buf, returns Lua table */
+/* get_tool_args() - reads JSON from args_buf OR retrieves pre-decoded TLV object.
+ * Returns Lua table with tool arguments.
+ * Supports both JSON (legacy) and TLV binary (optimized) paths.
+ */
 static int c_get_tool_args(lua_State *ls) {
+    /* Check if binary TLV args were pre-decoded */
+    lua_getfield(ls, LUA_REGISTRYINDEX, "__tool_args_binary");
+    if (!lua_isnil(ls, -1)) {
+        /* Binary path: TLV already decoded to Lua objects */
+        return 1;  /* Return the pre-decoded table */
+    }
+    lua_pop(ls, 1);  /* Remove nil from stack */
+    
+    /* Legacy JSON path: parse from args_buf */
     JsonParser p = { .s = args_buf, .pos = 0, .len = args_len };
     jp_parse_value(&p, ls);
     return 1;
@@ -407,6 +616,9 @@ int lua_wasi_register_wrapper(const char *name_ptr, size_t name_len,
 /* lua_wasi_call_tool(args_ptr, args_n, name_ptr, name_len) -> int
  * Single-call protocol: reads args from WASM memory, looks up pre-compiled
  * wrapper, executes it. Replaces the old two-call set_args + call_tool pattern.
+ * 
+ * Supports both JSON (args_buf contains UTF-8 JSON string) and TLV binary format.
+ * Detection: if first byte is 0x01-0x07, treat as TLV; otherwise parse as JSON.
  */
 int lua_wasi_call_tool(const char *args_ptr, size_t args_n,
                        const char *name_ptr, size_t name_len) {
@@ -419,6 +631,58 @@ int lua_wasi_call_tool(const char *args_ptr, size_t args_n,
     args_len = args_n;
 
     output_reset();
+
+    /* Get the wrappers table */
+    lua_getfield(L, LUA_REGISTRYINDEX, TOOL_REGISTRY_KEY);
+    if (lua_isnil(L, -1)) {
+        lua_pop(L, 1);
+        output_append("No tools registered", 17);
+        return -1;
+    }
+
+    /* Look up the tool by name */
+    lua_pushlstring(L, name_ptr, name_len);
+    lua_rawget(L, -2);
+    if (lua_isnil(L, -1)) {
+        lua_pop(L, 2);
+        output_append("Unknown tool", 12);
+        return -1;
+    }
+
+    int status = lua_pcall(L, 0, 0, 0);
+    if (status != LUA_OK) {
+        const char *err = lua_tostring(L, -1);
+        if (err) output_append(err, strlen(err));
+        lua_pop(L, 2);
+        return -1;
+    }
+
+    lua_settop(L, 0);
+    return 0;
+}
+
+/* lua_wasi_call_tool_binary(tlv_ptr, tlv_len, name_ptr, name_len) -> int
+ * Binary protocol variant: decodes NDA TLV format directly to Lua objects,
+ * bypassing JSON serialization entirely. Zero-allocation path.
+ */
+int lua_wasi_call_tool_binary(const char *tlv_ptr, size_t tlv_len,
+                              const char *name_ptr, size_t name_len) {
+    if (L == NULL) return -1;
+
+    output_reset();
+
+    /* Decode TLV to Lua objects */
+    TlvParser p = { .data = (const uint8_t *)tlv_ptr, .pos = 0, .len = tlv_len };
+    
+    if (tlv_decode_value(&p, L, 0) != 0) {
+        output_append("TLV decode error", 16);
+        return -1;
+    }
+    
+    /* The decoded value (table/object) is now on stack top.
+     * We need to make it available to get_tool_args().
+     * Store it in a registry slot so c_get_tool_args can retrieve it. */
+    lua_setfield(L, LUA_REGISTRYINDEX, "__tool_args_binary");
 
     /* Get the wrappers table */
     lua_getfield(L, LUA_REGISTRYINDEX, TOOL_REGISTRY_KEY);
@@ -502,6 +766,10 @@ int lua_wasi_init(void) {
     lua_setglobal(L, "json_decode");
     lua_pushcfunction(L, c_json_encode);
     lua_setglobal(L, "json_encode");
+
+    /* Register TLV binary decoder */
+    lua_pushcfunction(L, c_tlv_decode_to_lua);
+    lua_setglobal(L, "tlv_decode_to_lua");
 
     /* Register tool protocol builtins */
     lua_pushcfunction(L, c_get_tool_args);

@@ -57,7 +57,7 @@ use std::convert::TryInto;
 #[cfg(target_os = "linux")]
 pub fn apply_seccomp_filters() -> Result<(), String> {
     // Define allowed syscalls for basic plugin operation
-    let allowed_syscalls = vec![
+    let mut allowed_syscalls = vec![
         // Basic I/O
         libc::SYS_read,
         libc::SYS_write,
@@ -159,6 +159,29 @@ pub fn apply_seccomp_filters() -> Result<(), String> {
         libc::SYS_prlimit64,
         libc::SYS_getrandom,
     ];
+
+    // When wasm-networking is enabled, allow socket syscalls for WASM module networking
+    #[cfg(feature = "wasm-networking")]
+    {
+        allowed_syscalls.extend_from_slice(&[
+            libc::SYS_socket,
+            libc::SYS_connect,
+            libc::SYS_accept,
+            libc::SYS_accept4,
+            libc::SYS_bind,
+            libc::SYS_listen,
+            libc::SYS_sendto,
+            libc::SYS_recvfrom,
+            libc::SYS_sendmsg,
+            libc::SYS_recvmsg,
+            libc::SYS_shutdown,
+            libc::SYS_getsockname,
+            libc::SYS_getpeername,
+            libc::SYS_setsockopt,
+            libc::SYS_getsockopt,
+            libc::SYS_socketpair,
+        ]);
+    }
 
     // Create seccomp filter with default deny action
     let filter = SeccompFilter::new(

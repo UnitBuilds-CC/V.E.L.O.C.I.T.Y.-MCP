@@ -17,6 +17,8 @@ pub mod ruby;
 pub mod rust;
 pub mod typescript;
 pub mod wasi;
+#[cfg(feature = "wasm-networking")]
+pub mod wasi_net;
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -35,6 +37,17 @@ pub trait WasmRuntime: Send {
 
     /// Call a registered tool with JSON arguments. Returns JSON result string.
     fn call_tool(&mut self, name: &str, args_json: &str) -> Result<String, Box<dyn Error>>;
+
+    /// Call a registered tool with binary TLV arguments (NDA format).
+    /// Default implementation falls back to JSON serialization for backwards compatibility.
+    /// Override in specific runtimes for zero-allocation TLV decoding.
+    fn call_tool_binary(&mut self, name: &str, args_tlv: &[u8]) -> Result<String, Box<dyn Error>> {
+        // Fallback: decode TLV to Value, serialize to JSON, call regular path
+        use crate::protocol::nda_native::decode_json_value;
+        let (value, _) = decode_json_value(args_tlv)?;
+        let json_str = serde_json::to_string(&value)?;
+        self.call_tool(name, &json_str)
+    }
 
     /// Destroy the runtime, freeing interpreter resources.
     fn destroy(&mut self) -> Result<(), Box<dyn Error>>;

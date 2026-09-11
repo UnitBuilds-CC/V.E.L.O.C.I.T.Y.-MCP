@@ -1507,7 +1507,7 @@ fn bench_cross_language_tools() {
             let engine = wasmer::Engine::from(wasmer::Cranelift::default());
             let module = wasmer::Module::new(&engine, &tinygo_bytes).unwrap();
             let mut store = wasmer::Store::new(engine);
-            let env = wasmer::FunctionEnv::new(&mut store, crate::wasm_runtime::wasi::WasiEnv { memory: None });
+            let env = wasmer::FunctionEnv::new(&mut store, crate::wasm_runtime::wasi::WasiEnv::new());
             let wasi_imports = crate::wasm_runtime::wasi::build_wasi_imports(&mut store, &env);
             let instance = wasmer::Instance::new(&mut store, &module, &wasi_imports).unwrap();
             let memory = instance.exports.get_memory("memory").unwrap().clone();
@@ -1523,7 +1523,7 @@ fn bench_cross_language_tools() {
         let engine = wasmer::Engine::from(wasmer::Cranelift::default());
         let module = wasmer::Module::new(&engine, &tinygo_bytes).unwrap();
         let mut store = wasmer::Store::new(engine);
-        let env = wasmer::FunctionEnv::new(&mut store, crate::wasm_runtime::wasi::WasiEnv { memory: None });
+        let env = wasmer::FunctionEnv::new(&mut store, crate::wasm_runtime::wasi::WasiEnv::new());
         let wasi_imports = crate::wasm_runtime::wasi::build_wasi_imports(&mut store, &env);
         let instance = wasmer::Instance::new(&mut store, &module, &wasi_imports).unwrap();
         let memory = instance.exports.get_memory("memory").unwrap().clone();

@@ -368,6 +368,13 @@ static mp_obj_t mjp_parse_value(MpJsonParser *p) {
 
 /* get_tool_args() builtin — parses args_buf JSON, returns dict */
 static mp_obj_t mp_wasi_get_tool_args(void) {
+    /* Check if binary protocol already decoded args */
+    mp_obj_t tlv_args = mp_load_global(qstr_from_str("_tlv_decoded_args"));
+    if (tlv_args != MP_OBJ_NULL && tlv_args != mp_const_none) {
+        return tlv_args;
+    }
+    
+    /* Fall back to JSON parsing from args_buf */
     MpJsonParser p = { .s = args_buf, .pos = 0, .len = args_len };
     return mjp_parse_value(&p);
 }
@@ -553,6 +560,243 @@ int mp_wasi_set_args(const char *ptr, size_t len) {
     return 0;
 }
 
+/* ===== TLV Binary Protocol Decoder ===== */
+
+/* TLV tags for binary argument protocol */
+#define TLV_TAG_STRING  0x01
+#define TLV_TAG_INT     0x02
+#define TLV_TAG_BOOL    0x03
+#define TLV_TAG_NULL    0x04
+#define TLV_TAG_ARRAY   0x05
+#define TLV_TAG_OBJECT  0x06
+#define TLV_TAG_FLOAT   0x07
+
+/* Safety limits */
+#define TLV_MAX_DEPTH       32
+#define TLV_MAX_STRING_LEN  (10 * 1024 * 1024)  /* 10MB */
+#define TLV_MAX_ELEMENTS    100000
+
+typedef struct {
+    const uint8_t* data;
+    size_t pos;
+    size_t len;
+    int depth;
+    int element_count;
+} TlvParser;
+
+static inline uint8_t read_u8(TlvParser* p) {
+    if (p->pos >= p->len) return 0;
+    return p->data[p->pos++];
+}
+
+static inline uint16_t read_u16_be(TlvParser* p) {
+    if (p->pos + 1 >= p->len) return 0;
+    uint16_t val = ((uint16_t)p->data[p->pos] << 8) | p->data[p->pos + 1];
+    p->pos += 2;
+    return val;
+}
+
+static inline uint32_t read_u32_be(TlvParser* p) {
+    if (p->pos + 3 >= p->len) return 0;
+    uint32_t val = ((uint32_t)p->data[p->pos] << 24) |
+                   ((uint32_t)p->data[p->pos + 1] << 16) |
+                   ((uint32_t)p->data[p->pos + 2] << 8) |
+                   p->data[p->pos + 3];
+    p->pos += 4;
+    return val;
+}
+
+static inline int64_t read_i64_be(TlvParser* p) {
+    if (p->pos + 7 >= p->len) return 0;
+    int64_t val = 0;
+    for (int i = 0; i < 8; i++) {
+        val = (val << 8) | p->data[p->pos + i];
+    }
+    p->pos += 8;
+    return val;
+}
+
+static inline double read_f64_be(TlvParser* p) {
+    union {
+        uint64_t u;
+        double d;
+    } conv;
+    if (p->pos + 7 >= p->len) return 0.0;
+    conv.u = 0;
+    for (int i = 0; i < 8; i++) {
+        conv.u = (conv.u << 8) | p->data[p->pos + i];
+    }
+    p->pos += 8;
+    return conv.d;
+}
+
+/* Forward declaration for recursive parsing */
+static mp_obj_t tlv_decode_value(TlvParser* parser);
+
+static mp_obj_t tlv_decode_string(TlvParser* parser) {
+    uint32_t str_len = read_u32_be(parser);
+    if (str_len > TLV_MAX_STRING_LEN) {
+        return mp_obj_new_str("TLV string too long", 20);
+    }
+    if (parser->pos + str_len > parser->len) {
+        return mp_obj_new_str("TLV truncated string", 22);
+    }
+    mp_obj_t s = mp_obj_new_str((const char*)(parser->data + parser->pos), str_len);
+    parser->pos += str_len;
+    return s;
+}
+
+static mp_obj_t tlv_decode_array(TlvParser* parser) {
+    uint32_t count = read_u32_be(parser);
+    mp_obj_t list = mp_obj_new_list(0, NULL);
+    
+    for (uint32_t i = 0; i < count; i++) {
+        parser->element_count++;
+        if (parser->element_count > TLV_MAX_ELEMENTS) {
+            return list;  /* Return what we have so far */
+        }
+        mp_obj_t item = tlv_decode_value(parser);
+        mp_obj_list_append(list, item);
+    }
+    return list;
+}
+
+static mp_obj_t tlv_decode_object(TlvParser* parser) {
+    uint32_t count = read_u32_be(parser);
+    mp_obj_t dict = mp_obj_new_dict(count);
+    
+    for (uint32_t i = 0; i < count; i++) {
+        parser->element_count++;
+        if (parser->element_count > TLV_MAX_ELEMENTS) {
+            return dict;  /* Return what we have so far */
+        }
+        
+        /* Read key length and key string */
+        uint16_t key_len = read_u16_be(parser);
+        if (key_len > TLV_MAX_STRING_LEN || parser->pos + key_len > parser->len) {
+            return dict;
+        }
+        mp_obj_t key = mp_obj_new_str((const char*)(parser->data + parser->pos), key_len);
+        parser->pos += key_len;
+        
+        /* Read value */
+        mp_obj_t value = tlv_decode_value(parser);
+        mp_obj_dict_store(dict, key, value);
+    }
+    return dict;
+}
+
+static mp_obj_t tlv_decode_value(TlvParser* parser) {
+    if (parser->depth > TLV_MAX_DEPTH) {
+        return mp_obj_new_str("TLV depth exceeded", 19);
+    }
+    
+    uint8_t tag = read_u8(parser);
+    
+    switch (tag) {
+        case TLV_TAG_STRING:
+            return tlv_decode_string(parser);
+        
+        case TLV_TAG_INT: {
+            int64_t val = read_i64_be(parser);
+            return mp_obj_new_int_from_ll(val);
+        }
+        
+        case TLV_TAG_BOOL: {
+            uint8_t val = read_u8(parser);
+            return val ? mp_const_true : mp_const_false;
+        }
+        
+        case TLV_TAG_NULL:
+            return mp_const_none;
+        
+        case TLV_TAG_ARRAY:
+            parser->depth++;
+            return tlv_decode_array(parser);
+        
+        case TLV_TAG_OBJECT:
+            parser->depth++;
+            return tlv_decode_object(parser);
+        
+        case TLV_TAG_FLOAT: {
+            double val = read_f64_be(parser);
+            return mp_obj_new_float_from_d(val);
+        }
+        
+        default:
+            return mp_obj_new_str_from_fmt("Unknown TLV tag: 0x%02x", tag);
+    }
+}
+
+/* mp_wasi_tlv_decode_to_python(tlv_ptr, tlv_len) -> mp_obj_t
+ * Decode TLV bytes directly into Python objects (dict/list/etc).
+ * This is the binary protocol entry point that bypasses JSON parsing entirely.
+ */
+mp_obj_t mp_wasi_tlv_decode_to_python(mp_obj_t tlv_ptr_obj, mp_obj_t tlv_len_obj) {
+    const char* tlv_ptr = mp_obj_str_get_str(tlv_ptr_obj);
+    size_t tlv_len = mp_obj_get_int(tlv_len_obj);
+    
+    TlvParser parser = {
+        .data = (const uint8_t*)tlv_ptr,
+        .pos = 0,
+        .len = tlv_len,
+        .depth = 0,
+        .element_count = 0
+    };
+    
+    return tlv_decode_value(&parser);
+}
+
+static MP_DEFINE_CONST_FUN_OBJ_2(mp_wasi_tlv_decode_to_python_obj, mp_wasi_tlv_decode_to_python);
+
+/* mp_wasi_call_tool_binary(tlv_ptr, tlv_len, name_ptr, name_len) -> int
+ * Binary protocol version of call_tool: decodes TLV args directly into Python objects,
+ * then executes the pre-compiled wrapper with args available via get_tool_args().
+ */
+int mp_wasi_call_tool_binary(const char *tlv_ptr, size_t tlv_len,
+                              const char *name_ptr, size_t name_len) {
+    output_reset();
+    
+    /* Find tool in registry */
+    mp_obj_t wrapper = NULL;
+    for (int i = 0; i < tool_count; i++) {
+        if (strlen(tool_registry[i].name) == name_len &&
+            memcmp(tool_registry[i].name, name_ptr, name_len) == 0) {
+            wrapper = tool_registry[i].compiled_wrapper;
+            break;
+        }
+    }
+    if (wrapper == NULL) {
+        output_append("Unknown tool", 12);
+        return -1;
+    }
+    
+    /* Decode TLV args into Python object and store as global for get_tool_args() */
+    TlvParser parser = {
+        .data = (const uint8_t*)tlv_ptr,
+        .pos = 0,
+        .len = tlv_len,
+        .depth = 0,
+        .element_count = 0
+    };
+    
+    mp_obj_t args_obj = tlv_decode_value(&parser);
+    mp_store_global(qstr_from_str("_tlv_decoded_args"), args_obj);
+    
+    mp_print_t stdout_print = {NULL, stdout_print_strn};
+    nlr_buf_t nlr;
+    if (nlr_push(&nlr) == 0) {
+        mp_call_function_0(wrapper);
+        nlr_pop();
+        gc_collect_top_level();
+        return 0;
+    } else {
+        mp_obj_print_exception(&stdout_print, (mp_obj_t)nlr.ret_val);
+        gc_collect_top_level();
+        return -2;
+    }
+}
+
 /* ===== Public API ===== */
 
 /* Initialize MicroPython interpreter.
@@ -577,6 +821,9 @@ int mp_wasi_init(int pystack_size, int heap_size) {
     /* Register tool protocol builtins */
     mp_store_global(qstr_from_str("get_tool_args"), MP_OBJ_FROM_PTR(&mp_wasi_get_tool_args_obj));
     mp_store_global(qstr_from_str("set_tool_result"), MP_OBJ_FROM_PTR(&mp_wasi_set_tool_result_obj));
+    
+    /* Register TLV binary protocol decoder (optional, for optimized path) */
+    mp_store_global(qstr_from_str("tlv_decode_to_python"), MP_OBJ_FROM_PTR(&mp_wasi_tlv_decode_to_python_obj));
 
     return 0;
 }

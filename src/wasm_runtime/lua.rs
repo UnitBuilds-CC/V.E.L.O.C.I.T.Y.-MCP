@@ -18,6 +18,7 @@ pub struct LuaRuntime {
     env: FunctionEnv<WasiEnv>,
     tools: HashMap<String, String>,
     call_tool_fn: Option<Function>,
+    call_tool_binary_fn: Option<Function>,
 }
 
 const EXEC_SLOT: u64 = 512 * 1024;
@@ -30,7 +31,7 @@ impl LuaRuntime {
         let module = Module::new(&engine, wasm_bytes)?;
         let mut store = Store::new(engine);
 
-        let env = FunctionEnv::new(&mut store, WasiEnv { memory: None });
+        let env = FunctionEnv::new(&mut store, WasiEnv::new());
         let imports = build_wasi_imports(&mut store, &env);
         let instance = Instance::new(&mut store, &module, &imports)?;
 
@@ -50,6 +51,7 @@ impl LuaRuntime {
             env,
             tools: HashMap::new(),
             call_tool_fn: None,
+            call_tool_binary_fn: None,
         })
     }
 
@@ -99,7 +101,7 @@ impl LuaRuntime {
             let engine = wasmer::Engine::from(wasmer::Cranelift::default());
             let module = Module::new(&engine, wasm_bytes).unwrap();
             let mut store = Store::new(engine);
-            let env = FunctionEnv::new(&mut store, WasiEnv { memory: None });
+            let env = FunctionEnv::new(&mut store, WasiEnv::new());
             let imports = build_wasi_imports(&mut store, &env);
             let instance = Instance::new(&mut store, &module, &imports).unwrap();
             let memory = instance.exports.get_memory("memory").unwrap().clone();
@@ -145,6 +147,8 @@ impl WasmRuntime for LuaRuntime {
             return Err(format!("lua_wasi_init() failed with code {}", result).into());
         }
         self.call_tool_fn = Some(self.instance.exports.get_function("lua_wasi_call_tool")?.clone());
+        // Load binary protocol function if available (optional, for optimized path)
+        self.call_tool_binary_fn = self.instance.exports.get_function("lua_wasi_call_tool_binary").ok().cloned();
         Ok(())
     }
 
@@ -214,6 +218,43 @@ impl WasmRuntime for LuaRuntime {
         }
 
         Ok(output.trim().to_string())
+    }
+
+    fn call_tool_binary(&mut self, name: &str, args_tlv: &[u8]) -> Result<String, Box<dyn Error>> {
+        if !self.tools.contains_key(name) {
+            return Err(format!("Unknown Lua tool: {}", name).into());
+        }
+
+        // Use optimized binary path if available
+        if let Some(call_fn) = &self.call_tool_binary_fn {
+            // Write TLV bytes to ARGS_SLOT and tool name to NAME_SLOT
+            let name_bytes = name.as_bytes();
+            self.memory.view(&self.store).write(ARGS_SLOT, args_tlv)?;
+            self.memory.view(&self.store).write(NAME_SLOT, name_bytes)?;
+
+            // Call lua_wasi_call_tool_binary(tlv_ptr, tlv_len, name_ptr, name_len)
+            let result = call_fn.call(&mut self.store, &[
+                Value::I32(ARGS_SLOT as i32),
+                Value::I32(args_tlv.len() as i32),
+                Value::I32(NAME_SLOT as i32),
+                Value::I32(name_bytes.len() as i32),
+            ])?;
+
+            let rc = result[0].unwrap_i32();
+            let output = self.get_output()?;
+
+            if rc != 0 {
+                return Err(format!("Lua tool (binary) error: {}", output.trim()).into());
+            }
+
+            return Ok(output.trim().to_string());
+        }
+
+        // Fallback to JSON path if binary function not available
+        use super::super::protocol::nda_native::decode_json_value;
+        let (value, _) = decode_json_value(args_tlv)?;
+        let json_str = serde_json::to_string(&value)?;
+        self.call_tool(name, &json_str)
     }
 
     fn destroy(&mut self) -> Result<(), Box<dyn Error>> {

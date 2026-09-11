@@ -24,7 +24,7 @@ impl RustRuntime {
     pub fn new(_wasm_bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
         let engine = wasmer::Engine::from(wasmer::Cranelift::default());
         let mut store = Store::new(engine);
-        let env = FunctionEnv::new(&mut store, WasiEnv { memory: None });
+        let env = FunctionEnv::new(&mut store, WasiEnv::new());
 
         Ok(Self {
             store,

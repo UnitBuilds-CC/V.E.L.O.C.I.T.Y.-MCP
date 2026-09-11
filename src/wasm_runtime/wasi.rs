@@ -16,6 +16,8 @@ const ERRNO_AGAIN: i32 = 6;
 const ERRNO_NOENT: i32 = 44;
 const ERRNO_PERM: i32 = 63;
 const ERRNO_INVAL: i32 = 28;
+const ERRNO_IO: i32 = 29;
+const ERRNO_NOTSUP: i32 = 58;
 
 /// Environment shared between host WASI functions and the WASM guest.
 /// Holds a reference to the guest's linear memory, set after instantiation.
@@ -114,7 +116,19 @@ pub fn build_quickjs_imports(store: &mut Store, env: &FunctionEnv<WasiEnv>) -> I
             0
         });
 
-    let fd_close_fn = Function::new_typed(store, |_fd: i32| -> i32 { 52 });
+    let fd_close_fn = Function::new_typed_with_env(store, env,
+        |env: FunctionEnvMut<WasiEnv>, fd: i32| -> i32 {
+            // File descriptors (fd >= 3)
+            if fd >= 3 {
+                let fs_state = env.data().fs_state.clone();
+                if fs_state.lock().unwrap().files.remove(&fd).is_some() {
+                    return 0;
+                }
+                return ERRNO_BADF;
+            }
+            // stdin/stdout/stderr - can't close
+            ERRNO_BADF
+        });
 
     let fd_fdstat_fn = Function::new_typed_with_env(store, env,
         |env: FunctionEnvMut<WasiEnv>, fd: i32, stat_ptr: i32| -> i32 {
@@ -129,7 +143,36 @@ pub fn build_quickjs_imports(store: &mut Store, env: &FunctionEnv<WasiEnv>) -> I
             }
         });
 
-    let fd_seek_fn = Function::new_typed(store, |_fd: i32, _offset: i64, _whence: i32, _result_ptr: i32| -> i32 { 52 });
+    let fd_seek_fn = Function::new_typed_with_env(store, env,
+        |env: FunctionEnvMut<WasiEnv>, fd: i32, offset: i64, whence: i32, result_ptr: i32| -> i32 {
+            if fd < 3 {
+                return ERRNO_BADF; // Can't seek on stdin/stdout/stderr
+            }
+            
+            let fs_state = env.data().fs_state.clone();
+            let mut guard = fs_state.lock().unwrap();
+            
+            let file = match guard.files.get_mut(&fd) {
+                Some(f) => f,
+                None => return ERRNO_BADF,
+            };
+            
+            let seek_from = match whence {
+                0 => std::io::SeekFrom::Start(offset as u64), // SEEK_SET
+                1 => std::io::SeekFrom::Current(offset),      // SEEK_CUR
+                2 => std::io::SeekFrom::End(offset),          // SEEK_END
+                _ => return ERRNO_INVAL,
+            };
+            
+            match file.seek(seek_from) {
+                Ok(pos) => {
+                    let mem = env.data().memory.as_ref().unwrap().clone();
+                    mem.view(&env).write(result_ptr as u64, &pos.to_le_bytes()).unwrap();
+                    0
+                }
+                Err(_) => ERRNO_IO,
+            }
+        });
 
     let random_fn = Function::new_typed_with_env(store, env,
         |env: FunctionEnvMut<WasiEnv>, buf_ptr: i32, buf_len: i32| -> i32 {
@@ -344,7 +387,17 @@ pub fn build_wasi_imports(store: &mut Store, env: &FunctionEnv<WasiEnv>) -> Impo
         });
 
     #[cfg(not(feature = "wasm-networking"))]
-    let fd_close_fn = Function::new_typed(store, |_fd: i32| -> i32 { 52 });
+    let fd_close_fn = Function::new_typed_with_env(store, env,
+        |env: FunctionEnvMut<WasiEnv>, fd: i32| -> i32 {
+            if fd >= 3 {
+                let fs_state = env.data().fs_state.clone();
+                if fs_state.lock().unwrap().files.remove(&fd).is_some() {
+                    return 0;
+                }
+                return ERRNO_BADF;
+            }
+            ERRNO_BADF
+        });
 
     #[cfg(not(feature = "wasm-networking"))]
     let fd_fdstat_fn = Function::new_typed_with_env(store, env,
@@ -364,10 +417,21 @@ pub fn build_wasi_imports(store: &mut Store, env: &FunctionEnv<WasiEnv>) -> Impo
     let fd_close_fn = Function::new_typed_with_env(store, env,
         |env: FunctionEnvMut<WasiEnv>, fd: i32| -> i32 {
             use super::wasi_net::SOCKET_FD_BASE;
+            
+            // Socket fds
             if fd >= SOCKET_FD_BASE {
                 let state = env.data().socket_state.clone();
-                if state.lock().unwrap().close(fd) { 0 } else { 8 }
-            } else { 52 }
+                if state.lock().unwrap().close(fd) { 0 } else { ERRNO_BADF }
+            // File fds
+            } else if fd >= 3 {
+                let fs_state = env.data().fs_state.clone();
+                if fs_state.lock().unwrap().files.remove(&fd).is_some() {
+                    return 0;
+                }
+                ERRNO_BADF
+            } else {
+                ERRNO_BADF
+            }
         });
 
     #[cfg(feature = "wasm-networking")]
@@ -393,7 +457,36 @@ pub fn build_wasi_imports(store: &mut Store, env: &FunctionEnv<WasiEnv>) -> Impo
             } else { 8 }
         });
 
-    let fd_seek_fn = Function::new_typed(store, |_fd: i32, _offset: i64, _whence: i32, _result_ptr: i32| -> i32 { 52 });
+    let fd_seek_fn = Function::new_typed_with_env(store, env,
+        |env: FunctionEnvMut<WasiEnv>, fd: i32, offset: i64, whence: i32, result_ptr: i32| -> i32 {
+            if fd < 3 {
+                return ERRNO_BADF; // Can't seek on stdin/stdout/stderr
+            }
+            
+            let fs_state = env.data().fs_state.clone();
+            let mut guard = fs_state.lock().unwrap();
+            
+            let file = match guard.files.get_mut(&fd) {
+                Some(f) => f,
+                None => return ERRNO_BADF,
+            };
+            
+            let seek_from = match whence {
+                0 => std::io::SeekFrom::Start(offset as u64), // SEEK_SET
+                1 => std::io::SeekFrom::Current(offset),      // SEEK_CUR
+                2 => std::io::SeekFrom::End(offset),          // SEEK_END
+                _ => return ERRNO_INVAL,
+            };
+            
+            match file.seek(seek_from) {
+                Ok(pos) => {
+                    let mem = env.data().memory.as_ref().unwrap().clone();
+                    mem.view(&env).write(result_ptr as u64, &pos.to_le_bytes()).unwrap();
+                    0
+                }
+                Err(_) => ERRNO_IO,
+            }
+        });
 
     let random_fn = Function::new_typed_with_env(store, env,
         |env: FunctionEnvMut<WasiEnv>, buf_ptr: i32, buf_len: i32| -> i32 {
@@ -524,7 +617,25 @@ pub fn build_wasi_imports(store: &mut Store, env: &FunctionEnv<WasiEnv>) -> Impo
 
             ERRNO_BADF
         });
-    let fd_readdir_fn = Function::new_typed(store, |_fd: i32, _buf_ptr: i32, _buf_len: i32, _cookie: i64, _bufused_ptr: i32| -> i32 { 8 });
+    let fd_readdir_fn = Function::new_typed_with_env(store, env,
+        |env: FunctionEnvMut<WasiEnv>, fd: i32, _buf_ptr: i32, _buf_len: i32, _cookie: i64, _bufused_ptr: i32| -> i32 {
+            if fd < 3 {
+                return ERRNO_BADF;
+            }
+            
+            let fs_state = env.data().fs_state.clone();
+            let mut guard = fs_state.lock().unwrap();
+            
+            let _file = match guard.files.get_mut(&fd) {
+                Some(f) => f,
+                None => return ERRNO_BADF,
+            };
+            
+            // Note: This is a simplified implementation. Real WASI readdir
+            // would use the file's directory handle and cookie for pagination.
+            // For now, we'll just return ENOTSUP since we're treating files as regular files.
+            ERRNO_NOTSUP
+        });
     let fd_renumber_fn = Function::new_typed(store, |_fd: i32, _to: i32| -> i32 { 8 });
     let fd_sync_fn = Function::new_typed(store, |_fd: i32| -> i32 { 8 });
     let fd_tell_fn = Function::new_typed_with_env(store, env,
@@ -550,7 +661,48 @@ pub fn build_wasi_imports(store: &mut Store, env: &FunctionEnv<WasiEnv>) -> Impo
                 ERRNO_BADF
             }
         });
-    let path_create_directory_fn = Function::new_typed(store, |_fd: i32, _path_ptr: i32, _path_len: i32| -> i32 { 28 });
+    let path_create_directory_fn = Function::new_typed_with_env(store, env,
+        |env: FunctionEnvMut<WasiEnv>, fd: i32, path_ptr: i32, path_len: i32| -> i32 {
+            let mem = env.data().memory.as_ref().unwrap().clone();
+            let view = mem.view(&env);
+            
+            // Read path
+            let mut path_bytes = vec![0u8; path_len as usize];
+            view.read(path_ptr as u64, &mut path_bytes).unwrap();
+            let path_str = match std::str::from_utf8(&path_bytes) {
+                Ok(s) => s.trim_end_matches('\0'),
+                Err(_) => return ERRNO_INVAL,
+            };
+            
+            // Resolve through preopens
+            let fs_state = env.data().fs_state.clone();
+            let guard = fs_state.lock().unwrap();
+            
+            let full_path = if fd == 3 {
+                if let Some(preopen) = guard.preopens.first() {
+                    preopen.join(path_str)
+                } else {
+                    return ERRNO_PERM;
+                }
+            } else {
+                PathBuf::from(path_str)
+            };
+            
+            // Security check
+            let allowed = guard.preopens.iter().any(|p| full_path.starts_with(p));
+            if !allowed {
+                return ERRNO_PERM;
+            }
+            
+            // Create directory
+            match std::fs::create_dir_all(&full_path) {
+                Ok(()) => 0,
+                Err(e) => match e.kind() {
+                    std::io::ErrorKind::PermissionDenied => ERRNO_PERM,
+                    _ => ERRNO_IO,
+                }
+            }
+        });
     let path_filestat_get_fn = Function::new_typed(store, |_fd: i32, _flags: i32, _path_ptr: i32, _path_len: i32, _stat_ptr: i32| -> i32 { 28 });
     let path_filestat_set_times_fn = Function::new_typed(store, |_fd: i32, _flags: i32, _path_ptr: i32, _path_len: i32, _atime: i64, _mtime: i64, _fst_flags: i32| -> i32 { 28 });
     let path_link_fn = Function::new_typed(store, |_old_fd: i32, _old_flags: i32, _old_path_ptr: i32, _old_path_len: i32, _new_fd: i32, _new_path_ptr: i32, _new_path_len: i32| -> i32 { 28 });
@@ -595,7 +747,7 @@ pub fn build_wasi_imports(store: &mut Store, env: &FunctionEnv<WasiEnv>) -> Impo
             
             // Parse o_flags (WASI O flags)
             let read = (o_flags & 1) != 0; // __WASI_OFLAGS_RDONLY
-            let write = (o_flags & 2) != 0; // __WASI_OFLAGS_WRONLY  
+            let write = (o_flags & 2) != 0; // __WASI_OFLAGS_WRONLY
             let create = (o_flags & 4) != 0; // __WASI_OFLAGS_CREAT
             
             if read && !write {
@@ -622,11 +774,187 @@ pub fn build_wasi_imports(store: &mut Store, env: &FunctionEnv<WasiEnv>) -> Impo
         });
     let path_readlink_fn = Function::new_typed(store, |_fd: i32, _path_ptr: i32, _path_len: i32, _buf_ptr: i32, _buf_len: i32, _bufused_ptr: i32| -> i32 { 28 });
     let path_remove_directory_fn = Function::new_typed(store, |_fd: i32, _path_ptr: i32, _path_len: i32| -> i32 { 28 });
-    let path_rename_fn = Function::new_typed(store, |_fd: i32, _old_ptr: i32, _old_len: i32, _new_fd: i32, _new_ptr: i32, _new_len: i32| -> i32 { 28 });
+    let path_rename_fn = Function::new_typed_with_env(store, env,
+        |env: FunctionEnvMut<WasiEnv>, fd: i32, old_path_ptr: i32, old_path_len: i32, new_fd: i32, new_path_ptr: i32, new_path_len: i32| -> i32 {
+            let mem = env.data().memory.as_ref().unwrap().clone();
+            let view = mem.view(&env);
+            
+            // Read old path
+            let mut old_bytes = vec![0u8; old_path_len as usize];
+            view.read(old_path_ptr as u64, &mut old_bytes).unwrap();
+            let old_path_str = match std::str::from_utf8(&old_bytes) {
+                Ok(s) => s.trim_end_matches('\0'),
+                Err(_) => return ERRNO_INVAL,
+            };
+            
+            // Read new path
+            let mut new_bytes = vec![0u8; new_path_len as usize];
+            view.read(new_path_ptr as u64, &mut new_bytes).unwrap();
+            let new_path_str = match std::str::from_utf8(&new_bytes) {
+                Ok(s) => s.trim_end_matches('\0'),
+                Err(_) => return ERRNO_INVAL,
+            };
+            
+            // Resolve paths through preopens
+            let fs_state = env.data().fs_state.clone();
+            let guard = fs_state.lock().unwrap();
+            
+            let old_full = if fd == 3 {
+                if let Some(preopen) = guard.preopens.first() {
+                    preopen.join(old_path_str)
+                } else {
+                    return ERRNO_PERM;
+                }
+            } else {
+                PathBuf::from(old_path_str)
+            };
+            
+            let new_full = if new_fd == 3 {
+                if let Some(preopen) = guard.preopens.first() {
+                    preopen.join(new_path_str)
+                } else {
+                    return ERRNO_PERM;
+                }
+            } else {
+                PathBuf::from(new_path_str)
+            };
+            
+            // Security check
+            let allowed_old = guard.preopens.iter().any(|p| old_full.starts_with(p));
+            let allowed_new = guard.preopens.iter().any(|p| new_full.starts_with(p));
+            if !allowed_old || !allowed_new {
+                return ERRNO_PERM;
+            }
+            
+            // Perform rename
+            match std::fs::rename(&old_full, &new_full) {
+                Ok(()) => 0,
+                Err(e) => match e.kind() {
+                    std::io::ErrorKind::NotFound => ERRNO_NOENT,
+                    std::io::ErrorKind::PermissionDenied => ERRNO_PERM,
+                    _ => ERRNO_IO,
+                }
+            }
+        });
     let path_symlink_fn = Function::new_typed(store, |_old_ptr: i32, _old_len: i32, _fd: i32, _new_ptr: i32, _new_len: i32| -> i32 { 28 });
-    let path_unlink_file_fn = Function::new_typed(store, |_fd: i32, _path_ptr: i32, _path_len: i32| -> i32 { 28 });
+    let path_unlink_file_fn = Function::new_typed_with_env(store, env,
+        |env: FunctionEnvMut<WasiEnv>, fd: i32, path_ptr: i32, path_len: i32| -> i32 {
+            let mem = env.data().memory.as_ref().unwrap().clone();
+            let view = mem.view(&env);
+            
+            // Read path
+            let mut path_bytes = vec![0u8; path_len as usize];
+            view.read(path_ptr as u64, &mut path_bytes).unwrap();
+            let path_str = match std::str::from_utf8(&path_bytes) {
+                Ok(s) => s.trim_end_matches('\0'),
+                Err(_) => return ERRNO_INVAL,
+            };
+            
+            // Resolve through preopens
+            let fs_state = env.data().fs_state.clone();
+            let guard = fs_state.lock().unwrap();
+            
+            let full_path = if fd == 3 {
+                if let Some(preopen) = guard.preopens.first() {
+                    preopen.join(path_str)
+                } else {
+                    return ERRNO_PERM;
+                }
+            } else {
+                PathBuf::from(path_str)
+            };
+            
+            // Security check
+            let allowed = guard.preopens.iter().any(|p| full_path.starts_with(p));
+            if !allowed {
+                return ERRNO_PERM;
+            }
+            
+            // Delete file
+            match std::fs::remove_file(&full_path) {
+                Ok(()) => 0,
+                Err(e) => match e.kind() {
+                    std::io::ErrorKind::NotFound => ERRNO_NOENT,
+                    std::io::ErrorKind::PermissionDenied => ERRNO_PERM,
+                    _ => ERRNO_IO,
+                }
+            }
+        });
     #[cfg(not(feature = "wasm-networking"))]
-    let poll_oneoff_fn = Function::new_typed(store, |_in_ptr: i32, _out_ptr: i32, _nsubscriptions: i32, _nevents_ptr: i32| -> i32 { 28 });
+    let poll_oneoff_fn = Function::new_typed_with_env(store, env,
+        |env: FunctionEnvMut<WasiEnv>, _in_ptr: i32, _out_ptr: i32, _nsubscriptions: i32, _nevents_ptr: i32| -> i32 {
+            let mem = env.data().memory.as_ref().unwrap().clone();
+            let view = mem.view(&env);
+            
+            let in_ptr = _in_ptr;
+            let out_ptr = _out_ptr;
+            let nsubscriptions = _nsubscriptions;
+            let nevents_ptr = _nevents_ptr;
+            
+            let sub_size: u64 = 48;
+            let event_size: u64 = 32;
+            let mut event_count: u32 = 0;
+            
+            for i in 0..nsubscriptions as u64 {
+                let sub_base = (in_ptr as u64) + i * sub_size;
+                let mut userdata_bytes = [0u8; 8];
+                view.read(sub_base, &mut userdata_bytes).unwrap();
+                let userdata = u64::from_le_bytes(userdata_bytes);
+                let mut tag_bytes = [0u8; 1];
+                view.read(sub_base + 8, &mut tag_bytes).unwrap();
+                let tag = tag_bytes[0];
+                let event_base = (out_ptr as u64) + (event_count as u64) * event_size;
+                
+                match tag {
+                    0 => { // CLOCK subscription
+                        let mut timeout_bytes = [0u8; 8];
+                        view.read(sub_base + 24, &mut timeout_bytes).unwrap();
+                        let timeout_ns = u64::from_le_bytes(timeout_bytes);
+                        let mut flags_bytes = [0u8; 2];
+                        view.read(sub_base + 40, &mut flags_bytes).unwrap();
+                        let flags = u16::from_le_bytes(flags_bytes);
+                        let is_relative = (flags & 1) != 0;
+                        
+                        if is_relative && timeout_ns > 0 {
+                            std::thread::sleep(std::time::Duration::from_nanos(timeout_ns));
+                        }
+                        
+                        view.write(event_base, &userdata.to_le_bytes()).unwrap();
+                        view.write(event_base + 8, &0u16.to_le_bytes()).unwrap(); // error
+                        view.write(event_base + 10, &0u8.to_le_bytes()).unwrap(); // type = clock
+                        view.write(event_base + 16, &0u64.to_le_bytes()).unwrap(); // nbytes
+                        view.write(event_base + 24, &0u16.to_le_bytes()).unwrap(); // flags
+                        event_count += 1;
+                    }
+                    1 | 2 => { // FD_READ or FD_WRITE subscription
+                        let mut fd_bytes = [0u8; 4];
+                        view.read(sub_base + 16, &mut fd_bytes).unwrap();
+                        let fd = i32::from_le_bytes(fd_bytes);
+                        
+                        // For file fds, check if they exist
+                        let is_ready = if fd >= 3 {
+                            let fs_state = env.data().fs_state.clone();
+                            let guard = fs_state.lock().unwrap();
+                            guard.files.contains_key(&fd)
+                        } else {
+                            fd == 0 || fd == 1 || fd == 2 // stdin/stdout/stderr always ready
+                        };
+                        
+                        view.write(event_base, &userdata.to_le_bytes()).unwrap();
+                        view.write(event_base + 8, &0u16.to_le_bytes()).unwrap(); // error
+                        view.write(event_base + 10, &tag.to_le_bytes()).unwrap(); // type
+                        let nbytes: u64 = if is_ready { 1 } else { 0 };
+                        view.write(event_base + 16, &nbytes.to_le_bytes()).unwrap();
+                        view.write(event_base + 24, &0u16.to_le_bytes()).unwrap(); // flags
+                        event_count += 1;
+                    }
+                    _ => {}
+                }
+            }
+            
+            view.write(nevents_ptr as u64, &event_count.to_le_bytes()).unwrap();
+            0
+        });
     let sched_yield_fn = Function::new_typed(store, || -> i32 { 0 });
     #[cfg(not(feature = "wasm-networking"))]
     let sock_accept_fn = Function::new_typed(store, |_fd: i32, _flags: i32, _result_fd_ptr: i32| -> i32 { 28 });

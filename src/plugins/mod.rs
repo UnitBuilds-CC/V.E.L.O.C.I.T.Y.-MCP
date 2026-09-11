@@ -350,6 +350,10 @@ fn execute_process_plugin_tool(tool: &PluginTool, arguments: &Value) -> Result<S
 static WASM_RUNTIME_CACHE: std::sync::LazyLock<Mutex<HashMap<String, Box<dyn crate::wasm_runtime::WasmRuntime>>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Maps WASM tool names to their language runtime (e.g., "lua", "python")
+static WASM_TOOL_METADATA: std::sync::LazyLock<Mutex<HashMap<String, String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
 struct CachedWasmModule {
     engine: wasmer::Engine,
     module: wasmer::Module,
@@ -391,6 +395,13 @@ fn execute_wasm_plugin_tool(tool: &PluginTool, arguments: &Value) -> Result<Stri
 
             runtime.register_tool(&tool.name, &source)
                 .map_err(|e| format!("Failed to register WASM tool '{}': {}", tool.name, e))?;
+
+            // Register tool metadata for binary protocol lookup
+            {
+                let mut metadata = WASM_TOOL_METADATA.lock()
+                    .map_err(|e| format!("WASM tool metadata cache poisoned: {}", e))?;
+                metadata.insert(tool.name.clone(), language.to_string());
+            }
 
             let args_json = serde_json::to_string(arguments)
                 .map_err(|e| format!("Failed to serialize arguments: {}", e))?;
@@ -478,6 +489,30 @@ fn create_wasm_runtime(language: &str) -> Result<Box<dyn crate::wasm_runtime::Wa
     Ok(runtime)
 }
 
+/// Call a WASM tool with binary TLV arguments (optimized path).
+pub fn call_wasm_tool_binary(name: &str, language: &str, args_tlv: &[u8]) -> Result<String, String> {
+    let mut cache = WASM_RUNTIME_CACHE.lock()
+        .map_err(|e| format!("WASM runtime cache poisoned: {}", e))?;
+
+    if !cache.contains_key(language) {
+        let runtime = create_wasm_runtime(language)?;
+        cache.insert(language.to_string(), runtime);
+    }
+
+    let runtime = cache.get_mut(language)
+        .ok_or_else(|| format!("No runtime for language: {}", language))?;
+
+    // Use binary protocol - falls back to JSON if not supported
+    runtime.call_tool_binary(name, args_tlv)
+        .map_err(|e| format!("WASM tool '{}' execution failed (binary): {}", name, e))
+}
+
+/// Get the language runtime for a registered WASM tool.
+pub fn get_wasm_tool_language(name: &str) -> Option<String> {
+    let metadata = WASM_TOOL_METADATA.lock().ok()?;
+    metadata.get(name).cloned()
+}
+
 fn execute_standalone_wasm_tool(source_file: &str, arguments: &Value) -> Result<String, String> {
     use wasmer::{FunctionEnv, Instance, Store, Value as WasmValue};
 
@@ -514,7 +549,7 @@ fn execute_standalone_wasm_tool(source_file: &str, arguments: &Value) -> Result<
 
     let mut store = Store::new(engine);
 
-    let env = FunctionEnv::new(&mut store, crate::wasm_runtime::wasi::WasiEnv { memory: None });
+    let env = FunctionEnv::new(&mut store, crate::wasm_runtime::wasi::WasiEnv::new());
     let wasi_imports = crate::wasm_runtime::wasi::build_wasi_imports(&mut store, &env);
     let instance = Instance::new(&mut store, &module, &wasi_imports)
         .map_err(|e| format!("WASM instantiation failed: {}", e))?;

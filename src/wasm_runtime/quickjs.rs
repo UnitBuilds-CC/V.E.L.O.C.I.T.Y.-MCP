@@ -28,6 +28,7 @@ pub struct QuickJsRuntime {
     qjs_new_string_fn: Option<Function>,
     qjs_call_fn: Option<Function>,
     qjs_tool_call_fn: Option<Function>,
+    qjs_tool_call_binary_fn: Option<Function>,
     qjs_free_cstring_fn: Option<Function>,
     /// Batched single-call tool invocation (requires qjs_tool_call + qjs_free_cstring exports).
     batched: bool,
@@ -56,7 +57,7 @@ impl QuickJsRuntime {
         let module = Module::new(&engine, wasm_bytes)?;
         let mut store = Store::new(engine);
 
-        let env = FunctionEnv::new(&mut store, WasiEnv { memory: None });
+        let env = FunctionEnv::new(&mut store, WasiEnv::new());
         let imports = build_quickjs_imports(&mut store, &env);
         let instance = Instance::new(&mut store, &module, &imports)?;
 
@@ -83,6 +84,7 @@ impl QuickJsRuntime {
             qjs_new_string_fn: None,
             qjs_call_fn: None,
             qjs_tool_call_fn: None,
+            qjs_tool_call_binary_fn: None,
             qjs_free_cstring_fn: None,
             batched: false,
             global_handle: None,
@@ -259,7 +261,7 @@ impl QuickJsRuntime {
             let engine = wasmer::Engine::from(wasmer::Cranelift::default());
             let module = Module::new(&engine, wasm_bytes).unwrap();
             let mut store = Store::new(engine);
-            let env = FunctionEnv::new(&mut store, WasiEnv { memory: None });
+            let env = FunctionEnv::new(&mut store, WasiEnv::new());
             let imports = build_quickjs_imports(&mut store, &env);
             let instance = Instance::new(&mut store, &module, &imports).unwrap();
             let memory = instance.exports.get_memory("memory").unwrap().clone();
@@ -367,6 +369,7 @@ impl WasmRuntime for QuickJsRuntime {
 
         // Batched API is optional (custom build only); fall back to 6-call path.
         self.qjs_tool_call_fn = self.instance.exports.get_function("qjs_tool_call").ok().cloned();
+        self.qjs_tool_call_binary_fn = self.instance.exports.get_function("qjs_tool_call_binary").ok().cloned();
         self.qjs_free_cstring_fn = self.instance.exports.get_function("qjs_free_cstring").ok().cloned();
         self.batched = self.qjs_tool_call_fn.is_some() && self.qjs_free_cstring_fn.is_some();
 
@@ -449,6 +452,73 @@ impl WasmRuntime for QuickJsRuntime {
         };
         self.free_value(args_handle)?;
         Ok(output)
+    }
+
+    fn call_tool_binary(&mut self, name: &str, args_tlv: &[u8]) -> Result<String, Box<dyn Error>> {
+        if !self.tools.contains_key(name) {
+            return Err(format!("Unknown JS tool: {}", name).into());
+        }
+
+        // If binary function not available, fall back to JSON path
+        let call_fn = match &self.qjs_tool_call_binary_fn {
+            Some(f) => f,
+            None => {
+                use crate::protocol::nda_native::decode_json_value;
+                let (value, _) = decode_json_value(args_tlv)?;
+                let json_str = serde_json::to_string(&value)?;
+                return self.call_tool(name, &json_str);
+            }
+        };
+
+        // Write TLV bytes to EXEC_SLOT and tool name to NAME_SLOT
+        let wrapper = self.wrapper_handle
+            .ok_or_else(|| "wrapper not cached — call register_tool first")?;
+        let global = self.global_handle.unwrap_or(0);
+
+        {
+            let view = self.memory.view(&self.store);
+            view.write(OUT_SLOT, &[0u8; 16])?;
+            view.write(EXEC_SLOT, args_tlv)?;
+        }
+
+        let ret = call_fn.call(&mut self.store, &[
+            Value::I32(EXEC_SLOT as i32),
+            Value::I32(args_tlv.len() as i32),
+            Value::I32(wrapper),
+            Value::I32(global),
+            Value::I32(OUT_SLOT as i32),
+            Value::I32((OUT_SLOT + 4) as i32),
+            Value::I32((OUT_SLOT + 8) as i32),
+            Value::I32((OUT_SLOT + 12) as i32),
+        ])?;
+        let status = ret[0].unwrap_i32();
+
+        let mut out = [0u8; 16];
+        self.memory.view(&self.store).read(OUT_SLOT, &mut out)?;
+        let result_ptr = u32::from_le_bytes(out[0..4].try_into().unwrap());
+        let result_len = u32::from_le_bytes(out[4..8].try_into().unwrap()) as usize;
+        let error_ptr = u32::from_le_bytes(out[8..12].try_into().unwrap());
+        let error_len = u32::from_le_bytes(out[12..16].try_into().unwrap()) as usize;
+
+        if status != 0 || error_ptr != 0 {
+            let msg = if error_ptr != 0 {
+                let mut buf = vec![0u8; error_len];
+                self.memory.view(&self.store).read(error_ptr as u64, &mut buf)?;
+                self.free_cstring(error_ptr)?;
+                String::from_utf8_lossy(&buf).to_string()
+            } else {
+                "JS tool call failed".to_string()
+            };
+            return Err(msg.into());
+        }
+
+        if result_ptr == 0 {
+            return Err("JS tool returned null".into());
+        }
+        let mut buf = vec![0u8; result_len];
+        self.memory.view(&self.store).read(result_ptr as u64, &mut buf)?;
+        self.free_cstring(result_ptr)?;
+        Ok(String::from_utf8_lossy(&buf).to_string())
     }
 
     fn destroy(&mut self) -> Result<(), Box<dyn Error>> {

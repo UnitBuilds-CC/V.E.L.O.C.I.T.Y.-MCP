@@ -197,10 +197,6 @@ pub fn dispatch_nda_request(raw: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
             let (name_slice, args_slice) = nda_native::extract_tools_call_fields(req.data)
                 .unwrap_or((None, None));
             let name = name_slice.unwrap_or("");
-            let arguments = match args_slice {
-                Some(bytes) => nda_native::decode_json_value(bytes).map(|(v, _)| v).unwrap_or(Value::Null),
-                None => Value::Null,
-            };
 
             if !rate_limit::check_rate_limit() {
                 warn!(tool = name, "Rate limit exceeded (NDA-native)");
@@ -208,7 +204,15 @@ pub fn dispatch_nda_request(raw: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
                 nda_native::build_nda_error_raw(req.id_tlv, &format!("Rate limit exceeded for tool '{}'.", name))
             } else {
                 let call_start = Instant::now();
-                match registry::call_tool(name, &arguments) {
+                
+                // Try binary protocol first (for WASM tools), fall back to JSON path
+                let result = if let Some(args_tlv) = args_slice {
+                    registry::call_tool_binary(name, args_tlv)
+                } else {
+                    registry::call_tool(name, &Value::Null)
+                };
+                
+                match result {
                     Ok(res) => {
                         audit::record_tool_call_with_merkle(name, call_start, AuditOutcome::Success, merkle_root);
                         nda_native::build_nda_response_raw_text(nda_native::STATUS_OK, req.id_tlv, &res)

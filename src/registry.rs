@@ -570,6 +570,23 @@ pub fn call_tool(name: &str, arguments: &Value) -> Result<String, Box<dyn Error>
     call_tool_with_csharp_path(name, arguments, &csharp_path)
 }
 
+/// Call a tool with binary TLV arguments (NDA format).
+/// For WASM tools, this bypasses JSON serialization and passes TLV bytes directly.
+/// Falls back to JSON path for non-WASM tools.
+pub fn call_tool_binary(name: &str, args_tlv: &[u8]) -> Result<String, Box<dyn Error>> {
+    // Check if this is a WASM tool by consulting plugin metadata
+    if let Some(language) = crate::plugins::get_wasm_tool_language(name) {
+        // Use WASM runtime's binary protocol
+        return crate::plugins::call_wasm_tool_binary(name, &language, args_tlv)
+            .map_err(|e| e.into());
+    }
+    
+    // Fallback: decode TLV to Value, use regular path
+    use crate::protocol::nda_native::decode_json_value;
+    let (value, _) = decode_json_value(args_tlv)?;
+    call_tool(name, &value)
+}
+
 /// Call a tool with an explicit C# executable path.
 ///
 /// Routes tool calls as follows:

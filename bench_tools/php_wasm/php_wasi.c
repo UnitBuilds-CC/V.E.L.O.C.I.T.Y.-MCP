@@ -59,6 +59,11 @@ int php_wasi_call_tool(const char *args_ptr, int args_len,
     return interp_call_tool(args_ptr, args_len, name_ptr, name_len);
 }
 
+int php_wasi_call_tool_binary(const char *tlv_ptr, int tlv_len,
+                               const char *name_ptr, int name_len) {
+    return interp_call_tool_binary(tlv_ptr, tlv_len, name_ptr, name_len);
+}
+
 void php_wasi_destroy(void) {
     interp_destroy();
 }
