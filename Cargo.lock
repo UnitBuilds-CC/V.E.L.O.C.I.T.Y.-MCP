@@ -4077,6 +4077,7 @@ dependencies = [
  "uuid",
  "velocity_mcp_macros",
  "wasmer",
+ "wasmer-middlewares",
  "zip",
 ]
 
@@ -4295,6 +4296,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "wasmer-middlewares"
+version = "5.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "111eee5478867554d4496f89f472499fe90469f7473dbf90e466c1deb5505293"
+dependencies = [
+ "wasmer",
+ "wasmer-types",
+ "wasmer-vm",
 ]
 
 [[package]]

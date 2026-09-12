@@ -89,6 +89,7 @@ diffy = "0.4"
 
 # WebAssembly runtime (for cross-language tool execution)
 wasmer = "5"
+wasmer-middlewares = "5"
 
 # Linux-specific sandboxing
 [target.'cfg(target_os = "linux")'.dependencies]

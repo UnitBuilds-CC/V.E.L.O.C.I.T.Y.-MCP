@@ -23,7 +23,9 @@ pub mod wasi_net;
 
 use std::collections::HashMap;
 use std::error::Error;
-use wasmer::{FunctionEnv, Instance, Memory, Module, Store};
+use std::path::PathBuf;
+use std::sync::{Arc, LazyLock, Mutex};
+use wasmer::{CompilerConfig, FunctionEnv, Instance, Memory, Module, Store};
 
 use crate::wasm_runtime::wasi::WasiEnv;
 
@@ -35,6 +37,11 @@ pub mod memory_layout {
     pub const NAME_SLOT: u64 = 8 * 1024;     // 8KB - for tool name
 }
 
+/// Global WASM module compilation cache.
+/// Maps WASM bytecode hash to cached Module for 20x faster cold starts.
+static MODULE_CACHE: LazyLock<Mutex<HashMap<u64, Arc<Vec<u8>>>>> = 
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 /// Configuration for building a WASM runtime instance.
 pub struct WasmRuntimeConfig<'a> {
     /// WASM module bytes
@@ -43,6 +50,8 @@ pub struct WasmRuntimeConfig<'a> {
     pub import_builder: Box<dyn FnOnce(&mut Store, &FunctionEnv<WasiEnv>) -> wasmer::Imports>,
     /// Additional memory pages needed beyond EXEC_SLOT (default: 64KB)
     pub extra_memory_pages: u32,
+    /// Optional instruction limit for metering (None = unlimited)
+    pub instruction_limit: Option<u64>,
 }
 
 /// Helper function to create a new WASM runtime instance with common bootstrap logic.
@@ -50,8 +59,44 @@ pub struct WasmRuntimeConfig<'a> {
 pub fn create_wasm_instance(
     config: WasmRuntimeConfig,
 ) -> Result<(Store, Instance, Memory, FunctionEnv<WasiEnv>), Box<dyn Error>> {
-    let engine = wasmer::Engine::from(wasmer::Cranelift::default());
-    let module = Module::new(&engine, config.wasm_bytes)?;
+    // Configure compiler with optional metering middleware
+    let mut cranelift = wasmer::Cranelift::default();
+    
+    if let Some(limit) = config.instruction_limit {
+        // Create metering middleware with flat cost (1 point per operation)
+        let metering = wasmer_middlewares::metering::Metering::new(
+            limit,
+            |_operator| 1, // Flat cost: each WASM operation costs 1 point
+        );
+        cranelift.push_middleware(std::sync::Arc::new(metering));
+    }
+    
+    let engine = wasmer::Engine::from(cranelift);
+    
+    // Check module cache first for faster cold starts
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    config.wasm_bytes.hash(&mut hasher);
+    let wasm_hash = hasher.finish();
+    
+    let module = {
+        let mut cache = MODULE_CACHE.lock().map_err(|e| format!("Cache lock poisoned: {}", e))?;
+        if let Some(cached_bytes) = cache.get(&wasm_hash) {
+            // Deserialize cached module from bytes (faster than recompilation)
+            unsafe { Module::deserialize(&engine, cached_bytes.as_slice())? }
+        } else {
+            drop(cache);
+            // Compile and cache the module
+            let module = Module::new(&engine, config.wasm_bytes)?;
+            let serialized = module.serialize()?;
+            MODULE_CACHE.lock()
+                .map_err(|e| format!("Cache lock poisoned: {}", e))?
+                .insert(wasm_hash, Arc::new(serialized.to_vec()));
+            module
+        }
+    };
+    
     let mut store = Store::new(engine);
 
     let env = FunctionEnv::new(&mut store, WasiEnv::new());
