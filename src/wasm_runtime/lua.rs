@@ -30,6 +30,7 @@ impl LuaRuntime {
             wasm_bytes,
             import_builder: Box::new(|store, env| build_wasi_imports(store, env)),
             extra_memory_pages: 1, // 64KB beyond EXEC_SLOT
+            instruction_limit: None, // No metering by default
         })?;
 
         Ok(Self {
@@ -127,6 +128,13 @@ impl WasmRuntime for LuaRuntime {
     }
 
     fn register_tool(&mut self, name: &str, source: &str) -> Result<(), Box<dyn Error>> {
+        // Check if source changed (skip re-execution if unchanged)
+        if let Some(existing_source) = self.tools.get(name) {
+            if existing_source == source {
+                return Ok(()); // No change, skip re-execution
+            }
+        }
+
         // Execute the tool source to define the function
         self.exec_and_get_output(source)?;
 
@@ -160,7 +168,7 @@ impl WasmRuntime for LuaRuntime {
             return Err(format!("Failed to register wrapper: {}", output.trim()).into());
         }
 
-        self.tools.insert(name.to_string(), name.to_string());
+        self.tools.insert(name.to_string(), source.to_string());
         Ok(())
     }
 

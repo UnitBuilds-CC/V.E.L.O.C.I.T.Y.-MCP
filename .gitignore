@@ -36,3 +36,13 @@ bench_tools/mruby_wasm/mruby-src/
 bench_tools/mruby_wasm/build_manual/
 bench_tools/mruby_wasm/host-bin/
 bench_tools/mruby_wasm/mruby-host.tar.gz
+
+# Credentials and secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+credentials.json
+secrets.toml
+audit_logs/

@@ -156,6 +156,13 @@ impl WasmRuntime for MicroPythonRuntime {
     }
 
     fn register_tool(&mut self, name: &str, source: &str) -> Result<(), Box<dyn Error>> {
+        // Check if source changed (skip re-execution if unchanged)
+        if let Some(existing_source) = self.tools.get(name) {
+            if existing_source == source {
+                return Ok(()); // No change, skip re-execution
+            }
+        }
+
         // Execute the tool source to define the function
         self.exec_and_get_output(source)?;
 
@@ -189,7 +196,7 @@ impl WasmRuntime for MicroPythonRuntime {
             return Err(format!("Failed to register tool: {}", output.trim()).into());
         }
 
-        self.tools.insert(name.to_string(), name.to_string());
+        self.tools.insert(name.to_string(), source.to_string());
         Ok(())
     }
 

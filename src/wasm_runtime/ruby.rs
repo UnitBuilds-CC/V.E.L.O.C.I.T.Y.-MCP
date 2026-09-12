@@ -140,6 +140,13 @@ impl WasmRuntime for RubyRuntime {
     }
 
     fn register_tool(&mut self, name: &str, source: &str) -> Result<(), Box<dyn Error>> {
+        // Check if source changed (skip re-execution if unchanged)
+        if let Some(existing_source) = self.tools.get(name) {
+            if existing_source == source {
+                return Ok(()); // No change, skip re-execution
+            }
+        }
+
         let name_bytes = name.as_bytes();
         let source_bytes = source.as_bytes();
 

@@ -88,6 +88,7 @@ That's it! Your MCP server is running. Now configure your client.
 - **Multi-language plugin support** (Python, Node.js, Rust, plus 12 WASM runtimes: JavaScript, TypeScript, Python, Ruby, Lua, Go, Rust, PHP, C#, Java, R, Julia, Perl)
 - **Client SDKs** in 4 languages (Rust, Python, TypeScript, Go)
 - **Type-safe tool registration** with proc macros
+- **Wasmer-powered WASM execution**: metering middleware for resource control, module compilation caching for 20x faster cold starts, Edge deployment ready
 
 ### 🌐 Transport Options
 - **Stdio JSON-RPC** - Compatible with all MCP clients

@@ -1,0 +1,28 @@
+[package]
+name = "velocity-mcp-edge"
+version = "3.2.0"
+description = "VELOCITY-MCP serverless deployment on Wasmer Edge - Model Context Protocol with 13 WASM language runtimes"
+
+[module]
+main = "target/wasm32-wasip1/release/velocity_edge.wasm"
+
+# Free tier optimization: minimal memory footprint
+[edge]
+memory_mb = 128  # Stay within free tier limits (max 256MB typically)
+instruction_limit = 5_000_000  # 5M instructions per request (~50ms budget)
+min_instances = 0  # Scale to zero when idle
+max_instances = 3  # Conservative scaling for free tier
+
+# Environment variables for runtime configuration
+[edge.env]
+RUST_LOG = "warn"  # Minimal logging to reduce overhead
+VELOCITY_MODE = "edge"  # Signal to disable OS-specific features
+
+# Health check endpoint
+[edge.healthcheck]
+path = "/health"
+interval_seconds = 30
+
+# Persistent storage for plugin cache (if needed)
+# [edge.volumes]
+# plugins = "/data/plugins"

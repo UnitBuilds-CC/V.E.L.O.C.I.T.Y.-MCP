@@ -377,6 +377,13 @@ impl WasmRuntime for QuickJsRuntime {
     }
 
     fn register_tool(&mut self, name: &str, source: &str) -> Result<(), Box<dyn Error>> {
+        // Check if source changed (skip re-execution if unchanged)
+        if let Some(existing_source) = self.tools.get(name) {
+            if existing_source == source {
+                return Ok(()); // No change, skip re-execution
+            }
+        }
+
         self.eval_to_string(source)?;
 
         let wrapper = format!(
@@ -399,7 +406,7 @@ impl WasmRuntime for QuickJsRuntime {
         let wrapper_handle = wrapper_result[0].unwrap_i32();
         self.wrapper_handle = Some(wrapper_handle);
 
-        self.tools.insert(name.to_string(), name.to_string());
+        self.tools.insert(name.to_string(), source.to_string());
         Ok(())
     }
 

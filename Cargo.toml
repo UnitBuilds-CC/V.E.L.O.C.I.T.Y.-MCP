@@ -118,6 +118,11 @@ harness = false
 name = "wasm_vs_native"
 harness = false
 
+# WASM Edge deployment binary
+[[bin]]
+name = "velocity-edge"
+path = "src/bin/velocity_edge.rs"
+
 [[bench]]
 name = "wasm_tool_latency"
 harness = false
