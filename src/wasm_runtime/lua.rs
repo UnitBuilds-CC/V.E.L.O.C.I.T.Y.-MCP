@@ -8,7 +8,7 @@ use std::error::Error;
 use wasmer::{Function, FunctionEnv, Instance, Memory, Module, Store, Value};
 
 use super::wasi::{WasiEnv, build_wasi_imports};
-use super::WasmRuntime;
+use super::{WasmRuntime, WasmExecHelper, create_wasm_instance, WasmRuntimeConfig, memory_layout};
 
 pub struct LuaRuntime {
     store: Store,
@@ -21,28 +21,16 @@ pub struct LuaRuntime {
     call_tool_binary_fn: Option<Function>,
 }
 
-const EXEC_SLOT: u64 = 512 * 1024;
-const ARGS_SLOT: u64 = 4 * 1024;   // 4KB - for tool args JSON
-const NAME_SLOT: u64 = 8 * 1024;   // 8KB - for tool name
+// Re-export shared constants for backwards compatibility with existing code
+use memory_layout::{EXEC_SLOT, ARGS_SLOT, NAME_SLOT};
 
 impl LuaRuntime {
     pub fn new(wasm_bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
-        let engine = wasmer::Engine::from(wasmer::Cranelift::default());
-        let module = Module::new(&engine, wasm_bytes)?;
-        let mut store = Store::new(engine);
-
-        let env = FunctionEnv::new(&mut store, WasiEnv::new());
-        let imports = build_wasi_imports(&mut store, &env);
-        let instance = Instance::new(&mut store, &module, &imports)?;
-
-        let memory = instance.exports.get_memory("memory")?.clone();
-        env.as_mut(&mut store).memory = Some(memory.clone());
-
-        let current_pages = memory.view(&store).size();
-        let needed_pages = ((EXEC_SLOT + 64 * 1024) / 65536 + 1) as u32;
-        if current_pages.0 < needed_pages {
-            memory.grow(&mut store, wasmer::Pages(needed_pages - current_pages.0))?;
-        }
+        let (store, instance, memory, env) = create_wasm_instance(WasmRuntimeConfig {
+            wasm_bytes,
+            import_builder: Box::new(|store, env| build_wasi_imports(store, env)),
+            extra_memory_pages: 1, // 64KB beyond EXEC_SLOT
+        })?;
 
         Ok(Self {
             store,
@@ -62,27 +50,13 @@ impl LuaRuntime {
     }
 
     fn exec(&mut self, src: &str) -> Result<i32, Box<dyn Error>> {
-        let data = src.as_bytes();
-        self.memory.view(&self.store).write(EXEC_SLOT, data)?;
-        let exec_fn = self.instance.exports.get_function("lua_wasi_exec")?;
-        let result = exec_fn.call(&mut self.store, &[Value::I32(EXEC_SLOT as i32), Value::I32(data.len() as i32)])?;
-        Ok(result[0].unwrap_i32())
+        let mut helper = WasmExecHelper::new(&mut self.store, &self.instance, &self.memory);
+        helper.exec(src, "lua_wasi_exec")
     }
 
     fn get_output(&mut self) -> Result<String, Box<dyn Error>> {
-        let get_output_fn = self.instance.exports.get_function("lua_wasi_get_output")?;
-        let get_len_fn = self.instance.exports.get_function("lua_wasi_get_output_len")?;
-
-        let out_ptr = get_output_fn.call(&mut self.store, &[])?[0].unwrap_i32();
-        let out_len = get_len_fn.call(&mut self.store, &[])?[0].unwrap_i32();
-
-        if out_ptr == 0 || out_len == 0 {
-            return Ok(String::new());
-        }
-
-        let mut buf = vec![0u8; out_len as usize];
-        self.memory.view(&self.store).read(out_ptr as u64, &mut buf)?;
-        Ok(String::from_utf8_lossy(&buf).to_string())
+        let mut helper = WasmExecHelper::new(&mut self.store, &self.instance, &self.memory);
+        helper.get_output("lua_wasi_get_output", "lua_wasi_get_output_len")
     }
 
     pub fn exec_and_get_output(&mut self, src: &str) -> Result<String, Box<dyn Error>> {

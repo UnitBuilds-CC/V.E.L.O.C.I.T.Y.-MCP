@@ -111,7 +111,7 @@ fn wasm_cold_start_lua(wasm_bytes: &[u8]) -> f64 {
     LuaRuntime::bench_cold_start(wasm_bytes)
 }
 
-// ── WASM hot call (via call_tool) ──
+// ── WASM hot call (persistent instance, no recompilation) ──
 
 fn wasm_hot_call_quickjs(wasm_bytes: &[u8]) -> Option<f64> {
     let mut rt = QuickJsRuntime::cold_start(wasm_bytes).ok()?;
@@ -271,7 +271,7 @@ fn go_wasm_per_call(wasm_bytes: &[u8]) -> Option<f64> {
         let engine = wasmer::Engine::from(wasmer::Cranelift::default());
         let module = Module::new(&engine, wasm_bytes).ok()?;
         let mut store = Store::new(engine);
-        let env = FunctionEnv::new(&mut store, WasiEnv { memory: None });
+        let env = FunctionEnv::new(&mut store, WasiEnv::new());
         let wasi_imports = build_wasi_imports(&mut store, &env);
         let instance = Instance::new(&mut store, &module, &wasi_imports).ok()?;
         let memory = instance.exports.get_memory("memory").ok()?.clone();
@@ -300,7 +300,7 @@ fn go_wasm_per_call(wasm_bytes: &[u8]) -> Option<f64> {
         let engine = wasmer::Engine::from(wasmer::Cranelift::default());
         let module = Module::new(&engine, wasm_bytes).ok()?;
         let mut store = Store::new(engine);
-        let env = FunctionEnv::new(&mut store, WasiEnv { memory: None });
+        let env = FunctionEnv::new(&mut store, WasiEnv::new());
         let wasi_imports = build_wasi_imports(&mut store, &env);
         let instance = Instance::new(&mut store, &module, &wasi_imports).ok()?;
         let memory = instance.exports.get_memory("memory").ok()?.clone();
@@ -345,7 +345,7 @@ fn go_wasm_cached(wasm_bytes: &[u8]) -> Option<f64> {
     // warmup
     for _ in 0..10 {
         let mut store = Store::new(engine.clone());
-        let env = FunctionEnv::new(&mut store, WasiEnv { memory: None });
+        let env = FunctionEnv::new(&mut store, WasiEnv::new());
         let wasi_imports = build_wasi_imports(&mut store, &env);
         let instance = Instance::new(&mut store, &module, &wasi_imports).ok()?;
         let memory = instance.exports.get_memory("memory").ok()?.clone();
@@ -372,7 +372,7 @@ fn go_wasm_cached(wasm_bytes: &[u8]) -> Option<f64> {
     let mut checksum: u32 = 0;
     for _ in 0..iters {
         let mut store = Store::new(engine.clone());
-        let env = FunctionEnv::new(&mut store, WasiEnv { memory: None });
+        let env = FunctionEnv::new(&mut store, WasiEnv::new());
         let wasi_imports = build_wasi_imports(&mut store, &env);
         let instance = Instance::new(&mut store, &module, &wasi_imports).ok()?;
         let memory = instance.exports.get_memory("memory").ok()?.clone();
@@ -875,7 +875,7 @@ fn main() {
                 let engine = wasmer::Engine::from(wasmer::Cranelift::default());
                 let module = Module::new(&engine, &wasm_bytes).unwrap();
                 let mut store = Store::new(engine);
-                let env = FunctionEnv::new(&mut store, WasiEnv { memory: None });
+                let env = FunctionEnv::new(&mut store, WasiEnv::new());
                 let wasi_imports = build_wasi_imports(&mut store, &env);
                 let instance = Instance::new(&mut store, &module, &wasi_imports).unwrap();
                 let memory = instance.exports.get_memory("memory").unwrap().clone();

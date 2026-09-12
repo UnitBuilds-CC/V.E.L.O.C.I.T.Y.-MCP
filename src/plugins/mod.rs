@@ -451,42 +451,8 @@ fn create_wasm_runtime(language: &str) -> Result<Box<dyn crate::wasm_runtime::Wa
         return Err(format!("WASM language '{}' is disabled in configuration", language));
     }
 
-    let wasm_bytes = std::fs::read(&wasm_path)
-        .map_err(|e| format!("Failed to read WASM module '{}': {}", wasm_path, e))?;
-
-    let mut runtime: Box<dyn crate::wasm_runtime::WasmRuntime> = match language {
-        "javascript" => Box::new(crate::wasm_runtime::quickjs::QuickJsRuntime::new(&wasm_bytes)
-            .map_err(|e| format!("QuickJS init failed: {}", e))?),
-        "typescript" => Box::new(crate::wasm_runtime::typescript::TypeScriptRuntime::new(&wasm_bytes)
-            .map_err(|e| format!("TypeScript init failed: {}", e))?),
-        "python" => Box::new(crate::wasm_runtime::micropython::MicroPythonRuntime::new(&wasm_bytes)
-            .map_err(|e| format!("MicroPython init failed: {}", e))?),
-        "lua" => Box::new(crate::wasm_runtime::lua::LuaRuntime::new(&wasm_bytes)
-            .map_err(|e| format!("Lua init failed: {}", e))?),
-        "ruby" => Box::new(crate::wasm_runtime::ruby::RubyRuntime::new(&wasm_bytes)
-            .map_err(|e| format!("Ruby init failed: {}", e))?),
-        "rust" => Box::new(crate::wasm_runtime::rust::RustRuntime::new(&wasm_bytes)
-            .map_err(|e| format!("Rust init failed: {}", e))?),
-        "php" => Box::new(crate::wasm_runtime::php::PhpRuntime::new(&wasm_bytes)
-            .map_err(|e| format!("PHP init failed: {}", e))?),
-        "csharp" => Box::new(crate::wasm_runtime::csharp::CSharpRuntime::new(&wasm_bytes)
-            .map_err(|e| format!("C# init failed: {}", e))?),
-        "java" => Box::new(crate::wasm_runtime::java::JavaRuntime::new(&wasm_bytes)
-            .map_err(|e| format!("Java init failed: {}", e))?),
-        "r" => Box::new(crate::wasm_runtime::r::RRuntime::new(&wasm_bytes)
-            .map_err(|e| format!("R init failed: {}", e))?),
-        "julia" => Box::new(crate::wasm_runtime::julia::JuliaRuntime::new(&wasm_bytes)
-            .map_err(|e| format!("Julia init failed: {}", e))?),
-        "perl" => Box::new(crate::wasm_runtime::perl::PerlRuntime::new(&wasm_bytes)
-            .map_err(|e| format!("Perl init failed: {}", e))?),
-        _ => return Err(format!("Unsupported WASM language: {}", language)),
-    };
-
-    runtime.init()
-        .map_err(|e| format!("WASM runtime init failed for '{}': {}", language, e))?;
-
-    info!(language = %language, wasm_path = %wasm_path, "Initialized WASM runtime for plugin");
-    Ok(runtime)
+    crate::wasm_runtime::create_wasm_runtime_for_language(language, &wasm_path)
+        .map_err(|e| format!("Failed to create WASM runtime for '{}': {}", language, e))
 }
 
 /// Call a WASM tool with binary TLV arguments (optimized path).

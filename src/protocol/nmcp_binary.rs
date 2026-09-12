@@ -148,20 +148,7 @@ pub fn dispatch_nda_request(raw: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
             nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, nda_native::EMPTY_OBJECT_TLV)
         }
         nda_native::METHOD_INITIALIZE => {
-            let result = json!({
-                "protocolVersion": crate::PROTOCOL_VERSION,
-                "capabilities": {
-                    "tools": { "listChanged": true },
-                    "resources": { "subscribe": true, "listChanged": true },
-                    "prompts": { "listChanged": true },
-                    "sampling": {},
-                    "logging": {}
-                },
-                "serverInfo": {
-                    "name": "velocity-mcp-rust-server",
-                    "version": crate::VERSION
-                }
-            });
+            let result = super::build_initialize_response(false); // omit elicitation and roots for NDA
             let mut result_tlv = Vec::new();
             if let Err(e) = nda_native::encode_json_value(&result, &mut result_tlv) {
                 return Ok(nda_native::build_nda_error_raw(req.id_tlv, &format!("Encoding error: {}", e)));
@@ -386,23 +373,11 @@ fn handle_json_shmem(buffer: &mut SharedMemoryBuffer, input_str: &str) -> Result
 
     let response = match method {
         "initialize" => {
+            let result = super::build_initialize_response(true); // include elicitation and roots for shmem JSON
             json!({
                 "jsonrpc": "2.0",
                 "id": id,
-                "result": {
-                    "protocolVersion": crate::PROTOCOL_VERSION,
-                    "capabilities": {
-                        "tools": { "listChanged": true },
-                        "resources": { "subscribe": true, "listChanged": true },
-                        "prompts": { "listChanged": true },
-                        "sampling": {},
-                        "logging": {}
-                    },
-                    "serverInfo": {
-                        "name": "velocity-mcp-rust-server",
-                        "version": crate::VERSION
-                    }
-                }
+                "result": result
             })
         }
         "notifications/initialized" => {

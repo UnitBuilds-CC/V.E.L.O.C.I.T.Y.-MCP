@@ -60,25 +60,11 @@ pub fn handle_request(request: &Value) -> Option<Value> {
             let client_name = request["params"]["clientInfo"]["name"].as_str().unwrap_or("unknown");
             let client_version = request["params"]["clientInfo"]["version"].as_str().unwrap_or("unknown");
             info!(client = client_name, version = client_version, "Client initializing");
+            let result = super::build_initialize_response(true); // include elicitation and roots
             Some(json!({
                 "jsonrpc": "2.0",
                 "id": id,
-                "result": {
-                    "protocolVersion": crate::PROTOCOL_VERSION,
-                    "capabilities": {
-                        "tools": { "listChanged": true },
-                        "resources": { "subscribe": true, "listChanged": true },
-                        "prompts": { "listChanged": true },
-                        "sampling": {},
-                        "logging": {},
-                        "elicitation": {},
-                        "roots": { "listChanged": true }
-                    },
-                    "serverInfo": {
-                        "name": "velocity-mcp-rust-server",
-                        "version": crate::VERSION
-                    }
-                }
+                "result": result
             }))
         }
         "notifications/initialized" => {
@@ -524,120 +510,15 @@ fn run_stdio_nda_mode(
 }
 
 fn handle_nda_frame(raw: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
-    use crate::protocol::nda_native;
-    
-    let req = match nda_native::parse_nda_request_inplace(raw) {
-        Ok(r) => r,
+    // Delegate all NDA dispatch logic to nmcp_binary module for consistency
+    match crate::protocol::nmcp_binary::dispatch_nda_request(raw) {
+        Ok(frame) => Ok(frame),
         Err(e) => {
-            warn!(error = %e, "NDA frame parse error in stdio");
-            return Ok(nda_native::build_nda_error(&Value::Null, &format!("Parse error: {}", e))?);
+            // Parse errors should return error frames, not propagate as Err
+            let err_msg = format!("Parse error: {}", e);
+            Ok(crate::protocol::nda_native::build_nda_error(&Value::Null, &err_msg)?)
         }
-    };
-    
-    debug!(method = nda_native::method_name(req.method), "NDA stdio request");
-    
-    let response_frame = match req.method {
-        nda_native::METHOD_PING => {
-            nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, nda_native::EMPTY_OBJECT_TLV)
-        }
-        nda_native::METHOD_INITIALIZE => {
-            let result = json!({
-                "protocolVersion": crate::PROTOCOL_VERSION,
-                "capabilities": {
-                    "tools": { "listChanged": true },
-                    "resources": { "subscribe": true, "listChanged": true },
-                    "prompts": { "listChanged": true },
-                    "sampling": {},
-                    "logging": {}
-                },
-                "serverInfo": {
-                    "name": "velocity-mcp-rust-server",
-                    "version": crate::VERSION
-                }
-            });
-            let mut result_tlv = Vec::new();
-            if let Err(e) = nda_native::encode_json_value(&result, &mut result_tlv) {
-                return Ok(nda_native::build_nda_error_raw(req.id_tlv, &format!("Encoding error: {}", e)));
-            }
-            nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, &result_tlv)
-        }
-        nda_native::NOTIF_INITIALIZED => {
-            nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, nda_native::EMPTY_OBJECT_TLV)
-        }
-        nda_native::METHOD_TOOLS_LIST => {
-            let mut payload = Vec::with_capacity(8 * 1024);
-            payload.push(nda_native::STATUS_OK);
-            payload.extend_from_slice(req.id_tlv);
-            payload.extend_from_slice(&nda_native::encoded_tools_list_result());
-            nda_native::build_nda_frame(&payload)
-        }
-        nda_native::METHOD_TOOLS_CALL => {
-            let (name_slice, args_slice) = nda_native::extract_tools_call_fields(req.data)
-                .unwrap_or((None, None));
-            let name = name_slice.unwrap_or("");
-            let args_buf = args_slice.unwrap_or(&[]);
-            let args_json = if args_buf.is_empty() {
-                Value::Object(serde_json::Map::new())
-            } else {
-                nda_native::decode_json_value(args_buf).map(|(v, _)| v).unwrap_or(Value::Null)
-            };
-            
-            let json_req = json!({
-                "method": "tools/call",
-                "params": {
-                    "name": name,
-                    "arguments": args_json
-                }
-            });
-            
-            if let Some(json_resp) = handle_request(&json_req) {
-                if let Some(err) = json_resp.get("error") {
-                    let mut err_tlv = Vec::new();
-                    if let Err(e) = nda_native::encode_json_value(err, &mut err_tlv) {
-                        return Ok(nda_native::build_nda_error_raw(req.id_tlv, &format!("Error encoding error response: {}", e)));
-                    }
-                    nda_native::build_nda_response_raw(nda_native::STATUS_ERROR, req.id_tlv, &err_tlv)
-                } else {
-                    let result = json_resp.get("result").cloned().unwrap_or(Value::Null);
-                    let mut result_tlv = Vec::new();
-                    if let Err(e) = nda_native::encode_json_value(&result, &mut result_tlv) {
-                        return Ok(nda_native::build_nda_error_raw(req.id_tlv, &format!("Result encoding error: {}", e)));
-                    }
-                    nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, &result_tlv)
-                }
-            } else {
-                nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, nda_native::EMPTY_OBJECT_TLV)
-            }
-        }
-        _ => {
-            // Fall back to JSON-RPC handler for other methods
-            let method_name = nda_native::method_name(req.method);
-            let (params, _) = if req.data.is_empty() {
-                (Value::Null, 0)
-            } else {
-                nda_native::decode_json_value(req.data).unwrap_or((Value::Null, 0))
-            };
-            
-            let json_req = json!({
-                "method": method_name,
-                "params": params,
-                "id": 1
-            });
-            
-            if let Some(json_resp) = handle_request(&json_req) {
-                let result = json_resp.get("result").cloned().unwrap_or(Value::Null);
-                let mut result_tlv = Vec::new();
-                if let Err(e) = nda_native::encode_json_value(&result, &mut result_tlv) {
-                    return Ok(nda_native::build_nda_error_raw(req.id_tlv, &format!("Result encoding error: {}", e)));
-                }
-                nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, &result_tlv)
-            } else {
-                nda_native::build_nda_response_raw(nda_native::STATUS_OK, req.id_tlv, nda_native::EMPTY_OBJECT_TLV)
-            }
-        }
-    };
-    
-    Ok(response_frame)
+    }
 }
 
 fn run_stdio_json_mode(stdin_lock: std::io::StdinLock<'_>, initial_bytes: &[u8], shutdown: &AtomicBool) -> Result<(), Box<dyn Error>> {
@@ -1097,7 +978,8 @@ mod tests {
         let result = handle_nda_frame(&frame).unwrap();
         assert!(result.len() > nda_native::FRAME_HEADER_SIZE);
         assert_eq!(result[0..4], *nda_native::NDA_MAGIC);
-        assert_eq!(result[nda_native::FRAME_HEADER_SIZE], nda_native::STATUS_OK);
+        // Tool not found returns error status from dispatch
+        assert_eq!(result[nda_native::FRAME_HEADER_SIZE], nda_native::STATUS_ERROR);
     }
 
     #[test]
@@ -1112,9 +994,13 @@ mod tests {
 
     #[test]
     fn test_nda_frame_parse_error() {
+        // Garbage input should return an error frame, not panic
         let garbage = vec![0u8; 10];
-        let result = handle_nda_frame(&garbage).unwrap();
-        assert!(result.len() > 0);
+        let result = handle_nda_frame(&garbage);
+        // dispatch_nda_request returns Ok with error frame for parse failures
+        assert!(result.is_ok());
+        let frame = result.unwrap();
+        assert!(frame.len() > 0);
     }
 
     // ── add_cancelled eviction test ─────────────────────────────────────
