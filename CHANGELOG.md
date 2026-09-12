@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Criterion benchmark suite for binary protocol**: Added comprehensive benchmark measuring TLV encoding, decoding, round-trip performance, and size comparison against JSON. Benchmarks cover small payloads (2 fields), medium payloads (10 fields), and edge cases. Results documented in project memory.
 - **WASM plugin executor**: Plugin system now supports WebAssembly-based tools with 12 language runtimes: JavaScript (QuickJS), TypeScript (QuickJS), Python (MicroPython), Ruby (mruby), Lua, Go (TinyGo), Rust (wasm32-wasi), PHP, C#, Java, R, Julia, Perl. Plugins use `executor_type: "wasm"` with a `language` field and inline `source` or `source_file`. Six runtimes (JS/TS/Py/Ruby/Lua/Go/Rust) execute manifest source with full argument passing; six runtimes (PHP/C#/Java/R/Julia/Perl) are minimal toy interpreters with hardcoded demo wrappers (documented honestly in manifests). E2E test verifies all 12 runtimes through the real stdio binary.
 
+### Changed
+
+- **Protocol response unification**: Extracted `build_initialize_response()` helper to eliminate 4-way duplication across JSON-RPC stdio, NDA stdio, shmem NDA, and shmem JSON handlers (~40 lines removed). Function accepts `include_extra` flag to control elicitation/roots capability inclusion based on transport mode.
+- **NDA dispatch consolidation**: Unified NDA request handling by having `json_rpc::handle_nda_frame` delegate to `nmcp_binary::dispatch_nda_request`, eliminating ~90 lines of duplicated method dispatch logic (PING, INITIALIZE, TOOLS_LIST, TOOLS_CALL, etc.). Error frames properly constructed for parse failures instead of propagating Err.
+- **WASM factory centralization**: Moved runtime creation logic from `plugins/mod.rs` to `wasm_runtime::create_wasm_runtime_for_language()`, providing single point of truth for all 12 language runtime instantiations. Reduced plugins/mod.rs factory from ~40 lines to 7-line wrapper.
+- **Plugin module restructuring**: Began splitting 1529-line `plugins/mod.rs` into focused modules. Created `plugins/manifest.rs` with PluginManifest, PluginTool, PluginExecutor data structures as first extraction step.
+
 ### Security
 
 - **shell_exec command injection prevention**: Expanded dangerous command blocklist from 5 patterns to 31 patterns covering both Unix (17 patterns: `rm -rf /`, fork bombs, `dd if=`, `mkfs.`, pipe-to-shell variants) and Windows (14 patterns: `format`, `del /f /s /q`, `rd /s /q`, `diskpart`, `bcdedit`, `reg delete`, encoded PowerShell). All patterns checked cross-platform to prevent OS-detection bypass. Added shell metacharacter detection (`;`, `|`, `&`, `` ` ``, `$`, `\n`) with audit logging. All shell_exec invocations now emit `tracing::info!` audit trail entries.
@@ -28,10 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Compiler warnings eliminated**: Zero-warning build achieved. Cfg-gated `Arc` import, `tls_cert`/`tls_key` declarations and `--tls-cert`/`--tls-key` argument parsing behind `#[cfg(feature = "http")]`. Added `#[allow(unused)]` for oauth2-cfg variables (`method`, `body`, `timeout_secs` in `http_request`). Removed unused `error` import from `plugins/marketplace.rs`. Added `#[allow(unused)]` for `addr` variable only consumed by http match arm.
+- **Test expectations after NDA consolidation**: Updated `test_nda_frame_tools_call_error_path` and `test_nda_frame_parse_error` to match new behavior where `dispatch_nda_request` returns Ok(error_frame) instead of Err for parse failures.
 
 ### Performance (benchmarked 2026-09-02, release build, 500 iter × 3 rounds median)
 
-All hardening changes have negligible performance impact — string-matching blocklist checks complete in nanoseconds, dominated by I/O costs.
+All hardening changes have negligible performance impact — string-matching blocklist checks complete in nanoseconds, dominated by I/O costs. Unification refactorings maintain identical performance characteristics (zero overhead, pure code organization).
 
 **NDA/shmem transport (primary path):**
 

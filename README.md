@@ -3,7 +3,7 @@
 [![CI](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/actions/workflows/ci.yml/badge.svg)](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/actions/workflows/ci.yml)
 [![Version](https://img.shields.io/badge/version-3.1.0-blue.svg)](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/releases)
 [![License](https://img.shields.io/badge/license-MIT%20|%20Apache%202.0-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-736%20passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-724%20passing-brightgreen.svg)]()
 [![Dependencies](https://img.shields.io/badge/dependencies-0%20vulns-brightgreen.svg)]()
 
 **The fastest, most secure, production-ready Model Context Protocol (MCP) server.**
@@ -273,7 +273,7 @@ curl http://localhost:3000/performance
 
 ## 🧪 Testing
 
-**703 tests** with 89.79% line coverage:
+**724 tests** with 89.79% line coverage:
 
 ```bash
 # All tests
