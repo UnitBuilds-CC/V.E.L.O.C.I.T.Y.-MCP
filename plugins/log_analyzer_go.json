@@ -1,0 +1,29 @@
+{
+  "name": "log-analyzer-go",
+  "version": "1.0.0",
+  "description": "Analyzes application logs for errors, warnings, and performance metrics (Go implementation)",
+  "_note": "REQUIRES TINYGO REBUILD: The inline source below documents the intended logic, but the actual tool.wasm binary must be rebuilt with TinyGo to support dynamic tool dispatch. See bench_tools/tinygo_wasm/README.md for build instructions.",
+  "tools": [
+    {
+      "name": "analyze_logs_go",
+      "description": "Parse log lines and extract error counts, warning counts, and average response times",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "log_lines": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Array of log line strings to analyze"
+          }
+        },
+        "required": ["log_lines"]
+      },
+      "executor": {
+        "executor_type": "wasm",
+        "language": "go",
+        "source": "package main\n\nimport (\n\t\"math\"\n\t\"regexp\"\n\t\"strconv\"\n\t\"strings\"\n)\n\nfunc AnalyzeLogsGo(args map[string]interface{}) map[string]interface{} {\n\tlogLinesRaw := args[\"log_lines\"]\n\tlogLinesSlice := logLinesRaw.([]interface{})\n\t\n\tlogLines := make([]string, len(logLinesSlice))\n\tfor i, v := range logLinesSlice {\n\t\tlogLines[i] = v.(string)\n\t}\n\t\n\terrorCount := 0\n\twarningCount := 0\n\tinfoCount := 0\n\tvar responseTimes []int\n\t\n\tre := regexp.MustCompile(`response_time=(\\d+)ms`)\n\t\n\tfor _, line := range logLines {\n\t\tlower := strings.ToLower(line)\n\t\t\n\t\tif strings.Contains(lower, \"error\") || strings.Contains(lower, \"exception\") {\n\t\t\terrorCount++\n\t\t} else if strings.Contains(lower, \"warn\") {\n\t\t\twarningCount++\n\t\t} else if strings.Contains(lower, \"info\") {\n\t\t\tinfoCount++\n\t\t}\n\t\t\n\t\tmatches := re.FindStringSubmatch(line)\n\t\tif len(matches) > 1 {\n\t\t\tif rt, err := strconv.Atoi(matches[1]); err == nil {\n\t\t\t\tresponseTimes = append(responseTimes, rt)\n\t\t\t}\n\t\t}\n\t}\n\t\n\tavgRT := 0.0\n\tmaxRT := 0\n\tif len(responseTimes) > 0 {\n\t\tsum := 0\n\t\tfor _, rt := range responseTimes {\n\t\t\tsum += rt\n\t\t\tif rt > maxRT {\n\t\t\t\tmaxRT = rt\n\t\t\t}\n\t\t}\n\t\tavgRT = float64(sum) / float64(len(responseTimes))\n\t}\n\t\n\treturn map[string]interface{}{\n\t\t\"total_lines\":          len(logLines),\n\t\t\"error_count\":          errorCount,\n\t\t\"warning_count\":        warningCount,\n\t\t\"info_count\":           infoCount,\n\t\t\"avg_response_time_ms\": math.Round(avgRT*100) / 100,\n\t\t\"slowest_request_ms\":   maxRT,\n\t}\n}\n",
+        "timeout": 5
+      }
+    }
+  ]
+}

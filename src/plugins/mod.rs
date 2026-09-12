@@ -377,7 +377,7 @@ fn execute_wasm_plugin_tool(tool: &PluginTool, arguments: &Value) -> Result<Stri
                 return Err("WASM language 'go' is disabled in configuration".to_string());
             }
             let source_file = executor.source_file.as_deref().unwrap_or(&default_path);
-            execute_standalone_wasm_tool(source_file, arguments)
+            execute_standalone_wasm_tool(source_file, &tool.name, arguments)
         }
         _ => {
             let source = resolve_wasm_source(executor)?;
@@ -479,7 +479,7 @@ pub fn get_wasm_tool_language(name: &str) -> Option<String> {
     metadata.get(name).cloned()
 }
 
-fn execute_standalone_wasm_tool(source_file: &str, arguments: &Value) -> Result<String, String> {
+fn execute_standalone_wasm_tool(source_file: &str, tool_name: &str, arguments: &Value) -> Result<String, String> {
     use wasmer::{FunctionEnv, Instance, Store, Value as WasmValue};
 
     let current_mtime = std::fs::metadata(source_file)
@@ -528,7 +528,15 @@ fn execute_standalone_wasm_tool(source_file: &str, arguments: &Value) -> Result<
         let _ = start_fn.call(&mut store, &[]);
     }
 
-    let args_json = serde_json::to_string(arguments)
+    // Include tool name in the payload for dynamic dispatch
+    let mut payload = serde_json::Map::new();
+    payload.insert("_tool_name".to_string(), serde_json::Value::String(tool_name.to_string()));
+    if let Value::Object(args) = arguments {
+        for (k, v) in args {
+            payload.insert(k.clone(), v.clone());
+        }
+    }
+    let args_json = serde_json::to_string(&payload)
         .map_err(|e| format!("Failed to serialize arguments: {}", e))?;
     let args_bytes = args_json.as_bytes();
 
