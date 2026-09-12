@@ -1,0 +1,19 @@
+[package]
+name = "velocity-mcp-core"
+version = "3.2.0"
+edition = "2021"
+description = "WASM-compatible core protocol logic for VELOCITY-MCP"
+license = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]  # Support both WASM and native compilation
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# No tokio, no axum, no OS-specific crates - pure protocol logic only
+
+[features]
+default = []
+wasm = []  # Enable WASM-specific exports

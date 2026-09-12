@@ -121,6 +121,7 @@ That's it! Your MCP server is running. Now configure your client.
 ### Advanced Features
 - [**Plugin Marketplace**](docs/MARKETPLACE.md) - Discover and install plugins
 - [**Deployment Guide**](docs/DEPLOYMENT.md) - Docker, Kubernetes, bare metal
+- [**Wasmer Edge Deployment**](docs/edge_deployment_quickstart.md) - Serverless WASM deployment on free tier
 - [**Performance Comparison**](docs/COMPARISON.md) - Benchmark results
 
 ---

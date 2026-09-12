@@ -4025,6 +4025,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "velocity-mcp-core"
+version = "3.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "velocity-mcp-edge"
+version = "3.2.0"
+dependencies = [
+ "serde_json",
+ "velocity-mcp-core",
+]
+
+[[package]]
 name = "velocity_mcp"
 version = "3.1.0"
 dependencies = [
@@ -4075,6 +4091,7 @@ dependencies = [
  "tracing-subscriber",
  "ureq",
  "uuid",
+ "velocity-mcp-core",
  "velocity_mcp_macros",
  "wasmer",
  "wasmer-middlewares",

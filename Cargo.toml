@@ -13,7 +13,7 @@ categories = ["web-programming", "development-tools"]
 readme = "README.md"
 
 [workspace]
-members = [".", "macros", "client"]
+members = [".", "macros", "client", "crates/velocity-mcp-core", "crates/velocity-mcp-edge"]
 exclude = ["bench_nda", "bench_tools"]
 
 [features]
@@ -27,6 +27,7 @@ wasm-networking = []
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+velocity-mcp-core = { path = "crates/velocity-mcp-core" }
 memmap2 = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -117,11 +118,6 @@ harness = false
 [[bench]]
 name = "wasm_vs_native"
 harness = false
-
-# WASM Edge deployment binary
-[[bin]]
-name = "velocity-edge"
-path = "src/bin/velocity_edge.rs"
 
 [[bench]]
 name = "wasm_tool_latency"
