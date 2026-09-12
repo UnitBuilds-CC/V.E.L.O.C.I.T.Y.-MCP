@@ -4036,7 +4036,13 @@ dependencies = [
 name = "velocity-mcp-edge"
 version = "3.2.0"
 dependencies = [
+ "http-body-util",
+ "hyper 1.11.1",
+ "hyper-util",
  "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
  "velocity-mcp-core",
 ]
 

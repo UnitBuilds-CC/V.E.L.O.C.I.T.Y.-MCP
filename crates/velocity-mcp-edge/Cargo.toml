@@ -10,3 +10,9 @@ path = "src/main.rs"
 [dependencies]
 velocity-mcp-core = { path = "../velocity-mcp-core" }
 serde_json = "1.0"
+hyper = { version = "1", features = ["server", "http1"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "io-util"] }
+http-body-util = "0.1"
+hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
