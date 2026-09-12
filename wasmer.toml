@@ -2,27 +2,57 @@
 name = "velocity-mcp-edge"
 version = "3.2.0"
 description = "VELOCITY-MCP serverless deployment on Wasmer Edge - Model Context Protocol with 13 WASM language runtimes"
+readme = "docs/edge_user_guide.md"
 
 [module]
 main = "target/wasm32-wasip1/release/velocity_edge.wasm"
 
-# Free tier optimization: minimal memory footprint
+# =============================================================================
+# Wasmer Edge Configuration
+# Optimized for free tier (128MB, 5M instructions). Adjust for production.
+# See docs/edge_user_guide.md for full configuration reference.
+# =============================================================================
+
 [edge]
-memory_mb = 128  # Stay within free tier limits (max 256MB typically)
-instruction_limit = 5_000_000  # 5M instructions per request (~50ms budget)
-min_instances = 0  # Scale to zero when idle
-max_instances = 3  # Conservative scaling for free tier
+# Memory per instance (MB). Free tier max: 128. Production: 256-2048.
+memory_mb = 128
 
-# Environment variables for runtime configuration
+# Max WASM instructions per request. 5M ~= 50ms compute budget.
+# Increase for complex tool workloads; decrease for strict cost control.
+instruction_limit = 5_000_000
+
+# Minimum warm instances. 0 = scale to zero (no idle cost).
+# Set to 1 to eliminate cold starts (~100-500ms first request).
+min_instances = 0
+
+# Maximum concurrent instances. Free tier: keep at 3.
+# Production: scale to 10-50 based on traffic.
+max_instances = 3
+
+# Environment variables injected into the WASM runtime.
 [edge.env]
-RUST_LOG = "warn"  # Minimal logging to reduce overhead
-VELOCITY_MODE = "edge"  # Signal to disable OS-specific features
+# Logging level: "error" < "warn" < "info" < "debug" < "trace"
+# Use "warn" on free tier to minimize overhead.
+RUST_LOG = "warn"
 
-# Health check endpoint
+# Operational mode. "edge" disables OS-specific features (seccomp, shmem, etc.)
+VELOCITY_MODE = "edge"
+
+# Uncomment and set to enable API key authentication:
+# VELOCITY_API_KEY = "sk-your-secret-key-here"
+
+# Uncomment to override request body size limit (default: 1MB):
+# VELOCITY_MAX_REQUEST_SIZE = "1048576"
+
+# Uncomment to override per-request timeout in seconds (default: 30):
+# VELOCITY_REQUEST_TIMEOUT = "30"
+
+# Health check configuration. Wasmer polls this endpoint to verify instance health.
 [edge.healthcheck]
 path = "/health"
 interval_seconds = 30
 
-# Persistent storage for plugin cache (if needed)
+# Persistent volumes (not available on free tier).
+# Uncomment for production deployments that need plugin cache persistence.
 # [edge.volumes]
 # plugins = "/data/plugins"

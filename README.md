@@ -1,7 +1,8 @@
 # V.E.L.O.C.I.T.Y. MCP Server
 
 [![CI](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/actions/workflows/ci.yml/badge.svg)](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-3.1.0-blue.svg)](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/releases)
+[![Version](https://img.shields.io/badge/version-3.2.0-blue.svg)](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/releases)
+[![Edge Deploy](https://img.shields.io/badge/edge-ready-brightgreen.svg)](docs/edge_user_guide.md)
 [![License](https://img.shields.io/badge/license-MIT%20|%20Apache%202.0-green.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-724%20passing-brightgreen.svg)]()
 [![Dependencies](https://img.shields.io/badge/dependencies-0%20vulns-brightgreen.svg)]()
@@ -29,6 +30,8 @@ That's it! Your MCP server is running. Now configure your client.
 - 🔌 [Client Integration](docs/CLIENT_INTEGRATION.md) - Setup for Claude Desktop, Cursor, Windsurf, and more
 - 📊 [Performance Comparison](docs/COMPARISON.md) - See benchmark results across 8 pipelines
 - 🏪 [Plugin Marketplace](docs/MARKETPLACE.md) - Discover and install plugins
+- 🌐 [Edge Deployment Guide](docs/edge_user_guide.md) - Serverless WASM on Wasmer Edge (free tier)
+- 📋 [Edge Operations Runbook](docs/edge_operations.md) - Monitoring, alerting, incident response
 
 ---
 
@@ -121,7 +124,9 @@ That's it! Your MCP server is running. Now configure your client.
 ### Advanced Features
 - [**Plugin Marketplace**](docs/MARKETPLACE.md) - Discover and install plugins
 - [**Deployment Guide**](docs/DEPLOYMENT.md) - Docker, Kubernetes, bare metal
-- [**Wasmer Edge Deployment**](docs/edge_deployment_quickstart.md) - Serverless WASM deployment on free tier
+- [Wasmer Edge Deployment](docs/edge_deployment_quickstart.md) - Serverless WASM deployment on free tier
+- [Edge User Guide](docs/edge_user_guide.md) - Complete Edge configuration and API reference
+- [Edge Operations Runbook](docs/edge_operations.md) - Monitoring, alerting, incident response
 - [**Performance Comparison**](docs/COMPARISON.md) - Benchmark results
 
 ---
@@ -479,6 +484,56 @@ cargo build --release
 ```
 
 See [Deployment Guide](docs/DEPLOYMENT.md) for detailed instructions.
+
+### Wasmer Edge (Serverless WASM)
+
+Deploy VELOCITY-MCP as a serverless WebAssembly application on Wasmer Edge. Zero infrastructure, automatic scaling, global CDN.
+
+```
+                    Client (MCP)
+                         |
+                    HTTP / JSON-RPC
+                         |
+              +------------------------+
+              |    Wasmer Edge CDN     |
+              |   (Global, Auto-Scale) |
+              +------------------------+
+                         |
+              +------------------------+
+              |  WASM Module (128MB)   |
+              |  - HTTP server (hyper) |
+              |  - JSON-RPC handler    |
+              |  - 12 WASM runtimes    |
+              |  - Metering middleware |
+              +------------------------+
+```
+
+**Quick Deploy:**
+
+```bash
+# One-click deploy (builds, validates, deploys, verifies)
+./deploy-edge.sh       # Linux/macOS
+deploy-edge.bat        # Windows
+```
+
+| Feature | Native Binary | Wasmer Edge |
+|---------|--------------|-------------|
+| Transport | stdio, HTTP, shmem, NDA | HTTP only |
+| Cold start | Instant | 100-500ms (eliminated with min_instances=1) |
+| Scaling | Manual | Automatic (0 to N instances) |
+| WASM plugins (12 languages) | Yes | Yes |
+| NDA binary protocol | Yes | No |
+| Shared memory IPC | Yes | No |
+| Filesystem access | Full | Temp only |
+| Process spawning | Yes | No |
+| Infrastructure | Self-managed | Fully managed |
+| Cost model | Server cost | Pay-per-invocation |
+| Free tier | N/A | ~1M invocations/month |
+
+**Edge documentation:**
+- [Edge User Guide](docs/edge_user_guide.md) -- Complete configuration and API reference
+- [Edge Operations Runbook](docs/edge_operations.md) -- Monitoring, alerting, incident response
+- [wasmer.toml](wasmer.toml) -- Edge deployment configuration
 
 ---
 

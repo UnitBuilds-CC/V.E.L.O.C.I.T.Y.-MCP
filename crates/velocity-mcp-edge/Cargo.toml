@@ -3,16 +3,32 @@ name = "velocity-mcp-edge"
 version = "3.2.0"
 edition = "2021"
 
+[lib]
+name = "velocity_mcp_edge"
+path = "src/lib.rs"
+
 [[bin]]
 name = "velocity-edge"
 path = "src/main.rs"
 
 [dependencies]
 velocity-mcp-core = { path = "../velocity-mcp-core" }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1.0"
 hyper = { version = "1", features = ["server", "http1"] }
+http = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "io-util"] }
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json"] }
+proptest = "1"
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+serde_json = "1.0"
+hyper = { version = "1", features = ["server", "http1", "client"] }
+http-body-util = "0.1"
+hyper-util = { version = "0.1", features = ["server-auto", "tokio", "client-legacy"] }

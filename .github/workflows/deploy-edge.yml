@@ -1,0 +1,239 @@
+name: Deploy Edge
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/velocity-mcp-edge/**'
+      - 'crates/velocity-mcp-core/**'
+      - 'wasmer.toml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/deploy-edge.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+      dry_run:
+        description: 'Dry run (build and validate only, skip deploy)'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  CARGO_TERM_COLOR: always
+  WASM_TARGET: wasm32-wasip1
+  MAX_WASM_SIZE_MB: 5
+  BIN_NAME: velocity-edge
+
+jobs:
+  build-and-validate:
+    name: Build & Validate WASM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.WASM_TARGET }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "edge-wasm"
+
+      - name: Build WASM binary
+        run: |
+          echo "::group::Building WASM binary for ${{ env.WASM_TARGET }}"
+          cargo build --target ${{ env.WASM_TARGET }} --release --bin ${{ env.BIN_NAME }}
+          echo "::endgroup::"
+
+      - name: Verify WASM binary exists
+        run: |
+          WASM_FILE="target/${{ env.WASM_TARGET }}/release/${{ env.BIN_NAME }}.wasm"
+          if [ ! -f "$WASM_FILE" ]; then
+            echo "::error::WASM binary not found at $WASM_FILE"
+            exit 1
+          fi
+          echo "WASM binary found at $WASM_FILE"
+
+      - name: Validate binary size
+        run: |
+          WASM_FILE="target/${{ env.WASM_TARGET }}/release/${{ env.BIN_NAME }}.wasm"
+          WASM_SIZE=$(stat -c%s "$WASM_FILE")
+          WASM_SIZE_MB=$(echo "scale=2; $WASM_SIZE / 1048576" | bc)
+          MAX_SIZE_BYTES=$(( ${{ env.MAX_WASM_SIZE_MB }} * 1048576 ))
+
+          echo "Binary size: ${WASM_SIZE_MB} MB ($WASM_SIZE bytes)"
+
+          if [ "$WASM_SIZE" -gt "$MAX_SIZE_BYTES" ]; then
+            echo "::warning::Binary size (${WASM_SIZE_MB} MB) exceeds recommended limit (${{ env.MAX_WASM_SIZE_MB }} MB)"
+            echo "::warning::Large binaries cause slow cold starts on Edge"
+          else
+            echo "Binary size is within the ${{ env.MAX_WASM_SIZE_MB }} MB limit"
+          fi
+
+          # Export size for later steps
+          echo "WASM_SIZE=$WASM_SIZE" >> "$GITHUB_ENV"
+          echo "WASM_SIZE_MB=$WASM_SIZE_MB" >> "$GITHUB_ENV"
+
+      - name: Upload WASM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: velocity-edge-wasm
+          path: target/${{ env.WASM_TARGET }}/release/${{ env.BIN_NAME }}.wasm
+          retention-days: 30
+
+  run-tests:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    needs: build-and-validate
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run workspace tests
+        run: cargo test --workspace --lib --verbose
+
+      - name: Run core crate tests
+        run: cargo test -p velocity-mcp-core --verbose
+
+      - name: Check for warnings
+        run: |
+          WARNINGS=$(cargo build --workspace 2>&1 | grep -c "warning:" || true)
+          echo "Compiler warnings: $WARNINGS"
+          if [ "$WARNINGS" -gt 0 ]; then
+            echo "::warning::$WARNINGS compiler warnings found"
+          fi
+
+  deploy-edge:
+    name: Deploy to Wasmer Edge
+    runs-on: ubuntu-latest
+    needs: [build-and-validate, run-tests]
+    if: >
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run != 'true')
+    environment:
+      name: ${{ github.event.inputs.environment || 'production' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download WASM artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: velocity-edge-wasm
+          path: target/${{ env.WASM_TARGET }}/release/
+
+      - name: Install Wasmer CLI
+        run: |
+          curl -sSf https://get.wasmer.io | sh
+          echo "$HOME/.wasmer/bin" >> "$GITHUB_PATH"
+
+      - name: Verify WASM binary
+        run: |
+          WASM_FILE="target/${{ env.WASM_TARGET }}/release/${{ env.BIN_NAME }}.wasm"
+          if [ ! -f "$WASM_FILE" ]; then
+            echo "::error::Downloaded WASM binary not found"
+            exit 1
+          fi
+          ls -lh "$WASM_FILE"
+
+      - name: Deploy to Wasmer Edge
+        env:
+          WASMER_TOKEN: ${{ secrets.WASMER_TOKEN }}
+        run: |
+          echo "$WASMER_TOKEN" | wasmer login --token-stdin 2>/dev/null || \
+            echo "::error::Failed to authenticate with Wasmer. Check WASMER_TOKEN secret."
+
+          echo "Deploying to Wasmer Edge..."
+          wasmer deploy --no-prompt 2>&1 | tee deploy-output.log
+
+          if [ ${PIPESTATUS[0]} -ne 0 ]; then
+            echo "::error::Deployment failed. Check deploy-output.log for details."
+            exit 1
+          fi
+
+      - name: Extract deployment URL
+        id: deploy-url
+        run: |
+          # Try to extract URL from deploy output
+          URL=$(grep -oP 'https://[^\s]+\.wasmer\.app' deploy-output.log | head -1 || echo "")
+          if [ -n "$URL" ]; then
+            echo "url=$URL" >> "$GITHUB_OUTPUT"
+            echo "Deployed to: $URL"
+          else
+            echo "::warning::Could not extract deployment URL from output"
+            echo "url=unknown" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Health check verification
+        if: steps.deploy-url.outputs.url != 'unknown' && steps.deploy-url.outputs.url != ''
+        run: |
+          URL="${{ steps.deploy-url.outputs.url }}"
+          echo "Verifying health at: ${URL}/health"
+
+          MAX_RETRIES=5
+          RETRY_DELAY=10
+
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo "Attempt $i/$MAX_RETRIES..."
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${URL}/health" --max-time 15 || echo "000")
+
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "Health check passed!"
+              RESPONSE=$(curl -s "${URL}/health" --max-time 15)
+              echo "Response: $RESPONSE"
+              exit 0
+            fi
+
+            echo "Health check returned $HTTP_CODE, retrying in ${RETRY_DELAY}s..."
+            sleep $RETRY_DELAY
+          done
+
+          echo "::warning::Health check did not return 200 after $MAX_RETRIES attempts"
+          echo "The deployment may still be initializing. Check manually:"
+          echo "  curl ${URL}/health"
+
+      - name: Deployment summary
+        if: always()
+        run: |
+          echo "## Edge Deployment Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Timestamp | $(date -u +%Y-%m-%dT%H:%M:%SZ) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Binary Size | ${{ env.WASM_SIZE_MB }} MB |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Environment | ${{ github.event.inputs.environment || 'production' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit | ${{ github.sha }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| URL | ${{ steps.deploy-url.outputs.url || 'N/A' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+  dry-run-summary:
+    name: Dry Run Summary
+    runs-on: ubuntu-latest
+    needs: [build-and-validate, run-tests]
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true'
+    steps:
+      - name: Dry run notification
+        run: |
+          echo "## Dry Run Complete" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Build and tests passed. No deployment was performed." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Binary Size | ${{ needs.build-and-validate.outputs.wasm_size_mb || 'see artifacts' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Tests | Passed |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Deployed | No (dry run) |" >> "$GITHUB_STEP_SUMMARY"

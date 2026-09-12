@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.2.0-edge] — 2026-09-12
+
+### Added
+
+- **Wasmer Edge deployment**: VELOCITY-MCP can now be deployed as a serverless WebAssembly application on Wasmer Edge. The `velocity-mcp-edge` crate (`crates/velocity-mcp-edge/`) implements an HTTP server using hyper that runs within the Wasmer Edge WASM runtime. Supports JSON-RPC over HTTP, all 12 WASM plugin language runtimes, metering middleware for instruction counting, and module compilation caching.
+- **velocity-mcp-core crate**: Extracted pure protocol logic into a WASM-compatible library crate (`crates/velocity-mcp-core/`) with zero OS-specific dependencies. Provides `handle_mcp_request()`, `parse_request()`, and `serialize_response()` for both native and WASM targets. Compiles as both `cdylib` and `rlib`.
+- **One-click deployment scripts**: `deploy-edge.sh` (Linux/macOS) and `deploy-edge.bat` (Windows) automate the full deploy pipeline: environment validation, WASM build, binary size check (<5MB), test execution, deployment via `wasmer deploy`, and post-deploy health verification. Both scripts are idempotent and support `--skip-tests`, `--skip-build`, and `--dry-run` flags.
+- **GitHub Actions deploy pipeline**: `.github/workflows/deploy-edge.yml` provides CI/CD for Edge deployments. Triggers on pushes to `main` when edge-related files change, and supports manual dispatch with environment selection (production/staging) and dry-run mode. Validates binary size, runs tests, deploys via Wasmer CLI, and verifies health check with retry logic.
+- **Comprehensive Edge documentation**: `docs/edge_user_guide.md` (quick start, configuration reference, API reference, security configuration, performance tuning, troubleshooting) and `docs/edge_operations.md` (monitoring setup, alerting thresholds, scaling guidelines, backup/recovery, incident response playbook, log analysis patterns, cost management).
+- **Production-optimized wasmer.toml**: Configured for free tier (128MB memory, 5M instruction limit, 0-3 instance scaling). Includes documented environment variables for API key authentication, request size limits, request timeouts, and health check configuration.
+- **Metering middleware integration**: WASM plugin execution now uses `wasmer-middlewares` metering to enforce per-request instruction limits, preventing runaway computations and controlling costs in multi-tenant Edge deployments.
+- **WASM module compilation caching**: Compiled WASM modules are cached to avoid redundant compilation on subsequent requests, providing ~20x faster cold starts for plugin-heavy workloads.
+
+### Changed
+
+- **Repository structure**: Added `crates/velocity-mcp-edge/` and `crates/velocity-mcp-core/` workspace members. The edge crate depends only on the core crate plus minimal HTTP dependencies (hyper, tokio, serde_json) compatible with WASM targets.
+- **README updated**: Added Edge deployment section with architecture diagram, feature comparison table (native vs edge), quick deploy instructions, and links to the user guide and operations runbook. Version badge updated to 3.2.0 with new "edge-ready" status badge.
+
+### Known Limitations
+
+The following features from the native binary are not available on Edge:
+- NDA binary protocol and shared memory IPC (require OS-level shared memory)
+- Process spawning via `shell_exec` (WASM sandbox prevents `fork`/`exec`)
+- Local filesystem access beyond temporary storage
+- Custom TCP/UDP sockets beyond WASI HTTP
+- WebSocket transport
+- SQLite database resources
+- Linux seccomp sandboxing (replaced by WASM sandbox isolation)
+
+### Migration from Previous Versions
+
+No breaking changes for native binary users. The v3.2.0-edge release adds a new deployment target alongside the existing native binary. To deploy on Edge:
+
+```bash
+rustup target add wasm32-wasip1
+./deploy-edge.sh
+```
+
+Existing native deployments continue to work without modification. The `velocity-mcp-core` crate is a new workspace member that extracts protocol logic shared between native and Edge targets.
+
+---
+
 ## [Unreleased] — Binary Protocol & WASM Optimization
 
 ### Added
@@ -184,6 +226,7 @@ Transport primitive costs on test machine:
 - **Path validation**: Rejects empty, relative, and traversal paths.
 - **46 tests**: 34 unit + 12 integration.
 
+[3.2.0-edge]: https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/compare/v3.1.0...v3.2.0-edge
 [3.0.0]: https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/releases/tag/v1.0.0
