@@ -5,6 +5,7 @@
 //! for registering and calling tools written in any supported language.
 
 pub mod csharp;
+pub mod go;
 pub mod java;
 pub mod julia;
 pub mod lua;
@@ -344,6 +345,7 @@ pub fn create_wasm_runtime_for_language(
             .map_err(|e| format!("Julia init failed: {}", e))?),
         "perl" => Box::new(crate::wasm_runtime::perl::PerlRuntime::new(&wasm_bytes)
             .map_err(|e| format!("Perl init failed: {}", e))?),
+        "go" => Box::new(crate::wasm_runtime::go::GoWasmRuntime::new(wasm_path)),
         _ => return Err(format!("Unsupported WASM language: {}", language).into()),
     };
 

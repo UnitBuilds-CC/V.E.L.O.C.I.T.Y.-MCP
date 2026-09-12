@@ -368,48 +368,35 @@ fn execute_wasm_plugin_tool(tool: &PluginTool, arguments: &Value) -> Result<Stri
     let language = executor.language.as_deref()
         .ok_or_else(|| "WASM executor requires 'language' field".to_string())?;
 
-    match language {
-        "go" => {
-            let (enabled, default_path) = wasm_runtimes_config()
-                .resolve_language("go")
-                .ok_or_else(|| "Unsupported WASM language: go".to_string())?;
-            if !enabled {
-                return Err("WASM language 'go' is disabled in configuration".to_string());
-            }
-            let source_file = executor.source_file.as_deref().unwrap_or(&default_path);
-            execute_standalone_wasm_tool(source_file, &tool.name, arguments)
-        }
-        _ => {
-            let source = resolve_wasm_source(executor)?;
+    // All languages now use the same WasmRuntime interface
+    let source = resolve_wasm_source(executor)?;
 
-            let mut cache = WASM_RUNTIME_CACHE.lock()
-                .map_err(|e| format!("WASM runtime cache poisoned: {}", e))?;
+    let mut cache = WASM_RUNTIME_CACHE.lock()
+        .map_err(|e| format!("WASM runtime cache poisoned: {}", e))?;
 
-            if !cache.contains_key(language) {
-                let runtime = create_wasm_runtime(language)?;
-                cache.insert(language.to_string(), runtime);
-            }
-
-            let runtime = cache.get_mut(language)
-                .ok_or_else(|| format!("No runtime for language: {}", language))?;
-
-            runtime.register_tool(&tool.name, &source)
-                .map_err(|e| format!("Failed to register WASM tool '{}': {}", tool.name, e))?;
-
-            // Register tool metadata for binary protocol lookup
-            {
-                let mut metadata = WASM_TOOL_METADATA.lock()
-                    .map_err(|e| format!("WASM tool metadata cache poisoned: {}", e))?;
-                metadata.insert(tool.name.clone(), language.to_string());
-            }
-
-            let args_json = serde_json::to_string(arguments)
-                .map_err(|e| format!("Failed to serialize arguments: {}", e))?;
-
-            runtime.call_tool(&tool.name, &args_json)
-                .map_err(|e| format!("WASM tool '{}' execution failed: {}", tool.name, e))
-        }
+    if !cache.contains_key(language) {
+        let runtime = create_wasm_runtime(language)?;
+        cache.insert(language.to_string(), runtime);
     }
+
+    let runtime = cache.get_mut(language)
+        .ok_or_else(|| format!("No runtime for language: {}", language))?;
+
+    runtime.register_tool(&tool.name, &source)
+        .map_err(|e| format!("Failed to register WASM tool '{}': {}", tool.name, e))?;
+
+    // Register tool metadata for binary protocol lookup
+    {
+        let mut metadata = WASM_TOOL_METADATA.lock()
+            .map_err(|e| format!("WASM tool metadata cache poisoned: {}", e))?;
+        metadata.insert(tool.name.clone(), language.to_string());
+    }
+
+    let args_json = serde_json::to_string(arguments)
+        .map_err(|e| format!("Failed to serialize arguments: {}", e))?;
+
+    runtime.call_tool(&tool.name, &args_json)
+        .map_err(|e| format!("WASM tool '{}' execution failed: {}", tool.name, e))
 }
 
 fn resolve_wasm_source(executor: &PluginExecutor) -> Result<String, String> {

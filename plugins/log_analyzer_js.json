@@ -1,0 +1,28 @@
+{
+  "name": "log-analyzer-javascript",
+  "version": "1.0.0",
+  "description": "Analyzes application logs for errors, warnings, and performance metrics (JavaScript implementation)",
+  "tools": [
+    {
+      "name": "analyze_logs_js",
+      "description": "Parse log lines and extract error counts, warning counts, and average response times",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "log_lines": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Array of log line strings to analyze"
+          }
+        },
+        "required": ["log_lines"]
+      },
+      "executor": {
+        "executor_type": "wasm",
+        "language": "javascript",
+        "source": "function analyze_logs_js(args) {\n    const logLines = args.log_lines || [];\n    \n    let errorCount = 0;\n    let warningCount = 0;\n    let infoCount = 0;\n    const responseTimes = [];\n    \n    for (const line of logLines) {\n        const lower = line.toLowerCase();\n        \n        if (lower.includes('error') || lower.includes('exception')) {\n            errorCount++;\n        } else if (lower.includes('warn')) {\n            warningCount++;\n        } else if (lower.includes('info')) {\n            infoCount++;\n        }\n        \n        const match = line.match(/response_time=(\\d+)ms/);\n        if (match) {\n            responseTimes.push(parseInt(match[1], 10));\n        }\n    }\n    \n    const avgResponseTime = responseTimes.length > 0\n        ? responseTimes.reduce((a, b) => a + b, 0) / responseTimes.length\n        : 0;\n    \n    const maxResponseTime = responseTimes.length > 0\n        ? Math.max(...responseTimes)\n        : 0;\n    \n    return {\n        total_lines: logLines.length,\n        error_count: errorCount,\n        warning_count: warningCount,\n        info_count: infoCount,\n        avg_response_time_ms: Math.round(avgResponseTime * 100) / 100,\n        slowest_request_ms: maxResponseTime\n    };\n}\n",
+        "timeout": 5
+      }
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "name": "log-analyzer-lua",
+  "version": "1.0.0",
+  "description": "Analyzes application logs for errors, warnings, and performance metrics (Lua implementation)",
+  "tools": [
+    {
+      "name": "analyze_logs_lua",
+      "description": "Parse log lines and extract error counts, warning counts, and average response times",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "log_lines": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Array of log line strings to analyze"
+          }
+        },
+        "required": ["log_lines"]
+      },
+      "executor": {
+        "executor_type": "wasm",
+        "language": "lua",
+        "source": "function analyze_logs_lua(args)\n    local log_lines = args.log_lines or {}\n    \n    local error_count = 0\n    local warning_count = 0\n    local info_count = 0\n    local response_times = {}\n    \n    for _, line in ipairs(log_lines) do\n        local line_lower = string.lower(line)\n        \n        if string.find(line_lower, 'error') or string.find(line_lower, 'exception') then\n            error_count = error_count + 1\n        elseif string.find(line_lower, 'warn') then\n            warning_count = warning_count + 1\n        elseif string.find(line_lower, 'info') then\n            info_count = info_count + 1\n        end\n        \n        local rt = string.match(line, 'response_time=(%d+)ms')\n        if rt then\n            table.insert(response_times, tonumber(rt))\n        end\n    end\n    \n    local avg_rt = 0\n    local max_rt = 0\n    if #response_times > 0 then\n        local sum = 0\n        for _, t in ipairs(response_times) do\n            sum = sum + t\n            if t > max_rt then max_rt = t end\n        end\n        avg_rt = sum / #response_times\n    end\n    \n    return {\n        total_lines = #log_lines,\n        error_count = error_count,\n        warning_count = warning_count,\n        info_count = info_count,\n        avg_response_time_ms = math.floor(avg_rt * 100) / 100,\n        slowest_request_ms = max_rt\n    }\nend\n",
+        "timeout": 5
+      }
+    }
+  ]
+}
