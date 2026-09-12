@@ -45,111 +45,34 @@ Created `bench_tools/tinygo_wasm/README.md` with:
 - Architecture overview
 - Troubleshooting guide
 
-## Current Limitation
+## Current Status
 
-**The `tool.wasm` binary is outdated.** It was compiled from old source that only handles text statistics. When called with `analyze_logs_go`, it returns:
+**✅ RESOLVED (2026-09-12)**: Go now supports dynamic tool registration via runtime TinyGo compilation. The implementation is complete and tested.
 
-```json
-{"word_count": 0, "char_count": 0, "line_count": 0}
-```
+### How It Works Now
 
-Instead of the expected log analysis metrics:
+Instead of manually rebuilding `tool.wasm`, you can now:
 
-```json
-{
-  "total_lines": 3,
-  "error_count": 1,
-  "warning_count": 1,
-  "info_count": 1,
-  "avg_response_time_ms": 311.5,
-  "slowest_request_ms": 500
-}
-```
-
-## Required Action
-
-### Install TinyGo
-
-TinyGo is required to compile Go to WASI-compatible WASM.
-
-**Windows:**
-```powershell
-# Download installer from https://tinygo.org/getting-started/install/windows/
-# Or use Scoop (if available):
-scoop install tinygo
-```
-
-**Linux:**
-```bash
-# Ubuntu/Debian
-wget https://github.com/tinygo-org/tinygo/releases/download/v0.38.0/tinygo_0.38.0_amd64.deb
-sudo dpkg -i tinygo_0.38.0_amd64.deb
-
-# Verify
-tinygo version
-```
-
-**macOS:**
-```bash
-brew install tinygo
-```
-
-### Rebuild WASM Binary
-
-```bash
-cd bench_tools/tinygo_wasm
-./build.sh
-```
-
-Or manually:
-```bash
-tinygo build -target=wasi -o tool.wasm tool.go
-```
-
-Expected output:
-```
-Built: tool.wasm (909213 bytes)
-```
-
-### Test After Rebuild
-
-Run the E2E tests:
-```bash
-cargo test test_e2e_wasm_call_compiled_runtimes
-```
-
-Or manually test via stdio client:
+1. **Add inline Go source to plugin manifest**:
 ```json
 {
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "analyze_logs_go",
-    "arguments": {
-      "log_lines": [
-        "ERROR: connection failed",
-        "WARN: slow query response_time=500ms",
-        "INFO: request completed response_time=123ms"
-      ]
+  "tools": [{
+    "name": "my_go_tool",
+    "executor": {
+      "language": "go",
+      "source": "func MyTool(args map[string]interface{}) map[string]interface{} { ... }"
     }
-  },
-  "id": 1
+  }]
 }
 ```
 
-Expected response:
-```json
-{
-  "jsonrpc": "2.0",
-  "result": {
-    "content": [{
-      "type": "text",
-      "text": "{\"total_lines\":3,\"error_count\":1,\"warning_count\":1,\"info_count\":1,\"avg_response_time_ms\":311.5,\"slowest_request_ms\":500}"
-    }]
-  },
-  "id": 1
-}
-```
+2. **Load plugin** - Source is automatically compiled on first registration (~500ms-2s)
+
+3. **Call tool** - Executes from cached WASM module (fast)
+
+4. **Change source** - Next call automatically detects change and recompiles
+
+**No manual rebuilds required!** See `docs/DYNAMIC_GO_TOOLS.md` for full details.
 
 ## Comparison with Other WASM Runtimes
 
@@ -158,14 +81,16 @@ Expected response:
 | Python (MicroPython) | Interpreter | ✅ Yes | ✅ Built-in | Source embedded in plugin manifest |
 | Lua | Interpreter | ✅ Yes | ✅ Built-in | Source embedded in plugin manifest |
 | JavaScript (QuickJS) | Interpreter | ✅ Yes | ✅ Built-in | Source embedded in plugin manifest |
-| **Go (TinyGo)** | **AOT Compiled** | **❌ No** | **✅ Requires rebuild** | **Pre-compiled binary, needs TinyGo** |
+| **Go (TinyGo)** | **AOT Compiled** | **✅ Yes (via TinyGo)** | **✅ Automatic** | **Runtime compilation, ~500ms-2s first call** |
 | Rust | AOT Compiled | ❌ No | ✅ Via exports | Pre-compiled binary |
 
-**Key Insight**: Unlike Python/Lua/JS which compile source code at runtime (allowing dynamic tool definitions), Go WASM modules are ahead-of-time compiled. This means:
-- Each tool change requires recompilation
-- The binary is larger (~900KB vs ~50KB for interpreters) due to Go runtime inclusion
-- Performance is generally better than interpreted languages
-- Dynamic dispatch is achieved by passing tool name in payload, not by compiling different source
+**Key Insight**: As of 2026-09-12, Go now supports **runtime compilation via TinyGo**, achieving the same dynamic tool registration capabilities as interpreted languages. The GoWasmRuntime:
+- Compiles inline Go source to WASM when tools are registered (~500ms-2s one-time cost)
+- Caches compiled modules for fast subsequent execution
+- Automatically recompiles when source changes (cache invalidation)
+- Requires TinyGo to be installed on the system
+
+This makes VELOCITY-MCP the first MCP server to support dynamic tools across ALL language types (interpreted AND compiled).
 
 ## Alternative Approaches
 
