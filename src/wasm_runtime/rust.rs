@@ -75,8 +75,17 @@ impl WasmRuntime for RustRuntime {
     }
 
     fn register_tool(&mut self, name: &str, source: &str) -> Result<(), Box<dyn Error>> {
-        // For Rust, "source" is the path to a pre-compiled .wasm file
-        let wasm_bytes = std::fs::read(source)?;
+        // For Rust, "source" can be either:
+        // 1. A file path to a pre-compiled .wasm file
+        // 2. Raw WASM bytes (for direct loading)
+        
+        let wasm_bytes = if std::path::Path::new(source).exists() {
+            std::fs::read(source)?
+        } else {
+            // Treat source as raw WASM bytes (shouldn't happen in normal use)
+            source.as_bytes().to_vec()
+        };
+        
         self.load_tool(name, &wasm_bytes)?;
         self.ensure_instantiated(name)?;
         Ok(())

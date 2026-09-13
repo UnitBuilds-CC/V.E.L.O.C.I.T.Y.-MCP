@@ -2759,12 +2759,12 @@ static Value* tlv_decode_value(TlvParser* parser);
 static Value* tlv_decode_string(TlvParser* parser) {
     uint32_t str_len = read_u32_be(parser);
     if (str_len > TLV_MAX_STRING_LEN) {
-        return value_new_str("TLV string too long");
+        return value_new_string_cstr("TLV string too long");
     }
     if (parser->pos + str_len > parser->len) {
-        return value_new_str("TLV truncated string");
+        return value_new_string_cstr("TLV truncated string");
     }
-    Value* s = value_new_strn((const char*)(parser->data + parser->pos), str_len);
+    Value* s = value_new_string((const char*)(parser->data + parser->pos), str_len);
     parser->pos += str_len;
     return s;
 }
@@ -2779,7 +2779,8 @@ static Value* tlv_decode_array(TlvParser* parser) {
             return arr;  /* Return what we have so far */
         }
         Value* item = tlv_decode_value(parser);
-        array_append(arr, item);
+        array_push(arr, item);
+        value_deref(item);
     }
     return arr;
 }
@@ -2799,19 +2800,26 @@ static Value* tlv_decode_object(TlvParser* parser) {
         if (key_len > TLV_MAX_STRING_LEN || parser->pos + key_len > parser->len) {
             return obj;
         }
-        Value* key = value_new_strn((const char*)(parser->data + parser->pos), key_len);
+        Value* key = value_new_string((const char*)(parser->data + parser->pos), key_len);
         parser->pos += key_len;
         
         /* Read value */
         Value* value = tlv_decode_value(parser);
-        map_set(obj, key, value);
+        
+        /* Convert key to C string for map_set */
+        size_t klen;
+        char *kstr = value_to_string(key, &klen);
+        map_set(obj, kstr, value);
+        free(kstr);
+        value_deref(key);
+        value_deref(value);
     }
     return obj;
 }
 
 static Value* tlv_decode_value(TlvParser* parser) {
     if (parser->depth > TLV_MAX_DEPTH) {
-        return value_new_str("TLV depth exceeded");
+        return value_new_string_cstr("TLV depth exceeded");
     }
     
     uint8_t tag = read_u8(parser);
@@ -2822,7 +2830,7 @@ static Value* tlv_decode_value(TlvParser* parser) {
         
         case TLV_TAG_INT: {
             int64_t val = read_i64_be(parser);
-            return value_new_int(val);
+            return value_new_number((double)val);
         }
         
         case TLV_TAG_BOOL: {
@@ -2843,13 +2851,13 @@ static Value* tlv_decode_value(TlvParser* parser) {
         
         case TLV_TAG_FLOAT: {
             double val = read_f64_be(parser);
-            return value_new_float(val);
+            return value_new_number(val);
         }
         
         default: {
             char buf[64];
             snprintf(buf, sizeof(buf), "Unknown TLV tag: 0x%02x", tag);
-            return value_new_str(buf);
+            return value_new_string_cstr(buf);
         }
     }
 }
@@ -2865,6 +2873,13 @@ int interp_call_tool_binary(const char *tlv_ptr, size_t tlv_len,
     output_reset();
     g_result[0] = '\0';
     g_result_set = 0;
+
+    /* Reset scope to prevent state pollution between calls */
+    scope_free(g_global_scope);
+    arena_reset();
+    g_global_scope = scope_new(NULL);
+    g_current_scope = g_global_scope;
+    register_builtins(g_global_scope);
 
     /* Decode TLV args directly into interpreter Value */
     TlvParser parser = {
@@ -2882,12 +2897,10 @@ int interp_call_tool_binary(const char *tlv_ptr, size_t tlv_len,
     }
 
     /* Bind decoded args to scope variables */
-    MapEntry *entries = args_map->map.entries;
-    for (int i = 0; i < args_map->map.count; i++) {
-        if (entries[i].key && entries[i].value) {
-            if (entries[i].key->type == VAL_STR) {
-                scope_set(g_current_scope, entries[i].key->str_val, entries[i].value);
-            }
+    MapVal *m = args_map->as.map;
+    for (int b = 0; b < m->num_buckets; b++) {
+        for (MapEntry *e = m->buckets[b]; e; e = e->next) {
+            scope_set(g_current_scope, e->key, e->value);
         }
     }
 
@@ -2902,17 +2915,35 @@ int interp_call_tool_binary(const char *tlv_ptr, size_t tlv_len,
         char msg[512];
         snprintf(msg, sizeof(msg), "ERROR: Unknown tool '%s'", func_name);
         output_append(msg, strlen(msg));
+        value_deref(args_map);
         return -1;
     }
 
     /* Call the function with no arguments (args are in scope) */
-    Value *result = eval_call(func, NULL, 0, g_current_scope);
+    g_call_depth++;
+    Value *result = eval_node(func->as.func->body, g_current_scope);
+    g_call_depth--;
+
+    if (g_has_return) {
+        value_deref(result);
+        result = g_return_value ? value_ref(g_return_value) : value_new_null();
+        g_return_value = NULL;
+        g_has_return = 0;
+    }
+
     if (result) {
         /* Convert result to JSON and store */
-        json_serialize(result, g_result, sizeof(g_result));
+        size_t slen;
+        char *serialized = json_serialize(result, &slen);
+        if (slen >= sizeof(g_result)) slen = sizeof(g_result) - 1;
+        memcpy(g_result, serialized, slen);
+        g_result[slen] = '\0';
+        free(serialized);
         g_result_set = 1;
         value_deref(result);
     }
+
+    value_deref(args_map);
 
     if (g_error[0]) {
         output_append(g_error, strlen(g_error));
@@ -2934,6 +2965,13 @@ int interp_call_tool(const char *args_ptr, size_t args_n,
     output_reset();
     g_result[0] = '\0';
     g_result_set = 0;
+
+    /* Reset scope to prevent state pollution between calls */
+    scope_free(g_global_scope);
+    arena_reset();
+    g_global_scope = scope_new(NULL);
+    g_current_scope = g_global_scope;
+    register_builtins(g_global_scope);
 
     /* Parse JSON args and bind to scope variables */
     Value *args_map = json_parse(args_buf, args_len);

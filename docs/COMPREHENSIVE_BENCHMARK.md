@@ -1,12 +1,13 @@
 # Comprehensive WASM + Transport Protocol Benchmark Guide
 
-This guide explains how to run and interpret the comprehensive benchmark suite that measures performance across all 12 WASM language runtimes and transport protocols.
+This guide explains how to run and interpret the comprehensive benchmark suite that measures performance across all 7 production WASM language runtimes (and 6 planned runtimes) and transport protocols.
 
 ## Overview
 
 The `comprehensive_benchmark` binary provides unified performance measurement for:
 
-- **12 WASM Language Runtimes**: QuickJS (JavaScript), TypeScript, MicroPython (Python), Lua, mruby (Ruby), Rust WASI, TinyGo (Go), PHP, C#/.NET, Java/TeaVM, WebR, Julia, Perl
+- **7 Production WASM Language Runtimes**: QuickJS (JavaScript), TypeScript (QuickJS), MicroPython (Python), Lua, mruby (Ruby), Rust WASI, TinyGo (Go)
+- **6 Planned WASM Language Runtimes** (currently toy interpreters): PHP, C#/.NET, Java/TeaVM, R/WebR, Julia, Perl
 - **Transport Protocols**: JSON-RPC stdio, with extensibility for HTTP, NDA shmem, and JSON shmem
 - **Multiple Metrics**: Cold start, hot call latency, cached module reuse, P50/P95/P99 percentiles
 
@@ -25,12 +26,16 @@ cargo bench --release --bench comprehensive_benchmark
 Before running the benchmark, ensure you have:
 
 1. **WASM modules compiled** in `bench_tools/`:
+
+   *Production runtimes:*
    - `quickjs_wasm/quickjs.wasm`
    - `micropython_wasm/wasi-reactor/build/micropython.wasm`
    - `lua_wasm/lua.wasm`
    - `tinygo_wasm/tool.wasm`
    - `ruby_wasm/mruby.wasm`
    - `rust_wasm/tool.wasm`
+
+   *Planned runtimes (toy interpreters):*
    - `php_wasm/php.wasm`
    - `csharp_wasm/dotnet.wasm`
    - `java_wasm/teavm.wasm`
@@ -121,7 +126,7 @@ The benchmark outputs actionable recommendations based on measured data:
 
 **TinyGo (Go)**: Best balance of performance and developer productivity. Excellent concurrency model via goroutines (though limited in WASM). Cached module mode recommended for production.
 
-**PHP/C#/Java/R/Julia/Perl**: Tree-walk interpreters sharing a common C core. Slower than native WASM but provide broad language coverage. Best when you need specific language features not available elsewhere.
+**PHP/C#/Java/R/Julia/Perl** (planned, not production-ready): Tree-walk interpreters sharing a common C core. Currently toy interpreters with hardcoded demo wrappers, not suitable for production workloads. Slower than native WASM and provide only basic language coverage. These are targets for future development toward production readiness.
 
 ### Performance Trade-offs
 

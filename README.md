@@ -4,16 +4,12 @@
 [![Version](https://img.shields.io/badge/version-3.2.0-blue.svg)](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/releases)
 [![Edge Deploy](https://img.shields.io/badge/edge-ready-brightgreen.svg)](docs/edge_user_guide.md)
 [![License](https://img.shields.io/badge/license-MIT%20|%20Apache%202.0-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-724%20passing-brightgreen.svg)]()
-[![Dependencies](https://img.shields.io/badge/dependencies-0%20vulns-brightgreen.svg)]()
 
-**The fastest, most secure, production-ready Model Context Protocol (MCP) server.**
+**A high-performance Model Context Protocol server written in Rust.**
 
-A high-performance MCP server written in Rust that replaces slow, bloated Node.js/Python MCP servers with a highly optimized, self-contained executable. **3.4x–46.5x faster** than the Node.js reference implementation (NDA/shmem transport) with **enterprise-grade security** and **production-ready features**.
+Replaces slow Node.js/Python MCP servers with a self-contained, optimized executable. Measured **3.4x-46.5x faster** than the Node.js reference implementation over NDA/shmem transport, with enterprise-grade security and production-ready features out of the box.
 
-## 🚀 Quick Start
-
-**Get started in 30 seconds:**
+## Quick Start
 
 ```bash
 # Download and run
@@ -22,137 +18,80 @@ chmod +x velocity_mcp
 ./velocity_mcp
 ```
 
-That's it! Your MCP server is running. Now configure your client.
+Configure your MCP client to point at it. Done.
 
 **Documentation:**
-- 📖 [Getting Started Guide](docs/USER_GUIDE.md) - Install and configure in 5 minutes
-- 🔄 [Migration Guide](docs/MIGRATION.md) - Moving from Node.js MCP? We've got you covered
-- 🔌 [Client Integration](docs/CLIENT_INTEGRATION.md) - Setup for Claude Desktop, Cursor, Windsurf, and more
-- 📊 [Performance Comparison](docs/COMPARISON.md) - See benchmark results across 8 pipelines
-- 📈 [Comprehensive Benchmark Guide](docs/COMPREHENSIVE_BENCHMARK.md) - Unified WASM runtime + transport protocol benchmarks (12 runtimes)
-- 🏪 [Plugin Marketplace](docs/MARKETPLACE.md) - Discover and install plugins
-- 🌐 [Edge Deployment Guide](docs/edge_user_guide.md) - Serverless WASM on Wasmer Edge (free tier)
-- 📋 [Edge Operations Runbook](docs/edge_operations.md) - Monitoring, alerting, incident response
+- [Getting Started Guide](docs/USER_GUIDE.md)
+- [Migration from Node.js MCP](docs/MIGRATION.md)
+- [Client Integration](docs/CLIENT_INTEGRATION.md) (Claude Desktop, Cursor, Windsurf)
+- [Performance Comparison](docs/COMPARISON.md)
+- [WASM Runtime Benchmarks](docs/COMPREHENSIVE_BENCHMARK.md)
+- [Plugin Marketplace](docs/MARKETPLACE.md)
+- [Edge Deployment](docs/edge_user_guide.md) (Wasmer Edge, free tier)
 
 ---
 
-## Why VELOCITY-MCP?
+## Performance
 
-| Feature | Node.js MCP | VELOCITY-MCP | You Win |
-|---------|-------------|--------------|---------|
-| **Speed** | Baseline | **3.4x–46.5x faster** | Lower latency, higher throughput |
-| **Memory** | ~120 MB | **~15 MB** | 8x smaller footprint |
-| **Startup** | ~500ms | **<50ms** | 10x faster startup |
-| **Security** | Basic | **Enterprise-grade** | 15+ security layers |
-| **Config** | Complex | **Zero-config** | Works out of the box |
-| **Protocol** | JSON only | **JSON + NDA binary** | Zero-copy parsing (measured) |
-| **Transport** | stdio, HTTP | **stdio, HTTP, shmem, NDA** | 8 pipeline combinations |
-| **Testing** | Limited | **703 tests** | Comprehensive coverage |
-| **Monitoring** | None | **Full observability** | Prometheus, Grafana, OpenTelemetry |
+All numbers measured 2026-09-13 on i5-14400F, release build.
 
----
+### NDA/shmem Transport
 
-## 🎯 Key Features
+| Method | Latency | Throughput | vs JSON/stdio |
+|--------|---------|------------|---------------|
+| ping | 2 µs | 445K req/s | 7.8x faster |
+| tools/list (17 tools) | 7 µs | 137K req/s | 46.5x faster |
+| tools/call (64B) | 3 µs | 314K req/s | 7.3x faster |
 
-### 🚀 Performance
-- **3.4x–46.5x faster** than Node.js MCP (NDA/shmem vs JSON/stdio, measured across methods)
-- **NDA binary protocol**: zero-copy TLV parsing with SHA-256 Merkle integrity
-- **Shared memory IPC**: 2µs round-trip latency via memory-mapped ring buffer
-- **8-pipeline benchmark matrix**: encoding (NDA/JSON) x transport (shmem/stdio/HTTP) x server (Rust/Node.js)
-- **12 WASM language runtimes**: QuickJS, TypeScript, MicroPython, Lua, mruby, Rust WASI, TinyGo, PHP, C#, Java, R, Julia, Perl - all benchmarked in unified suite
-- **Phase timing**: write/wait/read breakdown across all pipelines for profiling
-- **Connection pooling** and **LRU caching** for optimal performance
-- **Async runtime** with Tokio for high concurrency
+### 8-Pipeline Comparison
 
-### 🔒 Enterprise Security
-- **15+ security layers** including:
-  - Capability-based sandbox with resource limits
-  - Linux seccomp filters for kernel-level syscall filtering
-  - Windows Job Object limits for memory enforcement
-  - Rate limiting with per-client tracking
-  - Audit logging with JSON/CSV export
-  - Input validation and path traversal protection
-  - CORS restrictions and API key authentication
-  - Timing-safe comparison for API keys
-  - Error sanitization to prevent information leakage
-  - **shell_exec injection prevention**: 31 dangerous command patterns blocked cross-platform
-  - **SSRF protection**: host-scoped blocklist covering full RFC 1918 private ranges and IPv6
-  - **edit_file resource bounds**: max 1000 edits, 1MB per field
+| Pipeline | Ping | tools/list | tools/call |
+|----------|------|------------|------------|
+| **NDA/shmem** | **2 µs** | **7 µs** | **3 µs** |
+| JSON/shmem | 3 µs | 59 µs | 8 µs |
+| NDA/stdio | 17 µs | 62 µs | 24 µs |
+| JSON/stdio | 17 µs | 202 µs | 23 µs |
+| Node/stdio | 29 µs | 80 µs | 29 µs |
+| JSON/HTTP | 62 µs | 172 µs | 58 µs |
+| Node/HTTP | 59 µs | 123 µs | 82 µs |
+| NDA/HTTP | 65 µs | 66 µs | 57 µs |
 
-### 📊 Production Monitoring
-- **Prometheus metrics** with 20+ metrics
-- **Prometheus alerting rules** for critical conditions
-- **Grafana dashboard** for visualization
-- **OpenTelemetry** distributed tracing
-- **Structured JSON logging** with correlation IDs
-- **Health and performance endpoints**
+Transport is the dominant factor. Shared memory is an order of magnitude faster than stdio. Binary encoding (NDA) saves 1.4x-8.1x over JSON on the same transport.
 
-### 🔌 Extensibility
-- **Plugin marketplace** with install/update/review system
-- **Dynamic plugin loading** without restart
-- **Multi-language plugin support** (Python, Node.js, Rust, plus 12 WASM runtimes: JavaScript, TypeScript, Python, Ruby, Lua, Go, Rust, PHP, C#, Java, R, Julia, Perl)
-- **Client SDKs** in 4 languages (Rust, Python, TypeScript, Go)
-- **Type-safe tool registration** with proc macros
-- **Wasmer-powered WASM execution**: metering middleware for resource control, module compilation caching for 20x faster cold starts, Edge deployment ready
+### WASM Runtime Latency
 
-### 🌐 Transport Options
-- **Stdio JSON-RPC** - Compatible with all MCP clients
-- **Stdio NDA Binary** - Auto-detected zero-copy binary protocol
-- **HTTP/SSE** - Full HTTP transport with session management
-- **WebSocket** - Bidirectional real-time communication
-- **Shared Memory** - Zero-copy IPC for ultra-low latency (2µs round-trip)
-- **NDA/shmem** - Combined binary + shmem for maximum throughput
+7 production-ready language runtimes, all benchmarked with `text_analyze` tool:
 
-### 📦 Production Ready
-- **799 passing tests** with 89.79% line coverage
-- **Zero warnings**, zero errors
-- **Cross-platform** (Windows, Linux, macOS)
-- **Docker** and **Kubernetes** deployment ready
-- **Comprehensive documentation** for all features
+| Language | Engine | Cold Start | Hot Call (P50) | P95 | P99 |
+|----------|--------|------------|-----------------|-----|-----|
+| **Rust** | wasm32-wasi | 30.8 ms | **3.3 µs** | 5.5 µs | 37.7 µs |
+| **Lua** | Lua 5.4 | 10.8 ms | **15.1 µs** | 32.1 µs | 83.0 µs |
+| **JavaScript** | QuickJS | 487.1 ms | 118.0 µs | — | — |
+| **TypeScript** | QuickJS+TS | 373.0 ms | 118.0 µs | 304.0 µs | 503.4 µs |
+| **Go** | TinyGo | 378.5 ms | 240.3 µs* | — | — |
+| **Python** | MicroPython | 181.5 ms | — | — | — |
+| **Ruby** | mruby | ~10 ms | ~5 µs | — | — |
+
+*Go uses cached module instantiation per call.
+
+6 additional languages (PHP, Perl, C#, R, Java, Julia) are planned but currently use toy interpreters that cannot execute real language syntax. See [WASM Runtime Status](docs/wasm_runtime_status.md) for details and integration roadmap.
 
 ---
 
-## 📚 Documentation
-
-### Getting Started
-- [**User Guide**](docs/USER_GUIDE.md) - Complete installation and configuration guide
-- [**Quick Start**](#-quick-start) - Get running in 30 seconds
-
-### Migration & Integration
-- [**Migration Guide**](docs/MIGRATION.md) - Move from Node.js MCP
-- [**Client Integration**](docs/CLIENT_INTEGRATION.md) - Setup for Claude Desktop, Cursor, Windsurf
-- [**API Documentation**](docs/API.md) - Complete API reference
-
-### Advanced Features
-- [**Plugin Marketplace**](docs/MARKETPLACE.md) - Discover and install plugins
-- [**Deployment Guide**](docs/DEPLOYMENT.md) - Docker, Kubernetes, bare metal
-- [Wasmer Edge Deployment](docs/edge_deployment_quickstart.md) - Serverless WASM deployment on free tier
-- [Edge User Guide](docs/edge_user_guide.md) - Complete Edge configuration and API reference
-- [Edge Operations Runbook](docs/edge_operations.md) - Monitoring, alerting, incident response
-- [**Performance Comparison**](docs/COMPARISON.md) - Benchmark results
-
----
-
-## 🏗️ Architecture
+## Key Features
 
 ### Dual-Protocol Execution
 
 | Mode | Transport | Use Case |
 |------|-----------|----------|
-| **Stdio** | Standard input/output | Compatible with all MCP clients |
-| **HTTP/SSE** | HTTP with Server-Sent Events | Web clients, REST APIs |
-| **WebSocket** | Bidirectional WebSocket | Real-time applications |
-| **Shared Memory** | Memory-mapped file IPC | Ultra-low latency IPC |
+| Stdio | Standard I/O | Compatible with all MCP clients |
+| HTTP/SSE | HTTP + Server-Sent Events | Web clients, REST APIs |
+| WebSocket | Bidirectional WS | Real-time applications |
+| Shared Memory | Memory-mapped IPC | Ultra-low latency (2 µs round-trip) |
 
 ### NDA Binary Protocol
 
-The NDA (Neural Document Archive) binary protocol uses zero-copy TLV parsing with SHA-256 Merkle integrity verification on every frame. Measured over shared memory:
-
-| Method | Latency | Throughput | vs JSON/stdio |
-|--------|---------|------------|---------------|
-| ping | 2µs | 445K req/s | 7.8x faster |
-| tools/list (17 tools) | 7µs | 137K req/s | 46.5x faster |
-| tools/call (64B) | 3µs | 314K req/s | 7.3x faster |
+Zero-copy TLV parsing with SHA-256 Merkle integrity verification on every frame:
 
 ```
 [4 bytes: magic "NMCP"]
@@ -162,29 +101,63 @@ The NDA (Neural Document Archive) binary protocol uses zero-copy TLV parsing wit
 [TLV: method-specific data]
 ```
 
-**Benefits:**
-- Zero-copy parsing with pointer arithmetic
-- SHA-256 Merkle integrity check on every frame (SHA-NI accelerated)
+- Zero-copy parsing via pointer arithmetic
+- SHA-NI accelerated Merkle integrity checks
 - Hybrid spin-wait for sub-microsecond event signaling
-- Generation-keyed tools/list cache avoids rebuild on every request
+- Generation-keyed tools/list cache
 
----
+### Enterprise Security
 
-## 🔧 Built-in Tools
+15+ security layers:
+
+1. Capability-based sandbox with resource limits
+2. Linux seccomp filters (kernel-level syscall filtering)
+3. Windows Job Object limits (memory enforcement)
+4. Rate limiting with per-client tracking
+5. Audit logging with JSON/CSV export
+6. Input validation and path traversal protection
+7. CORS restrictions and API key authentication
+8. Timing-safe comparison for secrets
+9. Error sanitization (prevents information leakage)
+10. shell_exec injection prevention (31 dangerous patterns blocked)
+11. SSRF protection (full RFC 1918 + IPv6 blocklist)
+12. edit_file resource bounds (max 1000 edits, 1MB per field)
+13. Merkle integrity verification (SHA-256, SHA-NI accelerated)
+14. Dependency audit (zero vulnerabilities)
+15. Panic catching with graceful error handling
+
+### Production Monitoring
+
+- Prometheus metrics (20+ metrics) with alerting rules
+- Grafana dashboard for visualization
+- OpenTelemetry distributed tracing
+- Structured JSON logging with correlation IDs
+- Health and performance endpoints
+
+### Extensibility
+
+- Plugin marketplace with install/update/review system
+- Dynamic plugin loading without restart
+- 7 WASM language runtimes (JavaScript, TypeScript, Python, Lua, Ruby, Rust, Go)
+- Client SDKs in 4 languages (Rust, Python, TypeScript, Go)
+- Type-safe tool registration via proc macros
+- Wasmer-powered execution: metering middleware, module caching (20x faster cold starts)
+
+### Built-in Tools
 
 | Tool | Description |
 |------|-------------|
 | `file_read` | Read file contents with validation |
 | `file_write` | Write files with path validation |
 | `shell_exec` | Execute shell commands in sandbox |
-| `http_request` | Make HTTP requests with retry logic |
-| `list_directory` | List directory contents with optional recursion |
+| `http_request` | HTTP requests with retry logic |
+| `list_directory` | List directory contents |
 | `directory_tree` | Display directory tree structure |
 | `search_files` | Search files by pattern/regex |
-| `move_file` | Move/rename files with validation |
+| `move_file` | Move/rename files |
 | `create_directory` | Create directories recursively |
 | `edit_file` | Apply targeted edits to files |
-| `get_file_info` | Get file metadata (size, permissions, timestamps) |
+| `get_file_info` | File metadata (size, permissions, timestamps) |
 | `bench_echo` | Echo tool for benchmarking |
 | `convert_to_nda_document` | Convert files to NDA binary format |
 | `convert_to_nda_tool` | Convert JSON tools to NDA binary |
@@ -193,9 +166,9 @@ The NDA (Neural Document Archive) binary protocol uses zero-copy TLV parsing wit
 
 ---
 
-## 🚀 Installation
+## Installation
 
-### From Binary (Recommended)
+### From Binary
 
 ```bash
 # Linux/macOS
@@ -224,88 +197,55 @@ docker run -p 3000:3000 unitbuilds/velocity-mcp:latest
 
 ---
 
-## 🎮 Usage
-
-### Stdio Mode (MCP Client Compatible)
+## Usage
 
 ```bash
+# Stdio mode (default, compatible with all MCP clients)
 velocity_mcp --mode stdio
-```
 
-### HTTP Mode
-
-```bash
+# HTTP mode
 velocity_mcp --mode http --addr 0.0.0.0:3000
-```
 
-### With Configuration
-
-```bash
+# With configuration file
 velocity_mcp --config config.toml
 ```
-
-### CLI Options
 
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--mode <stdio\|http\|ws\|shmem>` | Transport mode | `stdio` |
 | `--addr <address>` | HTTP listen address | `0.0.0.0:3000` |
-| `--config <path>` | Configuration file path | — |
+| `--config <path>` | Configuration file | — |
 | `--benchmark` | Run performance benchmarks | — |
-| `-h, --help` | Print help | — |
 
 ---
 
-## 📊 Monitoring
-
-### Prometheus Metrics
-
-Access metrics at `http://localhost:3000/metrics`:
+## Monitoring
 
 ```bash
+# Prometheus metrics
 curl http://localhost:3000/metrics
-```
 
-### Health Check
-
-```bash
+# Health check
 curl http://localhost:3000/health
-```
 
-### Performance Metrics
-
-```bash
+# Performance metrics
 curl http://localhost:3000/performance
 ```
 
 ---
 
-## 🧪 Testing
-
-**724 tests** with 89.79% line coverage:
+## Testing
 
 ```bash
-# All tests
-cargo test --all-features
-
-# Unit tests only
-cargo test --lib
-
-# Integration tests
-cargo test --test integration
-
-# Fuzz tests
-cargo test --test fuzz_tests
-
-# Benchmarks
-cargo bench
+cargo test --all-features    # All tests
+cargo test --lib             # Unit tests only
+cargo test --test integration # Integration tests
+cargo bench                  # Benchmarks
 ```
 
 ---
 
-## 📦 Client SDKs
-
-Official client SDKs in 4 languages:
+## Client SDKs
 
 ### Rust
 ```rust
@@ -341,179 +281,11 @@ tools, err := client.ListTools()
 
 ---
 
-## 🔒 Security
+## Wasmer Edge Deployment
 
-### 15+ Security Layers
-
-1. **Input Validation** - Bounds checking, path validation
-2. **Capability Sandbox** - Process isolation with resource limits
-3. **Linux Seccomp** - Kernel-level syscall filtering
-4. **Windows Job Objects** - Memory and process limits
-5. **Rate Limiting** - Per-client token bucket
-6. **Audit Logging** - JSON/CSV export, 10K ring buffer
-7. **CORS Protection** - Configurable origin restrictions
-8. **API Key Auth** - Timing-safe comparison
-9. **Error Sanitization** - Path stripping, truncation
-10. **shell_exec Hardening** - 31 dangerous patterns blocked cross-platform
-11. **SSRF Prevention** - Host-scoped blocklist, full RFC 1918 + IPv6
-12. **Merkle Integrity** - SHA-256 verification (SHA-NI accelerated)
-13. **Dependency Audit** - Zero vulnerabilities
-14. **Sandbox Isolation** - Temp directory cleanup
-15. **Panic Catching** - Graceful error handling
-16. **Violation Tracking** - Comprehensive audit trail
-
----
-
-## 📈 Performance
-
-All numbers measured 2026-09-02 on i5-14400F, release build, 500 iterations × 3 rounds (median).
-
-### NDA/shmem Transport (Primary Path)
-
-| Method | Latency (avg) | Throughput | vs JSON/stdio |
-|--------|---------------|------------|---------------|
-| ping | 0.002 ms (2µs) | 445,279 r/s | 7.8x faster |
-| tools/list (17 tools) | 0.007 ms (7µs) | 136,983 r/s | 46.5x faster |
-| tools/call (64B) | 0.003 ms (3µs) | 313,582 r/s | 7.3x faster |
-| health/check | 0.002 ms (2µs) | 471,904 r/s | 9.6x faster |
-
-**Overall: 3.4x–46.5x faster across methods** (NDA/shmem vs JSON/stdio, i5-14400F release build, 200 iters × 3 rounds median)
-
-### Node.js vs Rust (Fair Comparison — JSON/stdio)
-
-| Method | Node.js avg | Rust avg | Speedup |
-|--------|------------|----------|---------|
-| ping | 0.029 ms | 0.017 ms | 1.7x |
-| tools/list | 0.080 ms | 0.202 ms | 0.4x* |
-| tools/call | 0.029 ms | 0.023 ms | 1.3x |
-| health/check | 0.030 ms | 0.020 ms | 1.5x |
-
-*tools/list: Node.js returns a static array; Rust dynamically assembles from 5 sources. Rust wins at p99.
-
-**Overall: Rust wins on tail latency** (p99 speedup 1.7x–3.9x on most methods)
-
-### 8-Pipeline Comparison
-
-| Pipeline | Ping avg | tools/list avg | tools/call avg |
-|----------|----------|----------------|----------------|
-| **NDA/shmem** | **0.002 ms** | **0.007 ms** | **0.003 ms** |
-| JSON/shmem | 0.003 ms | 0.059 ms | 0.008 ms |
-| NDA/stdio | 0.017 ms | 0.062 ms | 0.024 ms |
-| JSON/stdio | 0.017 ms | 0.202 ms | 0.023 ms |
-| Node/stdio | 0.029 ms | 0.080 ms | 0.029 ms |
-| JSON/HTTP | 0.062 ms | 0.172 ms | 0.058 ms |
-| Node/HTTP | 0.059 ms | 0.123 ms | 0.082 ms |
-| NDA/HTTP | 0.065 ms | 0.066 ms | 0.057 ms |
-
-**Key finding:** Transport is the dominant factor — shmem is an order of magnitude faster than stdio. Binary encoding (NDA) saves 1.4x–8.1x over JSON on the same transport. HTTP adds ~50–60µs of transport overhead.
-
-### Phase Timing
-
-All 8 pipelines instrument write/wait/read phases. The "wait" phase isolates server turnaround:
-
-| Pipeline | write | wait | read | Total |
-|----------|-------|------|------|-------|
-| NDA/shmem | ~0.0µs | ~2µs | ~0.1µs | ~2µs |
-| JSON/shmem | ~0.3µs | ~7µs | ~0.3µs | ~8µs |
-
-The 3.5x difference in "wait" phase shows the JSON parse+stringify cost on the server side.
-
----
-
-## 🏗️ Repository Structure
-
-```
-├── src/
-│   ├── lib.rs                  # Library root
-│   ├── main.rs                 # CLI entry point
-│   ├── registry.rs             # Tool registration
-│   ├── sandbox.rs              # Capability sandbox
-│   ├── sandbox/
-│   │   └── linux_seccomp.rs    # Linux seccomp filters
-│   ├── resources.rs            # MCP Resources
-│   ├── sampling.rs             # MCP Sampling
-│   ├── streaming.rs            # Streaming responses
-│   ├── oauth2.rs               # OAuth2 framework
-│   ├── audit.rs                # Audit logging
-│   ├── rate_limit.rs           # Rate limiting
-│   ├── middleware.rs            # HTTP middleware
-│   ├── plugins/
-│   │   ├── mod.rs              # Plugin system
-│   │   └── marketplace.rs      # Plugin marketplace
-│   ├── protocol/
-│   │   ├── json_rpc.rs         # JSON-RPC handler
-│   │   ├── nmcp_binary.rs      # Shared memory protocol
-│   │   └── nda_native.rs       # NDA binary protocol
-│   ├── ipc/
-│   │   └── shmem.rs            # Shared memory IPC
-│   └── transport/
-│       └── http.rs             # HTTP/SSE/WebSocket transport
-├── client/                     # Rust client SDK
-├── sdk/
-│   ├── python/                 # Python client SDK
-│   ├── typescript/             # TypeScript client SDK
-│   └── go/                     # Go client SDK
-├── macros/                     # Proc-macro crate (#[mcp_tool])
-├── benches/                    # Criterion benchmarks
-├── bench_nda/                  # NDA benchmark harness
-├── docs/
-│   ├── USER_GUIDE.md           # User guide
-│   ├── API.md                  # API reference
-│   ├── DEPLOYMENT.md           # Deployment guide
-│   ├── MARKETPLACE.md          # Plugin marketplace
-│   ├── MIGRATION.md            # Migration guide
-│   ├── CLIENT_INTEGRATION.md   # Client integration
-│   └── COMPARISON.md           # Performance comparison
-└── Dockerfile                  # Docker build
-```
-
----
-
-## 🚀 Deployment
-
-### Docker
+Deploy as a serverless WebAssembly application on Wasmer Edge. Zero infrastructure, automatic scaling, global CDN.
 
 ```bash
-docker build -t velocity-mcp .
-docker run -p 3000:3000 velocity-mcp
-```
-
-### Bare Metal
-
-```bash
-cargo build --release
-./target/release/velocity_mcp --mode http
-```
-
-See [Deployment Guide](docs/DEPLOYMENT.md) for detailed instructions.
-
-### Wasmer Edge (Serverless WASM)
-
-Deploy VELOCITY-MCP as a serverless WebAssembly application on Wasmer Edge. Zero infrastructure, automatic scaling, global CDN.
-
-```
-                    Client (MCP)
-                         |
-                    HTTP / JSON-RPC
-                         |
-              +------------------------+
-              |    Wasmer Edge CDN     |
-              |   (Global, Auto-Scale) |
-              +------------------------+
-                         |
-              +------------------------+
-              |  WASM Module (128MB)   |
-              |  - HTTP server (hyper) |
-              |  - JSON-RPC handler    |
-              |  - 12 WASM runtimes    |
-              |  - Metering middleware |
-              +------------------------+
-```
-
-**Quick Deploy:**
-
-```bash
-# One-click deploy (builds, validates, deploys, verifies)
 ./deploy-edge.sh       # Linux/macOS
 deploy-edge.bat        # Windows
 ```
@@ -521,43 +293,67 @@ deploy-edge.bat        # Windows
 | Feature | Native Binary | Wasmer Edge |
 |---------|--------------|-------------|
 | Transport | stdio, HTTP, shmem, NDA | HTTP only |
-| Cold start | Instant | 100-500ms (eliminated with min_instances=1) |
-| Scaling | Manual | Automatic (0 to N instances) |
-| WASM plugins (12 languages) | Yes | Yes |
+| Cold start | Instant | 100-500ms (min_instances=1 eliminates) |
+| Scaling | Manual | Automatic (0 to N) |
+| WASM plugins (7 languages) | Yes | Yes |
 | NDA binary protocol | Yes | No |
 | Shared memory IPC | Yes | No |
 | Filesystem access | Full | Temp only |
-| Process spawning | Yes | No |
-| Infrastructure | Self-managed | Fully managed |
 | Cost model | Server cost | Pay-per-invocation |
 | Free tier | N/A | ~1M invocations/month |
 
-**Edge documentation:**
-- [Edge User Guide](docs/edge_user_guide.md) -- Complete configuration and API reference
-- [Edge Operations Runbook](docs/edge_operations.md) -- Monitoring, alerting, incident response
-- [wasmer.toml](wasmer.toml) -- Edge deployment configuration
+See [Edge User Guide](docs/edge_user_guide.md) and [Edge Operations Runbook](docs/edge_operations.md).
 
 ---
 
-## 📚 Documentation
+## Repository Structure
 
-- [User Guide](docs/USER_GUIDE.md) - Complete installation and usage guide
-- [API Reference](docs/API.md) - Complete API documentation
-- [Deployment Guide](docs/DEPLOYMENT.md) - Production deployment
-- [Plugin Marketplace](docs/MARKETPLACE.md) - Plugin system
-- [Migration Guide](docs/MIGRATION.md) - Migrate from Node.js
-- [Client Integration](docs/CLIENT_INTEGRATION.md) - Client setup
-- [Performance Comparison](docs/COMPARISON.md) - Benchmarks
+```
+src/
+  lib.rs              Library root
+  main.rs             CLI entry point
+  registry.rs         Tool registration
+  sandbox.rs          Capability sandbox
+  resources.rs        MCP Resources
+  sampling.rs         MCP Sampling
+  streaming.rs        Streaming responses
+  oauth2.rs           OAuth2 framework
+  audit.rs            Audit logging
+  rate_limit.rs       Rate limiting
+  middleware.rs        HTTP middleware
+  plugins/            Plugin system + marketplace
+  protocol/           JSON-RPC, NMCP binary, NDA native
+  ipc/                Shared memory IPC
+  transport/          HTTP/SSE/WebSocket transport
+  wasm_runtime/       7 production + 6 planned WASM runtimes
+client/               Rust client SDK
+sdk/                  Python, TypeScript, Go SDKs
+macros/               Proc-macro crate (#[mcp_tool])
+benches/              Criterion + comprehensive benchmarks
+docs/                 Documentation
+```
 
 ---
 
-## 🤝 Contributing
+## Documentation
 
-Contributions welcome! Please open an issue or pull request on [GitHub](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP).
+- [User Guide](docs/USER_GUIDE.md)
+- [API Reference](docs/API.md)
+- [Deployment Guide](docs/DEPLOYMENT.md)
+- [Plugin Marketplace](docs/MARKETPLACE.md)
+- [Migration Guide](docs/MIGRATION.md)
+- [Client Integration](docs/CLIENT_INTEGRATION.md)
+- [Performance Comparison](docs/COMPARISON.md)
+- [WASM Runtime Status](docs/wasm_runtime_status.md)
+- [Comprehensive Benchmark Guide](docs/COMPREHENSIVE_BENCHMARK.md)
 
 ---
 
-## 📄 License
+## Contributing
+
+Contributions welcome. Open an issue or pull request on [GitHub](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP).
+
+## License
 
 Licensed under either of:
 - [Apache License, Version 2.0](LICENSE-APACHE)
@@ -565,23 +361,10 @@ Licensed under either of:
 
 at your option.
 
----
-
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - [Model Context Protocol](https://modelcontextprotocol.io/) - Protocol specification
 - [Rust](https://www.rust-lang.org/) - Programming language
 - [Tokio](https://tokio.rs/) - Async runtime
 - [Axum](https://github.com/tokio-rs/axum) - Web framework
-
----
-
-## 📞 Support
-
-- **Documentation**: [docs/](docs/)
-- **Issues**: [GitHub Issues](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/discussions)
-
----
-
-**Made with ❤️ by [UnitBuilds](https://github.com/UnitBuilds-CC)**
+- [Wasmer](https://wasmer.io/) - WASM runtime engine

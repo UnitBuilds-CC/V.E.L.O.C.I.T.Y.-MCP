@@ -125,7 +125,7 @@ That is it. Your VELOCITY-MCP server is running on Wasmer Edge.
 | HTTP/SSE transport | Yes | Yes |
 | JSON-RPC over HTTP | Yes | Yes |
 | Pure-Rust edge tools (10 built-in) | Yes | No |
-| WASM plugin runtimes (12 languages) | No | Yes |
+| WASM plugin runtimes (7 production + 6 planned) | No | Yes |
 | Metering/instruction counting | No | Yes |
 | Module compilation caching | No | Yes |
 | NDA binary protocol | No | Yes |
@@ -502,7 +502,7 @@ The WASM edge deployment uses 10 pure-Rust tools that compile to WebAssembly wit
 
 ### Native Deployment: Full WASM Language Runtime Support
 
-The native build supports all 12 WASM language runtimes (QuickJS, MicroPython, Lua, mruby, TinyGo, Rust, PHP, C#, Java, R, Julia, Perl) via the Wasmer runtime with metering and caching. See the main README for details.
+The native build supports 7 production WASM language runtimes (QuickJS/JavaScript, QuickJS/TypeScript, MicroPython/Python, Lua, mruby/Ruby, TinyGo/Go, Rust/WASI) and 6 planned runtimes currently implemented as toy interpreters (PHP, C#, Java, R, Julia, Perl) via the Wasmer runtime with metering and caching. See the main README for details.
 
 ---
 

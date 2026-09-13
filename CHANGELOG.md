@@ -63,6 +63,7 @@ Existing native deployments continue to work without modification. The `velocity
 - **NDA dispatch consolidation**: Unified NDA request handling by having `json_rpc::handle_nda_frame` delegate to `nmcp_binary::dispatch_nda_request`, eliminating ~90 lines of duplicated method dispatch logic (PING, INITIALIZE, TOOLS_LIST, TOOLS_CALL, etc.). Error frames properly constructed for parse failures instead of propagating Err.
 - **WASM factory centralization**: Moved runtime creation logic from `plugins/mod.rs` to `wasm_runtime::create_wasm_runtime_for_language()`, providing single point of truth for all 12 language runtime instantiations. Reduced plugins/mod.rs factory from ~40 lines to 7-line wrapper.
 - **Plugin module restructuring**: Began splitting 1529-line `plugins/mod.rs` into focused modules. Created `plugins/manifest.rs` with PluginManifest, PluginTool, PluginExecutor data structures as first extraction step.
+- **WASM runtime classification update**: Documentation now accurately distinguishes 7 production-ready WASM runtimes (JavaScript/QuickJS, TypeScript, Python/MicroPython, Lua, Ruby/mruby, Rust/WASI, Go/TinyGo) from 6 planned runtimes currently implemented as toy interpreters (PHP, Perl, C#, R, Java, Julia). Historical changelog entries referencing "12 runtimes" are preserved as-is for accuracy of the historical record.
 
 ### Security
 

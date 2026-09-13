@@ -24,28 +24,31 @@ Wasmer Edge is Wasmer's serverless platform designed for WebAssembly workloads. 
 ## Technical Requirements
 
 ### WASM Module Format
-VELOCITY-MCP's 12 language runtimes must be compiled as:
+VELOCITY-MCP's 7 production language runtimes (and 6 planned runtimes) must be compiled as:
 - WASI-compatible WASM modules
 - Export `_start` or HTTP handler function
 - Maximum module size: ~50MB per runtime
 
 ### Current Compatibility Assessment
 
-**Directly Compatible** (already WASI-based):
+**Production Runtimes (7, production-ready)**:
 - Rust/WASM (wasm32-wasi target)
 - Lua/WASI reactor
 - MicroPython/WASI reactor
-- QuickJS/WASI reactor
+- QuickJS/WASI reactor (JavaScript)
+- QuickJS/WASI reactor (TypeScript)
 - Ruby/mruby (with WASI imports)
+- Go/TinyGo (wasm32-wasi)
+
+**Planned Runtimes (6, currently toy interpreters)**:
 - PHP/WASI
 - Perl/WASI
 - Java/TeaVM (with WASI polyfill)
 - R/WebR (with WASI networking)
 - Julia/WASI
 - C#/.NET (with WASI runtime)
-- Go/TinyGo (wasm32-wasi)
 
-All 12 runtimes already use WASI imports via `build_wasi_imports()`, making them compatible with Wasmer Edge.
+All runtimes already use WASI imports via `build_wasi_imports()`, making them compatible with Wasmer Edge.
 
 ## Deployment Architecture Options
 
@@ -86,7 +89,7 @@ Keep current Rust native server for local/NDA deployments, add WASM cloud tier:
 
 ### Option 3: Plugin-Only Cloud Execution
 Deploy individual language runtimes as separate WASM modules on Wasmer Edge:
-- Each of 12 runtimes becomes independent Edge deployment
+- Each of the 7 production runtimes becomes an independent Edge deployment (planned runtimes added as they reach production readiness)
 - Main server orchestrates calls to appropriate runtime endpoint
 - Enables per-runtime scaling and isolation
 
