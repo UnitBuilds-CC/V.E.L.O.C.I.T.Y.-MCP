@@ -697,15 +697,19 @@ pub fn sanitize_error(msg: &str) -> String {
     let mut sanitized = truncated;
 
     // Compile regexes once using LazyLock for efficiency and safety
-    static RE_WINDOWS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r#"[A-Z]:\\[^\s:,;"')\]]+"#).expect("Windows path regex is valid")
+    static RE_WINDOWS: std::sync::LazyLock<Option<regex::Regex>> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"[A-Z]:\\[^\s:,;"')\]]+"#).ok()
     });
-    static RE_UNIX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r#"/(?:home|tmp|var|usr|etc)/[^\s:,;"')\]]+"#).expect("Unix path regex is valid")
+    static RE_UNIX: std::sync::LazyLock<Option<regex::Regex>> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"/(?:home|tmp|var|usr|etc)/[^\s:,;"')\]]+"#).ok()
     });
 
-    sanitized = RE_WINDOWS.replace_all(&sanitized, "<path>").to_string();
-    sanitized = RE_UNIX.replace_all(&sanitized, "<path>").to_string();
+    if let Some(ref re) = *RE_WINDOWS {
+        sanitized = re.replace_all(&sanitized, "<path>").to_string();
+    }
+    if let Some(ref re) = *RE_UNIX {
+        sanitized = re.replace_all(&sanitized, "<path>").to_string();
+    }
 
     sanitized
 }
