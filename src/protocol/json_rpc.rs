@@ -543,8 +543,9 @@ fn run_stdio_json_mode(stdin_lock: std::io::StdinLock<'_>, initial_bytes: &[u8],
         let stdin = io::stdin();
         let mut handle = stdin.lock();
         let mut first_line = true;
+        let mut line = String::with_capacity(4096); // Reuse buffer across iterations
         loop {
-            let mut line = String::new();
+            line.clear();
             let mut limited = (&mut handle).take(MAX_REQUEST_SIZE as u64 + 1);
             match limited.read_line(&mut line) {
                 Ok(0) => break, // EOF
@@ -556,7 +557,7 @@ fn run_stdio_json_mode(stdin_lock: std::io::StdinLock<'_>, initial_bytes: &[u8],
                         line = full_line;
                         first_line = false;
                     }
-                    if tx.send(line).is_err() {
+                    if tx.send(std::mem::take(&mut line)).is_err() {
                         break;
                     }
                 }
