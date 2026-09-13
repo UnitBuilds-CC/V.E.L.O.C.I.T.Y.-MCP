@@ -528,12 +528,22 @@ fn bench_go_wasm(wasm_path: &str) -> WasmRuntimeResult {
     }
 
     if !cached_times.is_empty() {
-        result.cached_module_us =
-            Some(bench_start.elapsed().as_nanos() as f64 / HOT_WASM_ITERS as f64 / 1000.0);
+        cached_times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let avg = bench_start.elapsed().as_nanos() as f64 / HOT_WASM_ITERS as f64 / 1000.0;
+        result.cached_module_us = Some(avg);
+
+        let p50 = percentile(&cached_times, 0.50);
+        let p95 = percentile(&cached_times, 0.95);
+        let p99 = percentile(&cached_times, 0.99);
+
         println!(
             "  Cached module: {:.1} µs/call ({:.1}K calls/s)",
-            result.cached_module_us.unwrap(),
-            1_000_000.0 / (result.cached_module_us.unwrap() * 1000.0)
+            avg,
+            1_000_000.0 / (avg * 1000.0)
+        );
+        println!(
+            "    P50: {:.1} µs, P95: {:.1} µs, P99: {:.1} µs",
+            p50, p95, p99
         );
     }
 
@@ -865,14 +875,91 @@ fn main() {
             }
         }
 
-        // Skip hot call measurement - MicroPython WASM has state pollution issues
-        println!("  Hot call: SKIP (MicroPython WASM doesn't support repeated calls)");
+        // Hot call measurement (persistent instance)
+        let hot_call_us = 'hot: {
+            let mut rt = match MicroPythonRuntime::new(&wasm_bytes) {
+                Ok(rt) => rt,
+                Err(e) => {
+                    eprintln!("  Python hot call setup failed: {}", e);
+                    break 'hot None;
+                }
+            };
+
+            if let Err(e) = rt.init() {
+                eprintln!("  Python hot call init failed: {}", e);
+                break 'hot None;
+            }
+
+            if let Err(e) = rt.register_tool("text_analyze", PY_TOOL_SOURCE) {
+                eprintln!("  Python hot call registration failed: {}", e);
+                break 'hot None;
+            }
+
+            // Warmup
+            for i in 0..WARMUP_CALLS {
+                if let Err(e) = rt.call_tool("text_analyze", BENCH_INPUT_JSON) {
+                    if i == 0 {
+                        eprintln!("  Python warmup call failed: {}", e);
+                    }
+                }
+            }
+
+            // Measurement
+            let mut latencies = Vec::with_capacity(HOT_WASM_ITERS);
+            let mut call_failures = 0;
+            let bench_start = Instant::now();
+            for _ in 0..HOT_WASM_ITERS {
+                let call_start = Instant::now();
+                match rt.call_tool("text_analyze", BENCH_INPUT_JSON) {
+                    Ok(_) => latencies.push(call_start.elapsed().as_nanos() as f64 / 1000.0),
+                    Err(e) => {
+                        call_failures += 1;
+                        if call_failures <= 3 {
+                            eprintln!("  Python measurement call failed: {}", e);
+                        }
+                    }
+                }
+            }
+            let total_us = bench_start.elapsed().as_nanos() as f64 / 1000.0;
+
+            if call_failures > 0 {
+                eprintln!(
+                    "  Python had {} call failures out of {} attempts",
+                    call_failures, HOT_WASM_ITERS
+                );
+            }
+
+            let result = if !latencies.is_empty() {
+                latencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let avg = total_us / HOT_WASM_ITERS as f64;
+                let p50 = percentile(&latencies, 0.50);
+                let p95 = percentile(&latencies, 0.95);
+                let p99 = percentile(&latencies, 0.99);
+
+                println!(
+                    "  Hot call: {:.1} µs/call ({:.1}K calls/s)",
+                    avg,
+                    1_000_000.0 / avg
+                );
+                println!(
+                    "    P50: {:.1} µs, P95: {:.1} µs, P99: {:.1} µs",
+                    p50, p95, p99
+                );
+                Some(avg)
+            } else {
+                eprintln!("  Python produced no successful hot calls");
+                None
+            };
+
+            rt.destroy().ok();
+            result
+        };
 
         wasm_results.push(WasmRuntimeResult {
             name: "Python",
             wasm_label: "MicroPython/WASM",
             cold_start_ms,
-            hot_call_us: None,
+            hot_call_us,
             cached_module_us: None,
             memory_kb: None,
         });

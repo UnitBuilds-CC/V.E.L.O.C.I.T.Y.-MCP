@@ -33,7 +33,7 @@ Configure your MCP client to point at it. Done.
 
 ## Performance
 
-All numbers measured 2026-09-13 on i5-14400F, release build.
+All numbers measured 2026-09-13 on i5-14400F, release build. Transport benchmark harness needs rebuilding for Core 5 210H comparison.
 
 ### NDA/shmem Transport
 
@@ -64,20 +64,21 @@ All numbers measured 2026-09-13 on Core 5 210H, release build, `text_analyze` to
 
 | Language | Engine | Cold Start | Hot Call (P50) | P95 | P99 |
 |----------|--------|------------|-----------------|-----|-----|
-| **Rust** | wasm32-wasi | 21.6 ms | **4.3 µs** | 5.5 µs | 31.0 µs |
-| **Lua** | Lua 5.4 | 4.9 ms | **16.0 µs** | 43.4 µs | 333.9 µs |
-| **Perl** | zeroperl | 131.7 ms | **7.8 µs** | 12.2 µs | 28.9 µs |
-| **PHP** | php-wasm | 163.1 ms | **7.7 µs** | 10.0 µs | 15.3 µs |
-| **C#** | Wasmtime | 171.5 ms | **9.2 µs** | 13.4 µs | 26.8 µs |
-| **Java** | Wasmtime | 171.9 ms | **8.6 µs** | 15.8 µs | 205.4 µs |
-| **Julia** | Wasmtime | 235.6 ms | **10.5 µs** | 16.7 µs | 27.4 µs |
-| **R** | Wasmtime | 189.8 ms | **9.2 µs** | 13.6 µs | 33.6 µs |
-| **JavaScript** | QuickJS | 224.5 ms | 90.7 µs | 135.2 µs | 167.2 µs |
-| **Go** | TinyGo | 1003.4 ms | 1057.5 µs* | — | — |
-| **Python** | MicroPython | 184.0 ms | — | — | — |
+| **Rust** | wasm32-wasi | 42.1 ms | **4.4 µs** | 4.6 µs | 5.0 µs |
+| **JavaScript** | QuickJS | 197.7 ms | **59.5 µs** | 70.0 µs | 125.9 µs |
+| **TypeScript** | QuickJS+TS | 142.7 ms | **60.1 µs** | 138.7 µs | 150.3 µs |
+| **PHP** | php-wasm | 117.1 ms | **16.5 µs** | 26.7 µs | 41.5 µs |
+| **Java** | Wasmtime | 98.8 ms | **16.8 µs** | 25.0 µs | 36.2 µs |
+| **Julia** | Wasmtime | 102.1 ms | **18.0 µs** | 32.5 µs | 145.0 µs |
+| **Perl** | zeroperl | 121.1 ms | **18.4 µs** | 28.6 µs | 84.7 µs |
+| **C#** | Wasmtime | 96.5 ms | **18.6 µs** | 25.7 µs | 31.6 µs |
+| **R** | Wasmtime | 106.4 ms | **18.7 µs** | 29.2 µs | 60.3 µs |
+| **Lua** | Lua 5.4 | 10.9 ms | **22.0 µs** | 36.0 µs | 52.4 µs |
+| **Go** | TinyGo | 695.8 ms | 328.4 µs* | 504.8 µs | 1996.0 µs |
+| **Python** | MicroPython | 113.3 ms | — | — | — |
 
-*Go uses cached module instantiation. Python hot calls skipped (MicroPython single-call limitation).
-TypeScript (transpiler bug) and Ruby/mruby (WASM EH incompatibility) currently fail initialization.
+*Go uses cached module instantiation per call. Python fails on sustained hot calls (state pollution after ~10 calls).
+Ruby/mruby skipped (WASM EH incompatibility with Wasmer).
 
 6 additional languages use tree-walk interpreters sharing a common C core with full control flow, functions, data structures, and JSON I/O. See [WASM Runtime Status](docs/wasm_runtime_status.md) for details.
 
