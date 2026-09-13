@@ -52,6 +52,20 @@ audit_logs/
 # Benchmark output files
 benchmark_output.txt
 benchmark_run*.txt
+benchmark_*_results.json
+benchmark_results_*.json
+*_benchmark_output.txt
+thorough_benchmark_output.txt
+
+# Coverage artifacts
+*.profraw
+
+# Test fixture directories
+test_nda_dir/
+test_registry_list_dir/
+test_registry_search/
+test_registry_tree/
+test_registry_*.txt
 
 # Temp build intermediates
 *.o.tmp
