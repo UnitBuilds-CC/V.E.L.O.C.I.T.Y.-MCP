@@ -312,13 +312,67 @@ impl Marketplace {
             ));
         }
 
-        // Download plugin (simulated for now)
+        // Download plugin archive
         let install_path = self.storage_path.join("plugins").join(&metadata.id);
         std::fs::create_dir_all(&install_path)
             .map_err(|e| format!("Failed to create plugin directory: {}", e))?;
 
-        // In a real implementation, we would download from metadata.download_url
-        // For now, we'll just create a placeholder
+        if !metadata.download_url.is_empty() {
+            let archive_path = install_path.join("plugin.tar.gz");
+
+            // Download with curl (available in Docker and most systems)
+            let dl_status = std::process::Command::new("curl")
+                .args([
+                    "-fsSL",
+                    "--max-time",
+                    "120",
+                    "-o",
+                    &archive_path.to_string_lossy(),
+                    &metadata.download_url,
+                ])
+                .status()
+                .map_err(|e| format!("Failed to run curl: {}. Is it installed?", e))?;
+
+            if !dl_status.success() {
+                let _ = std::fs::remove_dir_all(&install_path);
+                return Err(format!(
+                    "Download failed for '{}' from {}",
+                    plugin_id, metadata.download_url
+                ));
+            }
+
+            // Verify SHA-256 checksum if provided
+            if !metadata.checksum.is_empty() {
+                let bytes = std::fs::read(&archive_path)
+                    .map_err(|e| format!("Failed to read downloaded archive: {}", e))?;
+                use sha2::{Digest, Sha256};
+                let hash = Sha256::digest(&bytes);
+                let hex_hash = format!("{:x}", hash);
+                if hex_hash != metadata.checksum {
+                    let _ = std::fs::remove_dir_all(&install_path);
+                    return Err(format!(
+                        "Checksum mismatch for '{}': expected {}, got {}",
+                        plugin_id, metadata.checksum, hex_hash
+                    ));
+                }
+            }
+
+            // Extract tar.gz archive
+            let extract_status = std::process::Command::new("tar")
+                .args(["xzf", &archive_path.to_string_lossy(), "-C", &install_path.to_string_lossy()])
+                .status()
+                .map_err(|e| format!("Failed to run tar: {}", e))?;
+
+            // Clean up archive
+            let _ = std::fs::remove_file(&archive_path);
+
+            if !extract_status.success() {
+                let _ = std::fs::remove_dir_all(&install_path);
+                return Err(format!("Failed to extract plugin archive for '{}'", plugin_id));
+            }
+        }
+
+        // Write manifest
         let manifest_path = install_path.join("manifest.json");
         let manifest_json = serde_json::to_string_pretty(&metadata)
             .map_err(|e| format!("Failed to serialize manifest: {}", e))?;
