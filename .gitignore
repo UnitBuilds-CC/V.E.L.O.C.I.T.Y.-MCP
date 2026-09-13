@@ -57,3 +57,6 @@ benchmark_run*.txt
 *.o.tmp
 bench_tools/r_wasm/webr.wasm
 bench_tools/webr.wasm
+
+# WASIX build artifacts (built locally via cargo-wasix, not committed)
+crates/velocity-mcp-edge/velocity-edge-wasix.wasm

@@ -295,7 +295,8 @@ deploy-edge.bat        # Windows
 | Transport | stdio, HTTP, shmem, NDA | HTTP only |
 | Cold start | Instant | 100-500ms (min_instances=1 eliminates) |
 | Scaling | Manual | Automatic (0 to N) |
-| WASM plugins (7 languages) | Yes | Yes |
+| Built-in tools (10 pure-Rust) | Yes | Yes |
+| WASM plugin runtimes (7 langs) | Yes | No |
 | NDA binary protocol | Yes | No |
 | Shared memory IPC | Yes | No |
 | Filesystem access | Full | Temp only |
@@ -326,6 +327,9 @@ src/
   ipc/                Shared memory IPC
   transport/          HTTP/SSE/WebSocket transport
   wasm_runtime/       7 production + 6 planned WASM runtimes
+crates/
+  velocity-mcp-core/  Pure MCP protocol logic (WASM-compatible, no OS deps)
+  velocity-mcp-edge/  Wasmer Edge HTTP server with 10 built-in tools
 client/               Rust client SDK
 sdk/                  Python, TypeScript, Go SDKs
 macros/               Proc-macro crate (#[mcp_tool])

@@ -25,11 +25,11 @@ velocity-mcp-core = { version = "3.2.0", path = "../velocity-mcp-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0"
 
-# Server dependencies (only for native targets)
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Server dependencies - available for both native and WASIX targets.
+# WASIX provides full POSIX socket/thread support, so hyper+tokio work natively.
 hyper = { version = "1", features = ["server", "http1"] }
 http = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "io-util", "time"] }
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 tracing = "0.1"
@@ -45,3 +45,7 @@ serde_json = "1.0"
 hyper = { version = "1", features = ["server", "http1", "client"] }
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["server-auto", "tokio", "client-legacy"] }
+
+[[bench]]
+name = "load_test"
+harness = false

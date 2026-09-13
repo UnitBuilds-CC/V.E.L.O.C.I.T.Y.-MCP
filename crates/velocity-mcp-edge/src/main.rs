@@ -49,35 +49,22 @@
 //! | `RATE_LIMIT_PER_MINUTE` | `100` | Max requests per minute per IP (0 = disabled) |
 
 // ---------------------------------------------------------------------------
-// Native server code (only compiled for non-WASM targets)
+// Server code (compiled for both native and WASIX targets)
 // ---------------------------------------------------------------------------
 
-#[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
-#[cfg(not(target_arch = "wasm32"))]
 use std::convert::Infallible;
-#[cfg(not(target_arch = "wasm32"))]
 use std::net::{IpAddr, SocketAddr};
-#[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Arc, Mutex};
-#[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 
-#[cfg(not(target_arch = "wasm32"))]
 use http_body_util::{BodyExt, Full};
-#[cfg(not(target_arch = "wasm32"))]
 use hyper::body::Bytes;
-#[cfg(not(target_arch = "wasm32"))]
 use hyper::service::service_fn;
-#[cfg(not(target_arch = "wasm32"))]
 use hyper::{Request, Response, StatusCode};
-#[cfg(not(target_arch = "wasm32"))]
 use hyper_util::rt::TokioIo;
-#[cfg(not(target_arch = "wasm32"))]
 use subtle::ConstantTimeEq;
-#[cfg(not(target_arch = "wasm32"))]
 use tracing::{info, warn};
-#[cfg(not(target_arch = "wasm32"))]
 use velocity_mcp_core::{handle_mcp_request_with_executor, parse_request, serialize_response};
 
 // Tools module - available for all targets
@@ -88,38 +75,30 @@ mod tools;
 // ---------------------------------------------------------------------------
 
 /// Default maximum request body size: 1 MB.
-#[cfg(not(target_arch = "wasm32"))]
 const DEFAULT_MAX_BODY_SIZE: usize = 1_048_576;
 
 /// Default rate limit: 100 requests per minute per IP.
-#[cfg(not(target_arch = "wasm32"))]
 const DEFAULT_RATE_LIMIT: u32 = 100;
 
 /// How often to sweep expired entries from the rate limiter map.
-#[cfg(not(target_arch = "wasm32"))]
 const RATE_LIMIT_CLEANUP_INTERVAL_SECS: u64 = 60;
 
 /// Pre-serialized health-check response (avoids allocation on every probe).
-#[cfg(not(target_arch = "wasm32"))]
 const HEALTH_RESPONSE: &[u8] = b"{\"status\":\"healthy\",\"version\":\"3.2.0\"}";
 
 /// Pre-serialized 404 error (used when no route matches).
-#[cfg(not(target_arch = "wasm32"))]
 const NOT_FOUND_BODY: &[u8] =
     b"{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32601,\"message\":\"Not Found\"},\"id\":null}";
 
 /// Pre-serialized 413 error body.
-#[cfg(not(target_arch = "wasm32"))]
 const PAYLOAD_TOO_LARGE_BODY: &[u8] =
     b"{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,\"message\":\"Payload too large\"},\"id\":null}";
 
 /// Pre-serialized 401 error body.
-#[cfg(not(target_arch = "wasm32"))]
 const UNAUTHORIZED_BODY: &[u8] =
     b"{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,\"message\":\"Unauthorized\"},\"id\":null}";
 
 /// Pre-serialized 429 error body.
-#[cfg(not(target_arch = "wasm32"))]
 const RATE_LIMITED_BODY: &[u8] =
     b"{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,\"message\":\"Rate limit exceeded\"},\"id\":null}";
 
@@ -131,7 +110,6 @@ const RATE_LIMITED_BODY: &[u8] =
 ///
 /// All fields are resolved once at startup and shared (via `Arc`) across all
 /// connection handlers. Changing env vars at runtime has no effect.
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
 struct ServerConfig {
     /// Maximum allowed request body in bytes.
@@ -145,7 +123,6 @@ struct ServerConfig {
     rate_limit_per_minute: u32,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl ServerConfig {
     /// Load configuration from environment variables with safe defaults.
     fn from_env() -> Self {
@@ -213,7 +190,6 @@ impl ServerConfig {
 /// Each bucket starts full (`tokens == capacity`). Every request consumes one
 /// token. Tokens refill at `capacity` per 60 seconds, computed lazily on each
 /// check via elapsed-time interpolation.
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
 struct TokenBucket {
     tokens: f64,
@@ -221,7 +197,6 @@ struct TokenBucket {
     last_refill: Instant,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl TokenBucket {
     fn new(capacity: u32) -> Self {
         Self {
@@ -264,13 +239,11 @@ impl TokenBucket {
 ///
 /// The mutex is held only for the duration of a hash lookup + float arithmetic
 /// (< 1 microsecond), so contention is negligible even under heavy load.
-#[cfg(not(target_arch = "wasm32"))]
 struct RateLimiter {
     buckets: Mutex<HashMap<IpAddr, TokenBucket>>,
     capacity: u32,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl RateLimiter {
     fn new(capacity: u32) -> Self {
         Self {
@@ -333,7 +306,6 @@ impl RateLimiter {
 /// Wrapped in `Arc` and cloned (cheaply) into each connection task. The
 /// `RateLimiter` internally uses a `Mutex<HashMap>` so all connections share
 /// the same rate-limit state.
-#[cfg(not(target_arch = "wasm32"))]
 struct ServerState {
     config: ServerConfig,
     rate_limiter: RateLimiter,
@@ -348,7 +320,6 @@ struct ServerState {
 /// Uses the `subtle` crate's ConstantTimeEq trait for guaranteed constant-time comparison.
 /// Both inputs are padded to a fixed maximum length before comparison to avoid leaking
 /// the expected key length via early return on length mismatch.
-#[cfg(not(target_arch = "wasm32"))]
 fn timing_safe_eq(a: &[u8], b: &[u8]) -> bool {
     const MAX_KEY_LEN: usize = 256;
 
@@ -378,18 +349,15 @@ fn timing_safe_eq(a: &[u8], b: &[u8]) -> bool {
 /// Uses `Relaxed` ordering: we only need uniqueness, not sequencing guarantees.
 /// Combined with process start time to produce IDs that are unique within a
 /// server instance and globally unique across restarts.
-#[cfg(not(target_arch = "wasm32"))]
 static REQUEST_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Server start time, captured once at first use for correlation-ID prefix.
-#[cfg(not(target_arch = "wasm32"))]
 static START_TIME: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 
 /// Generate a unique, opaque correlation ID for request tracing.
 ///
 /// Format: `<epoch_offset>-<monotonic_counter>` where `epoch_offset` is seconds
 /// since server start and `monotonic_counter` is a per-process atomic counter.
-#[cfg(not(target_arch = "wasm32"))]
 fn generate_correlation_id() -> String {
     let start = START_TIME.get_or_init(Instant::now);
     let counter = REQUEST_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -407,7 +375,6 @@ fn generate_correlation_id() -> String {
 /// prevent header spoofing attacks. When multiple IPs are present in XFF, uses
 /// the rightmost untrusted IP (closest to the actual client) rather than the
 /// leftmost (which can be forged by the client).
-#[cfg(not(target_arch = "wasm32"))]
 fn extract_client_ip(req: &Request<impl hyper::body::Body>, peer_addr: SocketAddr) -> IpAddr {
     // If the direct peer is not a trusted proxy, ignore X-Forwarded-For entirely
     if !is_trusted_proxy(peer_addr) {
@@ -431,7 +398,6 @@ fn extract_client_ip(req: &Request<impl hyper::body::Body>, peer_addr: SocketAdd
 }
 
 /// Check if an address is a trusted proxy (localhost or private network).
-#[cfg(not(target_arch = "wasm32"))]
 fn is_trusted_proxy(addr: SocketAddr) -> bool {
     let ip = addr.ip();
     ip.is_loopback()
@@ -447,7 +413,6 @@ fn is_trusted_proxy(addr: SocketAddr) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Check whether `origin` is allowed by the server configuration.
-#[cfg(not(target_arch = "wasm32"))]
 fn is_origin_allowed(origin: &str, config: &ServerConfig) -> bool {
     match &config.allowed_origins {
         None => false,                               // CORS disabled entirely
@@ -461,7 +426,6 @@ fn is_origin_allowed(origin: &str, config: &ServerConfig) -> bool {
 /// Called on every response from the MCP endpoint so that browsers enforce the
 /// same-origin policy correctly. Takes the origin string directly so that it
 /// can be extracted from the request before the request is consumed.
-#[cfg(not(target_arch = "wasm32"))]
 fn apply_cors_headers(
     builder: http::response::Builder,
     origin: Option<&str>,
@@ -493,7 +457,6 @@ fn apply_cors_headers(
 // ---------------------------------------------------------------------------
 
 /// Build a JSON response with the given status code and pre-serialized body.
-#[cfg(not(target_arch = "wasm32"))]
 fn build_response(status: StatusCode, body: &'static [u8]) -> Response<Full<Bytes>> {
     Response::builder()
         .status(status)
@@ -517,7 +480,6 @@ fn build_response(status: StatusCode, body: &'static [u8]) -> Response<Full<Byte
 /// The `public_message` is what the client sees. The `detail` is logged
 /// server-side only and never transmitted. This prevents leaking stack traces,
 /// file paths, or other implementation details.
-#[cfg(not(target_arch = "wasm32"))]
 fn sanitized_error(
     status: StatusCode,
     public_message: &str,
@@ -558,7 +520,6 @@ fn sanitized_error(
 /// 3. Routing
 /// 4. CORS headers on response
 /// 5. Request logging
-#[cfg(not(target_arch = "wasm32"))]
 async fn handle_request(
     req: Request<hyper::body::Incoming>,
     state: Arc<ServerState>,
@@ -675,7 +636,6 @@ async fn handle_request(
 ///
 /// Accepts a pre-extracted origin string (since the request may have been consumed
 /// by body collection). Pass `None` to skip CORS (no Origin header or CORS disabled).
-#[cfg(not(target_arch = "wasm32"))]
 fn with_cors(
     mut resp: Response<Full<Bytes>>,
     origin: Option<&str>,
@@ -716,7 +676,6 @@ fn with_cors(
 /// Adds X-RateLimit-Limit, X-RateLimit-Remaining, and X-RateLimit-Reset headers
 /// when rate limiting is enabled. These headers help clients understand their
 /// current rate limit status and plan accordingly.
-#[cfg(not(target_arch = "wasm32"))]
 fn with_rate_limit_headers(
     mut resp: Response<Full<Bytes>>,
     state: &Arc<ServerState>,
@@ -759,7 +718,6 @@ fn with_rate_limit_headers(
 /// Applies request size limits (P0) and API key authentication (P1) before
 /// delegating to `velocity_mcp_core` for JSON-RPC processing.
 /// CORS headers are applied to all responses via `with_cors`.
-#[cfg(not(target_arch = "wasm32"))]
 async fn handle_mcp_post(
     req: Request<hyper::body::Incoming>,
     state: &Arc<ServerState>,
@@ -870,7 +828,6 @@ async fn handle_mcp_post(
 ///
 /// All errors from the core protocol are sanitized before being returned to
 /// the client (Layer 5: Error Sanitization).
-#[cfg(not(target_arch = "wasm32"))]
 fn process_mcp_request(request_body: &[u8]) -> Response<Full<Bytes>> {
     match parse_request(request_body) {
         Ok(request) => {
@@ -906,7 +863,6 @@ fn process_mcp_request(request_body: &[u8]) -> Response<Full<Bytes>> {
 /// Outputs: method, path, HTTP status, duration (ms), correlation ID, and
 /// client IP. This data can be consumed by structured logging collectors
 /// (e.g., JSON fmt subscriber, OpenTelemetry, etc.).
-#[cfg(not(target_arch = "wasm32"))]
 fn log_request(
     method: &hyper::Method,
     path: &str,
@@ -928,20 +884,9 @@ fn log_request(
 }
 
 // ---------------------------------------------------------------------------
-// Entry point (WASM - no-op, just satisfies binary requirement)
+// Entry point (native + WASIX — same hyper/tokio HTTP server)
 // ---------------------------------------------------------------------------
 
-#[cfg(target_arch = "wasm32")]
-fn main() {
-    // WASI entry points are handle_http_request and wasmer_free
-    // This main() is never called but required for binary compilation
-}
-
-// ---------------------------------------------------------------------------
-// Entry point (native server)
-// ---------------------------------------------------------------------------
-
-#[cfg(not(target_arch = "wasm32"))]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing (structured logging).
@@ -1016,15 +961,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 // ---------------------------------------------------------------------------
-// WASI entry point (for wasm32-wasip1 target)
+// Legacy C ABI exports (fallback for non-WASIX WASM hosts)
 // ---------------------------------------------------------------------------
 
-/// WASI entry point for Wasmer Edge deployment.
-///
-/// This provides a simple HTTP request handler that can be invoked by the
-/// wasi-http component model. For now, we provide a placeholder that
-/// demonstrates the architecture - full wasi-http integration requires
-/// additional tooling.
+/// Legacy handler for non-WASIX WASM environments.
+/// The primary entry point for Wasmer Edge is now the `_start` function
+/// generated by `#[tokio::main]`, which runs a full hyper HTTP server with
+/// multi-threaded tokio via WASIX.
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn handle_http_request(input_ptr: *const u8, input_len: usize) -> *mut u8 {
@@ -1072,10 +1015,10 @@ pub unsafe extern "C" fn wasmer_free(ptr: *mut u8) {
 }
 
 // ---------------------------------------------------------------------------
-// Tests (native only - requires hyper and tokio)
+// Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

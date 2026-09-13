@@ -73,7 +73,8 @@ pub fn edge_tool_definitions() -> Vec<ToolDefinition> {
                 "properties": {
                     "message": {
                         "type": "string",
-                        "description": "The message to echo back."
+                        "description": "The message to echo back.",
+                        "maxLength": 1048576
                     }
                 },
                 "required": ["message"]
@@ -91,7 +92,9 @@ pub fn edge_tool_definitions() -> Vec<ToolDefinition> {
                     },
                     "indent": {
                         "type": "integer",
-                        "description": "Number of spaces for indentation (default: 2)."
+                        "description": "Number of spaces for indentation (default: 2).",
+                        "minimum": 0,
+                        "maximum": 8
                     }
                 },
                 "required": ["json"]
@@ -128,7 +131,9 @@ pub fn edge_tool_definitions() -> Vec<ToolDefinition> {
                     },
                     "max_length": {
                         "type": "integer",
-                        "description": "For truncate: maximum output length."
+                        "description": "For truncate: maximum output length.",
+                        "minimum": 0,
+                        "maximum": 1048576
                     },
                     "old": {
                         "type": "string",
@@ -164,7 +169,9 @@ pub fn edge_tool_definitions() -> Vec<ToolDefinition> {
                 "properties": {
                     "size": {
                         "type": "integer",
-                        "description": "Response payload size in bytes (default: 64, max: 1048576)."
+                        "description": "Response payload size in bytes (default: 64, max: 1048576).",
+                        "minimum": 0,
+                        "maximum": 1048576
                     }
                 },
                 "required": []

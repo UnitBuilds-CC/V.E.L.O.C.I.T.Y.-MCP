@@ -10,7 +10,7 @@ Deploy VELOCITY-MCP as a serverless WebAssembly application on Wasmer Edge. Zero
 2. [Architecture Overview](#2-architecture-overview)
 3. [Configuration Reference](#3-configuration-reference)
 4. [API Reference](#4-api-reference)
-5. [WASM Plugin Runtimes on Edge](#5-wasm-plugin-runtimes-on-edge)
+5. [Edge Tools vs Native WASM Runtimes](#5-edge-tools-vs-native-wasm-runtimes)
 6. [Security Configuration](#6-security-configuration)
 7. [Performance Tuning](#7-performance-tuning)
 8. [Troubleshooting Guide](#8-troubleshooting-guide)
@@ -109,9 +109,10 @@ That is it. Your VELOCITY-MCP server is running on Wasmer Edge.
 |                     |    |                            |
 |  - HTTP server      |    |  - stdio JSON-RPC          |
 |  - JSON-RPC handler |    |  - NDA binary protocol     |
-|  - WASM plugins     |    |  - Shared memory IPC       |
-|  - Metering         |    |  - Process sandbox         |
-|  - Auto-scaling     |    |  - Full filesystem access  |
+|  - 10 pure-Rust     |    |  - Shared memory IPC       |
+|    built-in tools   |    |  - Process sandbox         |
+|  - Auto-scaling     |    |  - WASM plugin runtimes   |
+|                     |    |  - Full filesystem access  |
 +---------------------+    +----------------------------+
    Global CDN                  Local machine
    0-instances idle            Always running
@@ -155,7 +156,7 @@ Client Request
                      |         |
                      |    [Dispatch tool]
                      |         |
-                     |    [Execute WASM plugin]
+                     |    [Execute built-in tool]
                      |         |
                      |    [Serialize response]
                      v         v
@@ -342,8 +343,11 @@ Establish a session and negotiate capabilities.
   "result": {
     "protocolVersion": "2024-11-05",
     "capabilities": {
-      "tools": {"listChanged": true},
-      "logging": {}
+      "tools": {},
+      "resources": {"subscribe": false, "listChanged": false},
+      "prompts": {"listChanged": false},
+      "elicitation": {},
+      "roots": {"listChanged": false}
     },
     "serverInfo": {
       "name": "velocity-mcp-edge",
@@ -355,7 +359,7 @@ Establish a session and negotiate capabilities.
 
 #### `tools/list`
 
-List all available tools, including WASM plugin tools.
+List all available tools.
 
 **Request:**
 ```json
@@ -421,7 +425,7 @@ Execute a tool by name with the given arguments.
     "content": [
       {
         "type": "text",
-        "text": "Echo: Hello from Edge!"
+        "text": "Hello from Edge!"
       }
     ]
   }
@@ -446,7 +450,9 @@ Keep-alive ping to verify connectivity.
 {
   "jsonrpc": "2.0",
   "id": 4,
-  "result": {}
+  "result": {
+    "status": "ok"
+  }
 }
 ```
 
@@ -754,7 +760,7 @@ If you are currently running VELOCITY-MCP as a native binary, here is what chang
 | Aspect | Native | Edge |
 |--------|--------|------|
 | Transport | stdio, HTTP, shmem, NDA | HTTP only |
-| Tool execution | Native + WASM | WASM only |
+| Tool execution | Native + WASM runtimes | Pure-Rust built-in tools |
 | Filesystem | Full access | Temp storage only |
 | Process spawning | Available | Not available |
 | Scaling | Manual | Automatic |
@@ -763,14 +769,14 @@ If you are currently running VELOCITY-MCP as a native binary, here is what chang
 
 ### What Works Without Changes
 
-- All MCP JSON-RPC methods (initialize, tools/list, tools/call, ping)
+- All 14 MCP JSON-RPC methods (initialize, notifications/initialized, notifications/cancelled, ping, tools/list, tools/call, resources/list, resources/read, resources/templates/list, prompts/list, prompts/get, elicitation/create, roots/list, completion/complete, sampling/createMessage)
 - WASM plugin manifests and tool definitions
 - Client SDK configurations (just change the URL)
 
 ### What Needs Adaptation
 
 - **File operations**: Edge plugins can only write to temp storage. Use external storage (S3, databases) for persistent data.
-- **shell_exec**: Not available. Use WASM plugin runtimes for computation instead.
+- **shell_exec**: Not available. Use the built-in pure-Rust tools for computation, or deploy natively if process spawning is required.
 - **Database resources**: Not available on Edge. Connect to external databases via WASM-compatible drivers.
 - **NDA binary protocol**: Not available over HTTP. Use JSON-RPC.
 

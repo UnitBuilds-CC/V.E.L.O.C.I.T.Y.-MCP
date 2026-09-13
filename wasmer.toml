@@ -1,11 +1,13 @@
 [package]
-name = "velocity-mcp-edge"
-version = "3.2.0"
+name = "unitbuilds/velocity-mcp-edge"
+version = "3.2.1"
 description = "VELOCITY-MCP serverless deployment on Wasmer Edge - Model Context Protocol with 10 pure-Rust edge tools"
 readme = "docs/edge_user_guide.md"
 
-[module]
-main = "target/wasm32-wasip1/release/velocity-edge.wasm"
+[[module]]
+name = "velocity-edge"
+source = "crates/velocity-mcp-edge/velocity-edge-wasix.wasm"
+abi = "wasi"
 
 # =============================================================================
 # Wasmer Edge Configuration

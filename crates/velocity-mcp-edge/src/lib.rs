@@ -6,11 +6,8 @@
 
 pub mod tools;
 
-#[cfg(not(target_arch = "wasm32"))]
 use http_body_util::Full;
-#[cfg(not(target_arch = "wasm32"))]
 use hyper::body::Bytes;
-#[cfg(not(target_arch = "wasm32"))]
 use hyper::{Response, StatusCode};
 use tools::EdgeToolExecutor;
 use velocity_mcp_core::{
@@ -68,7 +65,6 @@ pub fn error_response_bytes(message: &str) -> Vec<u8> {
 /// - 413 -> -32602 (Invalid Params - payload too large)
 /// - 429 -> -32600 (Invalid Request - rate limited)
 /// - 500 -> -32603 (Internal Error)
-#[cfg(not(target_arch = "wasm32"))]
 pub fn error_response(status: StatusCode, message: &str) -> Response<Full<Bytes>> {
     // Map HTTP status to JSON-RPC error code
     let jsonrpc_code = match status.as_u16() {
