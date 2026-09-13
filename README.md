@@ -29,6 +29,7 @@ That's it! Your MCP server is running. Now configure your client.
 - 🔄 [Migration Guide](docs/MIGRATION.md) - Moving from Node.js MCP? We've got you covered
 - 🔌 [Client Integration](docs/CLIENT_INTEGRATION.md) - Setup for Claude Desktop, Cursor, Windsurf, and more
 - 📊 [Performance Comparison](docs/COMPARISON.md) - See benchmark results across 8 pipelines
+- 📈 [Comprehensive Benchmark Guide](docs/COMPREHENSIVE_BENCHMARK.md) - Unified WASM runtime + transport protocol benchmarks (12 runtimes)
 - 🏪 [Plugin Marketplace](docs/MARKETPLACE.md) - Discover and install plugins
 - 🌐 [Edge Deployment Guide](docs/edge_user_guide.md) - Serverless WASM on Wasmer Edge (free tier)
 - 📋 [Edge Operations Runbook](docs/edge_operations.md) - Monitoring, alerting, incident response
@@ -58,6 +59,7 @@ That's it! Your MCP server is running. Now configure your client.
 - **NDA binary protocol**: zero-copy TLV parsing with SHA-256 Merkle integrity
 - **Shared memory IPC**: 2µs round-trip latency via memory-mapped ring buffer
 - **8-pipeline benchmark matrix**: encoding (NDA/JSON) x transport (shmem/stdio/HTTP) x server (Rust/Node.js)
+- **12 WASM language runtimes**: QuickJS, TypeScript, MicroPython, Lua, mruby, Rust WASI, TinyGo, PHP, C#, Java, R, Julia, Perl - all benchmarked in unified suite
 - **Phase timing**: write/wait/read breakdown across all pipelines for profiling
 - **Connection pooling** and **LRU caching** for optimal performance
 - **Async runtime** with Tokio for high concurrency
