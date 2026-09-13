@@ -258,11 +258,13 @@ impl WasmRuntime for GoWasmRuntime {
 
     fn call_tool_binary(
         &mut self,
-        _name: &str,
-        _args_tlv: &[u8],
+        name: &str,
+        args_tlv: &[u8],
     ) -> Result<String, Box<dyn Error>> {
-        // Binary protocol not yet implemented for Go runtime
-        Err("Binary protocol not supported for Go runtime".into())
+        use crate::protocol::nda_native::decode_json_value;
+        let (value, _) = decode_json_value(args_tlv)?;
+        let json_str = serde_json::to_string(&value)?;
+        self.call_tool(name, &json_str)
     }
 
     fn destroy(&mut self) -> Result<(), Box<dyn Error>> {
