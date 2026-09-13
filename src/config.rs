@@ -161,6 +161,12 @@ pub struct WasmRuntimesConfig {
     /// Perl runtime configuration
     #[serde(default)]
     pub perl: WasmLanguageConfig,
+    
+    /// Global instruction limit for all WASM runtimes (meters execution to prevent infinite loops).
+    /// Set to None to disable metering (NOT recommended for production).
+    /// Default: 10,000,000 instructions (~1-5 seconds of computation depending on workload).
+    #[serde(default = "default_wasm_instruction_limit")]
+    pub instruction_limit: Option<u64>,
 }
 
 /// Per-language WASM runtime configuration.
@@ -230,6 +236,7 @@ impl Default for WasmRuntimesConfig {
                 enabled: true,
                 wasm_path: default_perl_wasm_path(),
             },
+            instruction_limit: default_wasm_instruction_limit(),
         }
     }
 }
@@ -300,6 +307,10 @@ fn default_log_level() -> String {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_wasm_instruction_limit() -> Option<u64> {
+    Some(10_000_000) // 10 million instructions (~1-5 seconds of computation)
 }
 
 fn default_quickjs_wasm_path() -> String {
