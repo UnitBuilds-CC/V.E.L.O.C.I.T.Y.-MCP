@@ -395,6 +395,9 @@ fn execute_wasm_plugin_tool(tool: &PluginTool, arguments: &Value) -> Result<Stri
     let args_json = serde_json::to_string(arguments)
         .map_err(|e| format!("Failed to serialize arguments: {}", e))?;
 
+    // Note: Plugin-based WASM execution relies on metering middleware for timeout protection.
+    // Wall-clock timeouts are not feasible here because the runtime is shared behind a Mutex.
+    // Ensure metering is configured via WasmRuntimesConfig.instruction_limit.
     runtime.call_tool(&tool.name, &args_json)
         .map_err(|e| format!("WASM tool '{}' execution failed: {}", tool.name, e))
 }
@@ -500,63 +503,83 @@ fn execute_standalone_wasm_tool(source_file: &str, tool_name: &str, arguments: &
         }
     };
 
-    let mut store = Store::new(engine);
+    // Wall-clock timeout: spawn thread for entire WASM setup + execution, wait with recv_timeout(30s)
+    let (tx, rx) = std::sync::mpsc::channel();
+    let tool_name_owned = tool_name.to_string();
+    let arguments_owned = arguments.clone();
+    
+    let exec_handle = std::thread::spawn(move || -> Result<String, String> {
+        let mut store = Store::new(engine);
 
-    let env = FunctionEnv::new(&mut store, crate::wasm_runtime::wasi::WasiEnv::new());
-    let wasi_imports = crate::wasm_runtime::wasi::build_wasi_imports(&mut store, &env);
-    let instance = Instance::new(&mut store, &module, &wasi_imports)
-        .map_err(|e| format!("WASM instantiation failed: {}", e))?;
-    let memory = instance.exports.get_memory("memory")
-        .map_err(|e| format!("WASM module missing memory export: {}", e))?
-        .clone();
-    env.as_mut(&mut store).memory = Some(memory.clone());
+        let env = FunctionEnv::new(&mut store, crate::wasm_runtime::wasi::WasiEnv::new());
+        let wasi_imports = crate::wasm_runtime::wasi::build_wasi_imports(&mut store, &env);
+        let instance = Instance::new(&mut store, &module, &wasi_imports)
+            .map_err(|e| format!("WASM instantiation failed: {}", e))?;
+        let memory = instance.exports.get_memory("memory")
+            .map_err(|e| format!("WASM module missing memory export: {}", e))?
+            .clone();
+        env.as_mut(&mut store).memory = Some(memory.clone());
 
-    if let Ok(start_fn) = instance.exports.get_function("_start") {
-        let _ = start_fn.call(&mut store, &[]);
-    }
+        if let Ok(start_fn) = instance.exports.get_function("_start") {
+            let _ = start_fn.call(&mut store, &[]);
+        }
 
-    // Include tool name in the payload for dynamic dispatch
-    let mut payload = serde_json::Map::new();
-    payload.insert("_tool_name".to_string(), serde_json::Value::String(tool_name.to_string()));
-    if let Value::Object(args) = arguments {
-        for (k, v) in args {
-            payload.insert(k.clone(), v.clone());
+        // Include tool name in the payload for dynamic dispatch
+        let mut payload = serde_json::Map::new();
+        payload.insert("_tool_name".to_string(), serde_json::Value::String(tool_name_owned.clone()));
+        if let Some(args) = arguments_owned.as_object() {
+            for (k, v) in args {
+                payload.insert(k.clone(), v.clone());
+            }
+        }
+        let args_json = serde_json::to_string(&payload)
+            .map_err(|e| format!("Failed to serialize arguments: {}", e))?;
+        let args_bytes = args_json.as_bytes();
+
+        let prepare = instance.exports.get_function("prepare_call")
+            .map_err(|e| format!("WASM module missing prepare_call: {}", e))?;
+        prepare.call(&mut store, &[]).map_err(|e| format!("prepare_call failed: {}", e))?;
+
+        let malloc = instance.exports.get_function("malloc")
+            .map_err(|e| format!("WASM module missing malloc: {}", e))?;
+        let ptr_val = malloc.call(&mut store, &[WasmValue::I32(args_bytes.len() as i32)])
+            .map_err(|e| format!("malloc failed: {}", e))?;
+        let input_ptr = ptr_val[0].unwrap_i32();
+
+        memory.view(&store).write(input_ptr as u64, args_bytes)
+            .map_err(|e| format!("Failed to write input to WASM memory: {}", e))?;
+
+        let execute = instance.exports.get_function("tool_execute")
+            .map_err(|e| format!("WASM module missing tool_execute: {}", e))?;
+        let result = execute.call(&mut store, &[
+            WasmValue::I32(input_ptr),
+            WasmValue::I32(args_bytes.len() as i32),
+        ]).map_err(|e| format!("tool_execute failed: {}", e))?;
+
+        let encoded = result[0].unwrap_i64();
+        let result_ptr = (encoded >> 32) as u32;
+        let result_len = (encoded & 0xFFFF_FFFF) as u32;
+
+        let mut result_buf = vec![0u8; result_len as usize];
+        memory.view(&store).read(result_ptr as u64, &mut result_buf)
+            .map_err(|e| format!("Failed to read WASM result: {}", e))?;
+
+        String::from_utf8(result_buf)
+            .map_err(|e| format!("WASM result is not valid UTF-8: {}", e))
+    });
+
+    match rx.recv_timeout(std::time::Duration::from_secs(30)) {
+        Ok(result) => result,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            error!(tool = %tool_name, "Standalone WASM tool execution timed out (30s)");
+            drop(exec_handle);
+            Err(format!("Standalone WASM tool '{}' timed out after 30 seconds", tool_name))
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            drop(exec_handle);
+            Err(format!("Standalone WASM tool '{}' execution failed unexpectedly", tool_name))
         }
     }
-    let args_json = serde_json::to_string(&payload)
-        .map_err(|e| format!("Failed to serialize arguments: {}", e))?;
-    let args_bytes = args_json.as_bytes();
-
-    let prepare = instance.exports.get_function("prepare_call")
-        .map_err(|e| format!("WASM module missing prepare_call: {}", e))?;
-    prepare.call(&mut store, &[]).map_err(|e| format!("prepare_call failed: {}", e))?;
-
-    let malloc = instance.exports.get_function("malloc")
-        .map_err(|e| format!("WASM module missing malloc: {}", e))?;
-    let ptr_val = malloc.call(&mut store, &[WasmValue::I32(args_bytes.len() as i32)])
-        .map_err(|e| format!("malloc failed: {}", e))?;
-    let input_ptr = ptr_val[0].unwrap_i32();
-
-    memory.view(&store).write(input_ptr as u64, args_bytes)
-        .map_err(|e| format!("Failed to write input to WASM memory: {}", e))?;
-
-    let execute = instance.exports.get_function("tool_execute")
-        .map_err(|e| format!("WASM module missing tool_execute: {}", e))?;
-    let result = execute.call(&mut store, &[
-        WasmValue::I32(input_ptr),
-        WasmValue::I32(args_bytes.len() as i32),
-    ]).map_err(|e| format!("tool_execute failed: {}", e))?;
-
-    let encoded = result[0].unwrap_i64();
-    let result_ptr = (encoded >> 32) as u32;
-    let result_len = (encoded & 0xFFFF_FFFF) as u32;
-
-    let mut result_buf = vec![0u8; result_len as usize];
-    memory.view(&store).read(result_ptr as u64, &mut result_buf)
-        .map_err(|e| format!("Failed to read WASM result: {}", e))?;
-
-    String::from_utf8(result_buf)
-        .map_err(|e| format!("WASM result is not valid UTF-8: {}", e))
 }
 
 /// Substitute template variables in a string.
