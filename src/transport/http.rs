@@ -747,11 +747,12 @@ async fn audit_flush() -> Result<Json<Value>, StatusCode> {
 
 /// Session-scoped audit export (JSON) — returns only the named session's data.
 async fn session_audit_export_json(
-    axum::extract::Path(session_id): axum::extract::Path<String>,
+    axum::extract::Path(raw_session_id): axum::extract::Path<String>,
 ) -> Result<
     (StatusCode, [(axum::http::header::HeaderName, &'static str); 1], String),
     StatusCode
 > {
+    let session_id = sanitize_session_id(&raw_session_id).map_err(|_| StatusCode::BAD_REQUEST)?;
     match crate::audit::audit_registry().get(&session_id) {
         Some(log) => match log.export_json() {
             Ok(json) => Ok((
@@ -767,11 +768,12 @@ async fn session_audit_export_json(
 
 /// Session-scoped audit export (CSV) — returns only the named session's data.
 async fn session_audit_export_csv(
-    axum::extract::Path(session_id): axum::extract::Path<String>,
+    axum::extract::Path(raw_session_id): axum::extract::Path<String>,
 ) -> Result<
     (StatusCode, [(axum::http::header::HeaderName, &'static str); 1], String),
     StatusCode
 > {
+    let session_id = sanitize_session_id(&raw_session_id).map_err(|_| StatusCode::BAD_REQUEST)?;
     match crate::audit::audit_registry().get(&session_id) {
         Some(log) => {
             let entries = log.all();
@@ -989,8 +991,12 @@ async fn handle_websocket(socket: axum::extract::ws::WebSocket, state: Arc<Serve
 
 async fn delete_session(
     State(state): State<Arc<ServerState>>,
-    session_id: String,
+    raw_session_id: String,
 ) -> StatusCode {
+    let session_id = match sanitize_session_id(&raw_session_id) {
+        Ok(id) => id,
+        Err(_) => return StatusCode::BAD_REQUEST,
+    };
     let mut sessions = state.sessions.write().await;
     if sessions.remove(&session_id).is_some() {
         crate::audit::audit_registry().remove(&session_id);
