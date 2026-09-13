@@ -596,39 +596,37 @@ async fn handle_request(
     }
 
     // --- Layer 2: CORS preflight (P0) ---
-    if method == hyper::Method::OPTIONS {
-        if state.config.cors_enabled() {
-            let origin = req
-                .headers()
-                .get("origin")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("");
-            if is_origin_allowed(origin, &state.config) {
-                let builder = Response::builder()
-                    .status(StatusCode::NO_CONTENT)
-                    .header("access-control-allow-origin", origin)
-                    .header("vary", "origin") // Prevent cache poisoning by varying on Origin
-                    .header("access-control-allow-methods", "POST, OPTIONS")
-                    .header(
-                        "access-control-allow-headers",
-                        "content-type, x-api-key, authorization",
-                    )
-                    .header("access-control-max-age", "86400");
-                let resp = builder
-                    .body(Full::new(Bytes::new()))
-                    .unwrap_or_else(|_| build_response(StatusCode::NO_CONTENT, &[]));
-                log_request(
-                    &method,
-                    &path,
-                    StatusCode::NO_CONTENT,
-                    &correlation_id,
-                    start,
-                    client_ip,
-                );
-                return Ok(resp);
-            }
+    if method == hyper::Method::OPTIONS && state.config.cors_enabled() {
+        let origin = req
+            .headers()
+            .get("origin")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if is_origin_allowed(origin, &state.config) {
+            let builder = Response::builder()
+                .status(StatusCode::NO_CONTENT)
+                .header("access-control-allow-origin", origin)
+                .header("vary", "origin") // Prevent cache poisoning by varying on Origin
+                .header("access-control-allow-methods", "POST, OPTIONS")
+                .header(
+                    "access-control-allow-headers",
+                    "content-type, x-api-key, authorization",
+                )
+                .header("access-control-max-age", "86400");
+            let resp = builder
+                .body(Full::new(Bytes::new()))
+                .unwrap_or_else(|_| build_response(StatusCode::NO_CONTENT, &[]));
+            log_request(
+                &method,
+                &path,
+                StatusCode::NO_CONTENT,
+                &correlation_id,
+                start,
+                client_ip,
+            );
+            return Ok(resp);
         }
-        // CORS not enabled or origin not allowed -- fall through to 404.
+        // Origin not allowed -- fall through to 404.
     }
 
     // --- Layer 3: Routing ---

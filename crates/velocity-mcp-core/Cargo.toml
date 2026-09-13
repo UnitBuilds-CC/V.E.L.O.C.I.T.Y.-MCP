@@ -2,8 +2,15 @@
 name = "velocity-mcp-core"
 version = "3.2.0"
 edition = "2021"
-description = "WASM-compatible core protocol logic for VELOCITY-MCP"
+authors = ["UnitBuilds <ian@unitbuilds.com>"]
+description = "WASM-compatible core protocol logic for VELOCITY-MCP — pure MCP JSON-RPC handling with no OS dependencies"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP"
+homepage = "https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP"
+documentation = "https://docs.rs/velocity-mcp-core"
+keywords = ["mcp", "model-context-protocol", "wasm", "json-rpc", "protocol"]
+categories = ["web-programming", "no-std", "wasm"]
+readme = "../../README.md"
 
 [lib]
 crate-type = ["cdylib", "rlib"]  # Support both WASM and native compilation

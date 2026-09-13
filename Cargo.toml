@@ -27,7 +27,7 @@ wasm-networking = []
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-velocity-mcp-core = { path = "crates/velocity-mcp-core" }
+velocity-mcp-core = { version = "3.2.0", path = "crates/velocity-mcp-core" }
 memmap2 = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

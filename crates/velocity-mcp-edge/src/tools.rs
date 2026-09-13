@@ -472,8 +472,6 @@ fn to_slug(s: &str) -> String {
         .map(|c| {
             if c.is_ascii_alphanumeric() {
                 c
-            } else if c.is_ascii_whitespace() || c == '-' || c == '_' {
-                '-'
             } else {
                 '-'
             }
@@ -1018,7 +1016,7 @@ fn tool_base64_decode(args: &Value) -> Result<String, String> {
 const B64_CHARS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 fn base64_encode(data: &[u8]) -> String {
-    let mut result = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut result = String::with_capacity(data.len().div_ceil(3) * 4);
     let chunks = data.chunks(3);
     for chunk in chunks {
         let b0 = chunk[0] as u32;
@@ -1098,6 +1096,8 @@ fn tool_hash_text(args: &Value) -> Result<String, String> {
 // Minimal hash implementations (no external crate needed)
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::chunks_exact_to_as_chunks)]
+#[allow(clippy::needless_range_loop)]
 fn sha256_hex(data: &[u8]) -> String {
     // SHA-256 implementation
     let h0: [u32; 8] = [
@@ -1190,6 +1190,8 @@ fn sha256_hex(data: &[u8]) -> String {
     result
 }
 
+#[allow(clippy::chunks_exact_to_as_chunks)]
+#[allow(clippy::needless_range_loop)]
 fn sha1_hex(data: &[u8]) -> String {
     let mut h0: u32 = 0x67452301;
     let mut h1: u32 = 0xEFCDAB89;
@@ -1252,6 +1254,9 @@ fn sha1_hex(data: &[u8]) -> String {
     format!("{:08x}{:08x}{:08x}{:08x}{:08x}", h0, h1, h2, h3, h4)
 }
 
+#[allow(clippy::chunks_exact_to_as_chunks)]
+#[allow(clippy::needless_range_loop)]
+#[allow(clippy::unnecessary_cast)]
 fn md5_hex(data: &[u8]) -> String {
     // MD5 implementation
     let s: [u32; 64] = [
@@ -1279,7 +1284,7 @@ fn md5_hex(data: &[u8]) -> String {
     while (padded.len() % 64) != 56 {
         padded.push(0);
     }
-    padded.extend_from_slice(&(msg_len_bits as u64).to_le_bytes());
+    padded.extend_from_slice(&msg_len_bits.to_le_bytes());
 
     let mut a0: u32 = 0x67452301;
     let mut b0: u32 = 0xefcdab89;
