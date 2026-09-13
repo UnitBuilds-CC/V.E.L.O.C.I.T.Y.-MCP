@@ -22,12 +22,23 @@ const MAX_CANCELLED_IDS: usize = 1024;
 
 static LOG_LEVEL: Mutex<tracing::Level> = Mutex::new(tracing::Level::INFO);
 
-static CANCELLED_IDS: std::sync::LazyLock<Mutex<std::collections::HashSet<Value>>> = 
+/// Cache cancelled request IDs for cancellation support.
+/// Uses String keys to avoid cloning serde_json::Value trees.
+static CANCELLED_IDS: std::sync::LazyLock<Mutex<std::collections::HashSet<String>>> = 
     std::sync::LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+
+/// Extract a canonical string key from a JSON-RPC ID value.
+fn id_to_key(id: &Value) -> String {
+    match id {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        _ => format!("{:?}", id), // Fallback for other types
+    }
+}
 
 pub fn is_cancelled(id: &Value) -> bool {
     if let Ok(ids) = CANCELLED_IDS.lock() {
-        ids.contains(id)
+        ids.contains(&id_to_key(id))
     } else {
         false
     }
@@ -39,13 +50,13 @@ fn add_cancelled(id: Value) {
             // Evict oldest entries (arbitrary since HashSet is unordered)
             ids.clear();
         }
-        ids.insert(id);
+        ids.insert(id_to_key(&id));
     }
 }
 
 fn remove_cancelled(id: &Value) {
     if let Ok(mut ids) = CANCELLED_IDS.lock() {
-        ids.remove(id);
+        ids.remove(&id_to_key(id));
     }
 }
 
@@ -730,7 +741,7 @@ mod tests {
     fn test_tools_call_respects_cancellation() {
         let id = json!(9999);
         if let Ok(mut ids) = CANCELLED_IDS.lock() {
-            ids.insert(id.clone());
+            ids.insert(id_to_key(&id));
         }
         let req = json!({
             "jsonrpc": "2.0",
@@ -897,7 +908,7 @@ mod tests {
     fn test_tools_call_during_execution_cancellation() {
         let id = json!(8888);
         if let Ok(mut ids) = CANCELLED_IDS.lock() {
-            ids.insert(id.clone());
+            ids.insert(id_to_key(&id));
         }
         let req = json!({
             "jsonrpc": "2.0",
@@ -1297,7 +1308,7 @@ mod tests {
             "sleep 1"
         };
 
-        let id_for_thread = id_val.clone();
+        let id_for_thread = id_to_key(&id_val);
         let injector = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(80));
             if let Ok(mut ids) = CANCELLED_IDS.lock() {
