@@ -60,21 +60,26 @@ Transport is the dominant factor. Shared memory is an order of magnitude faster 
 
 ### WASM Runtime Latency
 
-7 production-ready language runtimes, all benchmarked with `text_analyze` tool:
+All numbers measured 2026-09-13 on Core 5 210H, release build, `text_analyze` tool:
 
 | Language | Engine | Cold Start | Hot Call (P50) | P95 | P99 |
 |----------|--------|------------|-----------------|-----|-----|
-| **Rust** | wasm32-wasi | 30.8 ms | **3.3 µs** | 5.5 µs | 37.7 µs |
-| **Lua** | Lua 5.4 | 10.8 ms | **15.1 µs** | 32.1 µs | 83.0 µs |
-| **JavaScript** | QuickJS | 487.1 ms | 118.0 µs | — | — |
-| **TypeScript** | QuickJS+TS | 373.0 ms | 118.0 µs | 304.0 µs | 503.4 µs |
-| **Go** | TinyGo | 378.5 ms | 240.3 µs* | — | — |
-| **Python** | MicroPython | 181.5 ms | — | — | — |
-| **Ruby** | mruby | ~10 ms | ~5 µs | — | — |
+| **Rust** | wasm32-wasi | 21.6 ms | **4.3 µs** | 5.5 µs | 31.0 µs |
+| **Lua** | Lua 5.4 | 4.9 ms | **16.0 µs** | 43.4 µs | 333.9 µs |
+| **Perl** | zeroperl | 131.7 ms | **7.8 µs** | 12.2 µs | 28.9 µs |
+| **PHP** | php-wasm | 163.1 ms | **7.7 µs** | 10.0 µs | 15.3 µs |
+| **C#** | Wasmtime | 171.5 ms | **9.2 µs** | 13.4 µs | 26.8 µs |
+| **Java** | Wasmtime | 171.9 ms | **8.6 µs** | 15.8 µs | 205.4 µs |
+| **Julia** | Wasmtime | 235.6 ms | **10.5 µs** | 16.7 µs | 27.4 µs |
+| **R** | Wasmtime | 189.8 ms | **9.2 µs** | 13.6 µs | 33.6 µs |
+| **JavaScript** | QuickJS | 224.5 ms | 90.7 µs | 135.2 µs | 167.2 µs |
+| **Go** | TinyGo | 1003.4 ms | 1057.5 µs* | — | — |
+| **Python** | MicroPython | 184.0 ms | — | — | — |
 
-*Go uses cached module instantiation per call.
+*Go uses cached module instantiation. Python hot calls skipped (MicroPython single-call limitation).
+TypeScript (transpiler bug) and Ruby/mruby (WASM EH incompatibility) currently fail initialization.
 
-6 additional languages (PHP, Perl, C#, R, Java, Julia) are planned but currently use toy interpreters that cannot execute real language syntax. See [WASM Runtime Status](docs/wasm_runtime_status.md) for details and integration roadmap.
+6 additional languages use tree-walk interpreters sharing a common C core with full control flow, functions, data structures, and JSON I/O. See [WASM Runtime Status](docs/wasm_runtime_status.md) for details.
 
 ---
 
