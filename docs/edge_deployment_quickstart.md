@@ -47,16 +47,20 @@ curl https://velocity-mcp-edge.wasmer.app \
 
 The WASM Edge deployment provides:
 - ✅ HTTP/SSE transport (JSON-RPC over HTTP)
-- ✅ All 13 language runtimes (QuickJS, Lua, MicroPython, etc.)
-- ✅ Dynamic tool registration
-- ✅ Metering middleware (instruction counting)
-- ✅ Module compilation caching
+- ✅ 10 pure-Rust edge tools (echo, json_format, text_count, text_transform, math_eval, bench_echo, timestamp, base64_encode, base64_decode, hash_text)
+- ✅ Request size limiting (MAX_BODY_SIZE)
+- ✅ CORS support (ALLOWED_ORIGINS)
+- ✅ Rate limiting (RATE_LIMIT_PER_MINUTE)
+- ✅ API key authentication (VELOCITY_API_KEY with X-API-Key header)
 
 Not available on Edge:
 - ❌ NDA-native shared memory transport
 - ❌ Process spawning (shell_exec)
 - ❌ Local filesystem access beyond temp storage
 - ❌ Custom TCP/UDP sockets
+- ❌ WASM language runtimes (QuickJS, Lua, MicroPython, etc.) — only available in native build
+- ❌ Dynamic tool registration — use the 10 built-in edge tools
+- ❌ Metering middleware and module caching — not needed for pure-Rust tools
 
 ## Monitoring
 

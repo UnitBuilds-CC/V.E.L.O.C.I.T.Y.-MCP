@@ -287,6 +287,9 @@ fn tool_json_format(args: &Value) -> Result<String, String> {
     Ok(formatted)
 }
 
+/// Maximum JSON nesting depth for pretty-printing (prevents stack overflow DoS).
+const MAX_JSON_DEPTH: usize = 200;
+
 /// Pretty-print JSON with configurable indent (no external formatter needed).
 fn pretty_print_json(value: &Value, indent: usize) -> String {
     let mut out = String::new();
@@ -295,6 +298,12 @@ fn pretty_print_json(value: &Value, indent: usize) -> String {
 }
 
 fn pretty_print_inner(value: &Value, out: &mut String, indent: usize, depth: usize) {
+    // Guard against deeply nested structures that could cause stack overflow
+    if depth > MAX_JSON_DEPTH {
+        out.push_str("...");
+        return;
+    }
+    
     match value {
         Value::Null => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
@@ -423,7 +432,18 @@ fn tool_text_transform(args: &Value) -> Result<String, String> {
                 .get("new")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "'replace' operation requires 'new' argument".to_string())?;
-            Ok(text.replace(old, new))
+            
+            // Prevent string amplification DoS: reject empty 'old' which would cause infinite replacement
+            if old.is_empty() {
+                return Err("'replace' operation: 'old' argument cannot be empty (would cause unbounded growth)".to_string());
+            }
+            
+            // Limit output size to prevent memory exhaustion
+            let result = text.replace(old, new);
+            if result.len() > 10_485_760 { // 10MB limit
+                return Err(format!("Replace result too large ({} bytes, max 10MB)", result.len()));
+            }
+            Ok(result)
         }
         "slug" => Ok(to_slug(text)),
         _ => Err(format!(
@@ -488,12 +508,15 @@ fn tool_math_eval(args: &Value) -> Result<String, String> {
 // Safe math expression evaluator (recursive descent parser)
 // ---------------------------------------------------------------------------
 
+/// Maximum recursion depth to prevent stack overflow attacks.
+const MAX_MATH_RECURSION_DEPTH: usize = 100;
+
 /// Evaluate a mathematical expression safely. No variables, no assignments,
 /// no function calls beyond the built-in set. Completes in microseconds.
 fn eval_math_expr(input: &str) -> Result<f64, String> {
     let tokens = tokenize_math(input)?;
     let mut pos = 0;
-    let result = parse_expr(&tokens, &mut pos)?;
+    let result = parse_expr(&tokens, &mut pos, 0)?;
     if pos < tokens.len() {
         return Err(format!(
             "Unexpected token '{}' at position {}",
@@ -588,26 +611,32 @@ fn tokenize_math(input: &str) -> Result<Vec<MathToken>, String> {
 // unary    -> ('-' | '+') unary | primary
 // primary  -> NUMBER | FUNC '(' args ')' | '(' expr ')'
 
-fn parse_expr(tokens: &[MathToken], pos: &mut usize) -> Result<f64, String> {
-    let mut result = parse_term(tokens, pos)?;
+fn parse_expr(tokens: &[MathToken], pos: &mut usize, depth: usize) -> Result<f64, String> {
+    if depth > MAX_MATH_RECURSION_DEPTH {
+        return Err(format!("Expression too complex (max recursion depth {})", MAX_MATH_RECURSION_DEPTH));
+    }
+    let mut result = parse_term(tokens, pos, depth + 1)?;
     while *pos < tokens.len() {
         match tokens[*pos] {
-            MathToken::Plus => { *pos += 1; result += parse_term(tokens, pos)?; }
-            MathToken::Minus => { *pos += 1; result -= parse_term(tokens, pos)?; }
+            MathToken::Plus => { *pos += 1; result += parse_term(tokens, pos, depth + 1)?; }
+            MathToken::Minus => { *pos += 1; result -= parse_term(tokens, pos, depth + 1)?; }
             _ => break,
         }
     }
     Ok(result)
 }
 
-fn parse_term(tokens: &[MathToken], pos: &mut usize) -> Result<f64, String> {
-    let mut result = parse_power(tokens, pos)?;
+fn parse_term(tokens: &[MathToken], pos: &mut usize, depth: usize) -> Result<f64, String> {
+    if depth > MAX_MATH_RECURSION_DEPTH {
+        return Err(format!("Expression too complex (max recursion depth {})", MAX_MATH_RECURSION_DEPTH));
+    }
+    let mut result = parse_power(tokens, pos, depth + 1)?;
     while *pos < tokens.len() {
         match tokens[*pos] {
-            MathToken::Star => { *pos += 1; result *= parse_power(tokens, pos)?; }
+            MathToken::Star => { *pos += 1; result *= parse_power(tokens, pos, depth + 1)?; }
             MathToken::Slash => {
                 *pos += 1;
-                let divisor = parse_power(tokens, pos)?;
+                let divisor = parse_power(tokens, pos, depth + 1)?;
                 if divisor == 0.0 {
                     return Err("Division by zero".to_string());
                 }
@@ -615,7 +644,7 @@ fn parse_term(tokens: &[MathToken], pos: &mut usize) -> Result<f64, String> {
             }
             MathToken::Percent => {
                 *pos += 1;
-                let divisor = parse_power(tokens, pos)?;
+                let divisor = parse_power(tokens, pos, depth + 1)?;
                 if divisor == 0.0 {
                     return Err("Modulo by zero".to_string());
                 }
@@ -627,30 +656,39 @@ fn parse_term(tokens: &[MathToken], pos: &mut usize) -> Result<f64, String> {
     Ok(result)
 }
 
-fn parse_power(tokens: &[MathToken], pos: &mut usize) -> Result<f64, String> {
-    let base = parse_unary(tokens, pos)?;
+fn parse_power(tokens: &[MathToken], pos: &mut usize, depth: usize) -> Result<f64, String> {
+    if depth > MAX_MATH_RECURSION_DEPTH {
+        return Err(format!("Expression too complex (max recursion depth {})", MAX_MATH_RECURSION_DEPTH));
+    }
+    let base = parse_unary(tokens, pos, depth + 1)?;
     if *pos < tokens.len() {
         if let MathToken::Caret = tokens[*pos] {
             *pos += 1;
-            let exp = parse_power(tokens, pos)?; // Right-associative
+            let exp = parse_power(tokens, pos, depth + 1)?; // Right-associative
             return Ok(base.powf(exp));
         }
     }
     Ok(base)
 }
 
-fn parse_unary(tokens: &[MathToken], pos: &mut usize) -> Result<f64, String> {
+fn parse_unary(tokens: &[MathToken], pos: &mut usize, depth: usize) -> Result<f64, String> {
+    if depth > MAX_MATH_RECURSION_DEPTH {
+        return Err(format!("Expression too complex (max recursion depth {})", MAX_MATH_RECURSION_DEPTH));
+    }
     if *pos < tokens.len() {
         match tokens[*pos] {
-            MathToken::Minus => { *pos += 1; return Ok(-parse_unary(tokens, pos)?); }
-            MathToken::Plus => { *pos += 1; return parse_unary(tokens, pos); }
+            MathToken::Minus => { *pos += 1; return Ok(-parse_unary(tokens, pos, depth + 1)?); }
+            MathToken::Plus => { *pos += 1; return parse_unary(tokens, pos, depth + 1); }
             _ => {}
         }
     }
-    parse_primary(tokens, pos)
+    parse_primary(tokens, pos, depth + 1)
 }
 
-fn parse_primary(tokens: &[MathToken], pos: &mut usize) -> Result<f64, String> {
+fn parse_primary(tokens: &[MathToken], pos: &mut usize, depth: usize) -> Result<f64, String> {
+    if depth > MAX_MATH_RECURSION_DEPTH {
+        return Err(format!("Expression too complex (max recursion depth {})", MAX_MATH_RECURSION_DEPTH));
+    }
     if *pos >= tokens.len() {
         return Err("Unexpected end of expression".to_string());
     }
@@ -680,11 +718,11 @@ fn parse_primary(tokens: &[MathToken], pos: &mut usize) -> Result<f64, String> {
                 if let MathToken::RParen = tokens[*pos] {
                     // No arguments
                 } else {
-                    args.push(parse_expr(tokens, pos)?);
+                    args.push(parse_expr(tokens, pos, depth + 1)?);
                     while *pos < tokens.len() {
                         if let MathToken::Comma = tokens[*pos] {
                             *pos += 1;
-                            args.push(parse_expr(tokens, pos)?);
+                            args.push(parse_expr(tokens, pos, depth + 1)?);
                         } else {
                             break;
                         }
@@ -703,7 +741,7 @@ fn parse_primary(tokens: &[MathToken], pos: &mut usize) -> Result<f64, String> {
         }
         MathToken::LParen => {
             *pos += 1;
-            let result = parse_expr(tokens, pos)?;
+            let result = parse_expr(tokens, pos, depth + 1)?;
             if *pos >= tokens.len() || !matches!(tokens[*pos], MathToken::RParen) {
                 return Err("Expected ')'".to_string());
             }

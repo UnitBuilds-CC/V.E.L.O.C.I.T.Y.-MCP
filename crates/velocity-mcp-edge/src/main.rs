@@ -48,50 +48,79 @@
 //! | `VELOCITY_API_KEY` | _(unset = no auth)_ | Required API key for MCP endpoints |
 //! | `RATE_LIMIT_PER_MINUTE` | `100` | Max requests per minute per IP (0 = disabled) |
 
+// ---------------------------------------------------------------------------
+// Native server code (only compiled for non-WASM targets)
+// ---------------------------------------------------------------------------
+
+#[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::convert::Infallible;
-use std::net::SocketAddr;
+#[cfg(not(target_arch = "wasm32"))]
+use std::net::{IpAddr, SocketAddr};
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Arc, Mutex};
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 
+#[cfg(not(target_arch = "wasm32"))]
 use hyper::body::Bytes;
+#[cfg(not(target_arch = "wasm32"))]
 use hyper::service::service_fn;
+#[cfg(not(target_arch = "wasm32"))]
 use hyper::{Request, Response, StatusCode};
+#[cfg(not(target_arch = "wasm32"))]
 use http_body_util::{BodyExt, Full};
+#[cfg(not(target_arch = "wasm32"))]
 use hyper_util::rt::TokioIo;
+#[cfg(not(target_arch = "wasm32"))]
 use tracing::{info, warn};
-use velocity_mcp_core::{handle_mcp_request, parse_request, serialize_response};
+#[cfg(not(target_arch = "wasm32"))]
+use velocity_mcp_core::{handle_mcp_request_with_executor, parse_request, serialize_response};
+#[cfg(not(target_arch = "wasm32"))]
+use subtle::ConstantTimeEq;
+
+// Tools module - available for all targets
+mod tools;
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 /// Default maximum request body size: 1 MB.
+#[cfg(not(target_arch = "wasm32"))]
 const DEFAULT_MAX_BODY_SIZE: usize = 1_048_576;
 
 /// Default rate limit: 100 requests per minute per IP.
+#[cfg(not(target_arch = "wasm32"))]
 const DEFAULT_RATE_LIMIT: u32 = 100;
 
 /// How often to sweep expired entries from the rate limiter map.
+#[cfg(not(target_arch = "wasm32"))]
 const RATE_LIMIT_CLEANUP_INTERVAL_SECS: u64 = 60;
 
 /// Pre-serialized health-check response (avoids allocation on every probe).
+#[cfg(not(target_arch = "wasm32"))]
 const HEALTH_RESPONSE: &[u8] =
     b"{\"status\":\"healthy\",\"version\":\"3.2.0\"}";
 
 /// Pre-serialized 404 error (used when no route matches).
+#[cfg(not(target_arch = "wasm32"))]
 const NOT_FOUND_BODY: &[u8] =
     b"{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32601,\"message\":\"Not Found\"},\"id\":null}";
 
 /// Pre-serialized 413 error body.
+#[cfg(not(target_arch = "wasm32"))]
 const PAYLOAD_TOO_LARGE_BODY: &[u8] =
     b"{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,\"message\":\"Payload too large\"},\"id\":null}";
 
 /// Pre-serialized 401 error body.
+#[cfg(not(target_arch = "wasm32"))]
 const UNAUTHORIZED_BODY: &[u8] =
     b"{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,\"message\":\"Unauthorized\"},\"id\":null}";
 
 /// Pre-serialized 429 error body.
+#[cfg(not(target_arch = "wasm32"))]
 const RATE_LIMITED_BODY: &[u8] =
     b"{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,\"message\":\"Rate limit exceeded\"},\"id\":null}";
 
@@ -103,6 +132,7 @@ const RATE_LIMITED_BODY: &[u8] =
 ///
 /// All fields are resolved once at startup and shared (via `Arc`) across all
 /// connection handlers. Changing env vars at runtime has no effect.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
 struct ServerConfig {
     /// Maximum allowed request body in bytes.
@@ -116,6 +146,7 @@ struct ServerConfig {
     rate_limit_per_minute: u32,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ServerConfig {
     /// Load configuration from environment variables with safe defaults.
     fn from_env() -> Self {
@@ -135,7 +166,17 @@ impl ServerConfig {
             }
         });
 
-        let api_key = std::env::var("VELOCITY_API_KEY").ok();
+        // Reject empty API keys - if VELOCITY_API_KEY is set but empty, disable auth
+        let api_key = std::env::var("VELOCITY_API_KEY")
+            .ok()
+            .and_then(|k| {
+                let trimmed = k.trim().to_string();
+                if trimmed.is_empty() {
+                    None // Treat empty key as disabled
+                } else {
+                    Some(trimmed)
+                }
+            });
 
         let rate_limit_per_minute = std::env::var("RATE_LIMIT_PER_MINUTE")
             .ok()
@@ -175,12 +216,15 @@ impl ServerConfig {
 /// Each bucket starts full (`tokens == capacity`). Every request consumes one
 /// token. Tokens refill at `capacity` per 60 seconds, computed lazily on each
 /// check via elapsed-time interpolation.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone)]
 struct TokenBucket {
     tokens: f64,
     capacity: f64,
     last_refill: Instant,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl TokenBucket {
     fn new(capacity: u32) -> Self {
         Self {
@@ -223,11 +267,13 @@ impl TokenBucket {
 ///
 /// The mutex is held only for the duration of a hash lookup + float arithmetic
 /// (< 1 microsecond), so contention is negligible even under heavy load.
+#[cfg(not(target_arch = "wasm32"))]
 struct RateLimiter {
-    buckets: Mutex<HashMap<SocketAddr, TokenBucket>>,
+    buckets: Mutex<HashMap<IpAddr, TokenBucket>>,
     capacity: u32,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl RateLimiter {
     fn new(capacity: u32) -> Self {
         Self {
@@ -238,7 +284,7 @@ impl RateLimiter {
 
     /// Check whether `addr` is allowed to make a request.
     /// If the rate limit is disabled (`capacity == 0`), always returns `Ok(true)`.
-    fn check(&self, addr: SocketAddr) -> Result<bool, ()> {
+    fn check(&self, addr: IpAddr) -> Result<bool, ()> {
         if self.capacity == 0 {
             return Ok(true);
         }
@@ -254,6 +300,31 @@ impl RateLimiter {
             .or_insert_with(|| TokenBucket::new(self.capacity));
         Ok(bucket.try_consume())
     }
+
+    /// Get rate limit info for headers without consuming a token.
+    /// Returns (limit, remaining, reset_seconds).
+    fn get_info(&self, addr: IpAddr) -> Result<Option<(u32, u32, f64)>, ()> {
+        if self.capacity == 0 {
+            return Ok(None);
+        }
+        let map = self.buckets.lock().map_err(|_| ())?;
+        if let Some(bucket) = map.get(&addr) {
+            // Clone and refill to get accurate count without mutating the original
+            let mut b = bucket.clone();
+            b.refill();
+            let remaining = b.tokens as u32;
+            // Reset time: seconds until full refill from current state
+            let deficit = b.capacity - b.tokens;
+            let reset_seconds = if deficit <= 0.0 {
+                0.0
+            } else {
+                deficit / (b.capacity / 60.0)
+            };
+            Ok(Some((self.capacity, remaining, reset_seconds)))
+        } else {
+            Ok(Some((self.capacity, self.capacity, 0.0)))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +336,7 @@ impl RateLimiter {
 /// Wrapped in `Arc` and cloned (cheaply) into each connection task. The
 /// `RateLimiter` internally uses a `Mutex<HashMap>` so all connections share
 /// the same rate-limit state.
+#[cfg(not(target_arch = "wasm32"))]
 struct ServerState {
     config: ServerConfig,
     rate_limiter: RateLimiter,
@@ -276,20 +348,28 @@ struct ServerState {
 
 /// Compare two byte slices in constant time to prevent timing side-channel attacks.
 ///
-/// Uses XOR accumulation: the loop always runs for `max(len_a, len_b)` iterations
-/// regardless of where the first mismatch occurs, and the final `diff == 0` check
-/// does not short-circuit. Length difference is folded in separately so that the
-/// timing leak from `len_a != len_b` is at most a few nanoseconds (vs. microseconds
-/// for early-exit comparison on long strings).
+/// Uses the `subtle` crate's ConstantTimeEq trait for guaranteed constant-time comparison.
+/// Both inputs are padded to a fixed maximum length before comparison to avoid leaking
+/// the expected key length via early return on length mismatch.
+#[cfg(not(target_arch = "wasm32"))]
 fn timing_safe_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff: u8 = 0;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
+    const MAX_KEY_LEN: usize = 256;
+    
+    // Pad both inputs to fixed length to avoid leaking length via timing
+    let mut a_padded = [0u8; MAX_KEY_LEN];
+    let mut b_padded = [0u8; MAX_KEY_LEN];
+    
+    let a_len = a.len().min(MAX_KEY_LEN);
+    let b_len = b.len().min(MAX_KEY_LEN);
+    
+    a_padded[..a_len].copy_from_slice(&a[..a_len]);
+    b_padded[..b_len].copy_from_slice(&b[..b_len]);
+    
+    // Compare padded versions in constant time, but also check that original lengths match
+    let length_match = a.len() == b.len();
+    let content_match = a_padded.ct_eq(&b_padded).into();
+    
+    length_match && content_match
 }
 
 // ---------------------------------------------------------------------------
@@ -301,15 +381,18 @@ fn timing_safe_eq(a: &[u8], b: &[u8]) -> bool {
 /// Uses `Relaxed` ordering: we only need uniqueness, not sequencing guarantees.
 /// Combined with process start time to produce IDs that are unique within a
 /// server instance and globally unique across restarts.
+#[cfg(not(target_arch = "wasm32"))]
 static REQUEST_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Server start time, captured once at first use for correlation-ID prefix.
+#[cfg(not(target_arch = "wasm32"))]
 static START_TIME: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 
 /// Generate a unique, opaque correlation ID for request tracing.
 ///
 /// Format: `<epoch_offset>-<monotonic_counter>` where `epoch_offset` is seconds
 /// since server start and `monotonic_counter` is a per-process atomic counter.
+#[cfg(not(target_arch = "wasm32"))]
 fn generate_correlation_id() -> String {
     let start = START_TIME.get_or_init(Instant::now);
     let counter = REQUEST_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -322,19 +405,45 @@ fn generate_correlation_id() -> String {
 
 /// Extract the client IP address from the request.
 ///
-/// Checks `X-Forwarded-For` header first (for deployments behind a reverse
-/// proxy / load balancer), falling back to the TCP peer address captured at
-/// connection time. Only the first (leftmost) IP in `X-Forwarded-For` is used.
+/// Security note: Only trusts `X-Forwarded-For` when the direct peer is a known
+/// proxy (localhost or private network). Otherwise uses the TCP peer address to
+/// prevent header spoofing attacks. When multiple IPs are present in XFF, uses
+/// the rightmost untrusted IP (closest to the actual client) rather than the
+/// leftmost (which can be forged by the client).
+#[cfg(not(target_arch = "wasm32"))]
 fn extract_client_ip(
     req: &Request<impl hyper::body::Body>,
     peer_addr: SocketAddr,
-) -> SocketAddr {
+) -> IpAddr {
+    // If the direct peer is not a trusted proxy, ignore X-Forwarded-For entirely
+    if !is_trusted_proxy(peer_addr) {
+        return peer_addr.ip();
+    }
+    
+    // Parse X-Forwarded-For and use the rightmost untrusted IP
     req.headers()
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .and_then(|s| s.trim().parse::<SocketAddr>().ok())
-        .unwrap_or(peer_addr)
+        .and_then(|s| {
+            // Split by comma and iterate in reverse to find the first untrusted IP
+            s.split(',')
+                .rev()
+                .map(|ip| ip.trim())
+                .find_map(|ip| ip.parse::<SocketAddr>().ok())
+                .filter(|addr| !is_trusted_proxy(*addr))
+        })
+        .map(|addr| addr.ip())
+        .unwrap_or(peer_addr.ip())
+}
+
+/// Check if an address is a trusted proxy (localhost or private network).
+#[cfg(not(target_arch = "wasm32"))]
+fn is_trusted_proxy(addr: SocketAddr) -> bool {
+    let ip = addr.ip();
+    ip.is_loopback() || ip.is_unspecified() || match ip {
+        std::net::IpAddr::V4(v4) => v4.is_private(),
+        std::net::IpAddr::V6(_) => false, // IPv6 private ranges are complex; skip for now
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -342,6 +451,7 @@ fn extract_client_ip(
 // ---------------------------------------------------------------------------
 
 /// Check whether `origin` is allowed by the server configuration.
+#[cfg(not(target_arch = "wasm32"))]
 fn is_origin_allowed(origin: &str, config: &ServerConfig) -> bool {
     match &config.allowed_origins {
         None => false,                       // CORS disabled entirely
@@ -355,6 +465,7 @@ fn is_origin_allowed(origin: &str, config: &ServerConfig) -> bool {
 /// Called on every response from the MCP endpoint so that browsers enforce the
 /// same-origin policy correctly. Takes the origin string directly so that it
 /// can be extracted from the request before the request is consumed.
+#[cfg(not(target_arch = "wasm32"))]
 fn apply_cors_headers(
     builder: http::response::Builder,
     origin: Option<&str>,
@@ -372,6 +483,7 @@ fn apply_cors_headers(
     }
     builder
         .header("access-control-allow-origin", origin)
+        .header("vary", "origin") // Prevent cache poisoning by varying on Origin
         .header("access-control-allow-methods", "POST, OPTIONS")
         .header(
             "access-control-allow-headers",
@@ -385,6 +497,7 @@ fn apply_cors_headers(
 // ---------------------------------------------------------------------------
 
 /// Build a JSON response with the given status code and pre-serialized body.
+#[cfg(not(target_arch = "wasm32"))]
 fn build_response(
     status: StatusCode,
     body: &'static [u8],
@@ -411,6 +524,7 @@ fn build_response(
 /// The `public_message` is what the client sees. The `detail` is logged
 /// server-side only and never transmitted. This prevents leaking stack traces,
 /// file paths, or other implementation details.
+#[cfg(not(target_arch = "wasm32"))]
 fn sanitized_error(
     status: StatusCode,
     public_message: &str,
@@ -447,6 +561,7 @@ fn sanitized_error(
 /// 3. Routing
 /// 4. CORS headers on response
 /// 5. Request logging
+#[cfg(not(target_arch = "wasm32"))]
 async fn handle_request(
     req: Request<hyper::body::Incoming>,
     state: Arc<ServerState>,
@@ -488,6 +603,7 @@ async fn handle_request(
                 let builder = Response::builder()
                     .status(StatusCode::NO_CONTENT)
                     .header("access-control-allow-origin", origin)
+                    .header("vary", "origin") // Prevent cache poisoning by varying on Origin
                     .header("access-control-allow-methods", "POST, OPTIONS")
                     .header(
                         "access-control-allow-headers",
@@ -526,6 +642,9 @@ async fn handle_request(
             .unwrap_or_else(|_| build_response(StatusCode::NOT_FOUND, NOT_FOUND_BODY))
     };
 
+    // Apply rate limit headers to all responses (when enabled)
+    let resp = with_rate_limit_headers(resp, &state, client_ip);
+
     // --- Layer 6: Request Logging (P2) ---
     log_request(&method, &path, resp.status(), &correlation_id, start, client_ip);
 
@@ -536,6 +655,7 @@ async fn handle_request(
 ///
 /// Accepts a pre-extracted origin string (since the request may have been consumed
 /// by body collection). Pass `None` to skip CORS (no Origin header or CORS disabled).
+#[cfg(not(target_arch = "wasm32"))]
 fn with_cors(
     mut resp: Response<Full<Bytes>>,
     origin: Option<&str>,
@@ -555,6 +675,10 @@ fn with_cors(
     if let Ok(val) = origin.parse() {
         headers.insert("access-control-allow-origin", val);
     }
+    // Add Vary: Origin to prevent cache poisoning
+    if let Ok(val) = "origin".parse() {
+        headers.append("vary", val);
+    }
     if let Ok(val) = "POST, OPTIONS".parse() {
         headers.insert("access-control-allow-methods", val);
     }
@@ -567,11 +691,55 @@ fn with_cors(
     resp
 }
 
+/// Apply rate limit headers to a response.
+///
+/// Adds X-RateLimit-Limit, X-RateLimit-Remaining, and X-RateLimit-Reset headers
+/// when rate limiting is enabled. These headers help clients understand their
+/// current rate limit status and plan accordingly.
+#[cfg(not(target_arch = "wasm32"))]
+fn with_rate_limit_headers(
+    mut resp: Response<Full<Bytes>>,
+    state: &Arc<ServerState>,
+    client_ip: IpAddr,
+) -> Response<Full<Bytes>> {
+    if !state.config.rate_limit_enabled() {
+        return resp;
+    }
+
+    match state.rate_limiter.get_info(client_ip) {
+        Ok(Some((limit, remaining, reset_seconds))) => {
+            let headers = resp.headers_mut();
+            
+            // X-RateLimit-Limit: maximum requests per window
+            if let Ok(val) = format!("{}", limit).parse::<hyper::header::HeaderValue>() {
+                headers.insert("x-ratelimit-limit", val);
+            }
+            
+            // X-RateLimit-Remaining: remaining requests in current window
+            if let Ok(val) = format!("{}", remaining).parse::<hyper::header::HeaderValue>() {
+                headers.insert("x-ratelimit-remaining", val);
+            }
+            
+            // X-RateLimit-Reset: seconds until rate limit resets (full refill)
+            let reset_secs = reset_seconds.ceil() as u64;
+            if let Ok(val) = format!("{}", reset_secs).parse::<hyper::header::HeaderValue>() {
+                headers.insert("x-ratelimit-reset", val);
+            }
+        }
+        Ok(None) | Err(_) => {
+            // Rate limiting disabled or error getting info - skip headers silently
+        }
+    }
+
+    resp
+}
+
 /// Handle POST /mcp (or POST /) -- the main MCP endpoint.
 ///
 /// Applies request size limits (P0) and API key authentication (P1) before
 /// delegating to `velocity_mcp_core` for JSON-RPC processing.
 /// CORS headers are applied to all responses via `with_cors`.
+#[cfg(not(target_arch = "wasm32"))]
 async fn handle_mcp_post(
     req: Request<hyper::body::Incoming>,
     state: &Arc<ServerState>,
@@ -622,10 +790,26 @@ async fn handle_mcp_post(
         }
     }
 
-    // Read the request body (consumes `req`).
-    let body_bytes = match req.collect().await {
+    // Read the request body with size limiting to prevent memory exhaustion.
+    // Use Limited to enforce a hard cap even without Content-Length header.
+    let limited_body = http_body_util::Limited::new(req.into_body(), state.config.max_body_size);
+    
+    let body_bytes = match limited_body.collect().await {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {
+            // Check if it's a length limit error
+            let error_msg = e.to_string();
+            if error_msg.contains("length limit") || error_msg.contains("too large") {
+                warn!(
+                    max = state.config.max_body_size,
+                    "Request body exceeded limit during collection"
+                );
+                return with_cors(
+                    build_response(StatusCode::PAYLOAD_TOO_LARGE, PAYLOAD_TOO_LARGE_BODY),
+                    origin.as_deref(),
+                    &state.config,
+                );
+            }
             // Sanitize: log the real error, return a generic message.
             warn!(error = %e, "Failed to read request body");
             return with_cors(
@@ -662,10 +846,12 @@ async fn handle_mcp_post(
 ///
 /// All errors from the core protocol are sanitized before being returned to
 /// the client (Layer 5: Error Sanitization).
+#[cfg(not(target_arch = "wasm32"))]
 fn process_mcp_request(request_body: &[u8]) -> Response<Full<Bytes>> {
     match parse_request(request_body) {
         Ok(request) => {
-            let response = handle_mcp_request(&request);
+            let executor = tools::EdgeToolExecutor::new();
+            let response = handle_mcp_request_with_executor(&request, &executor);
             let bytes = serialize_response(&response);
             Response::builder()
                 .status(StatusCode::OK)
@@ -696,13 +882,14 @@ fn process_mcp_request(request_body: &[u8]) -> Response<Full<Bytes>> {
 /// Outputs: method, path, HTTP status, duration (ms), correlation ID, and
 /// client IP. This data can be consumed by structured logging collectors
 /// (e.g., JSON fmt subscriber, OpenTelemetry, etc.).
+#[cfg(not(target_arch = "wasm32"))]
 fn log_request(
     method: &hyper::Method,
     path: &str,
     status: StatusCode,
     correlation_id: &str,
     start: Instant,
-    client_ip: SocketAddr,
+    client_ip: IpAddr,
 ) {
     let duration_ms = start.elapsed().as_millis();
     info!(
@@ -717,9 +904,20 @@ fn log_request(
 }
 
 // ---------------------------------------------------------------------------
-// Entry point
+// Entry point (WASM - no-op, just satisfies binary requirement)
 // ---------------------------------------------------------------------------
 
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    // WASI entry points are handle_http_request and wasmer_free
+    // This main() is never called but required for binary compilation
+}
+
+// ---------------------------------------------------------------------------
+// Entry point (native server)
+// ---------------------------------------------------------------------------
+
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing (structured logging).
@@ -770,29 +968,89 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Clone the Arc (cheap: just increments the refcount).
         let state = Arc::clone(&state);
 
-        // Spawn a task to handle the connection.
+        // Spawn a task to handle the connection with a timeout to prevent Slowloris DoS.
         tokio::task::spawn(async move {
-            if let Err(err) = hyper::server::conn::http1::Builder::new()
+            let conn = hyper::server::conn::http1::Builder::new()
                 .serve_connection(
                     io,
                     service_fn(move |req| {
                         let state = Arc::clone(&state);
                         handle_request(req, state, peer_addr)
                     }),
-                )
-                .await
-            {
-                warn!(error = %err, "Error serving connection");
+                );
+            
+            // Apply a 60-second idle timeout to prevent Slowloris-style attacks.
+            // This covers normal request processing while preventing indefinite connection holding.
+            match tokio::time::timeout(Duration::from_secs(60), conn).await {
+                Ok(Ok(())) => {} // Success
+                Ok(Err(err)) => warn!(error = %err, "Error serving connection"),
+                Err(_) => warn!("Connection timed out after 60 seconds (possible Slowloris attack)"),
             }
         });
     }
 }
 
 // ---------------------------------------------------------------------------
-// Tests
+// WASI entry point (for wasm32-wasip1 target)
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+/// WASI entry point for Wasmer Edge deployment.
+/// 
+/// This provides a simple HTTP request handler that can be invoked by the
+/// wasi-http component model. For now, we provide a placeholder that
+/// demonstrates the architecture - full wasi-http integration requires
+/// additional tooling.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn handle_http_request(input_ptr: *const u8, input_len: usize) -> *mut u8 {
+    use std::slice;
+    
+    // SAFETY: Called from WASM host with valid pointer/length
+    let input_bytes = unsafe { slice::from_raw_parts(input_ptr, input_len) };
+    
+    // Process MCP request using the core protocol logic
+    let response_bytes = match velocity_mcp_core::parse_request(input_bytes) {
+        Ok(request) => {
+            let executor = tools::EdgeToolExecutor::new();
+            let response = velocity_mcp_core::handle_mcp_request_with_executor(&request, &executor);
+            velocity_mcp_core::serialize_response(&response)
+        }
+        Err(_) => {
+            // Sanitize: never leak internal parse errors to clients
+            let error_response = serde_json::json!({
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": -32700,
+                    "message": "Parse error"
+                },
+                "id": null
+            });
+            serde_json::to_vec(&error_response).unwrap_or_else(|_| {
+                // This should never fail for a simple static JSON object
+                b"{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Internal error\"},\"id\":null}".to_vec()
+            })
+        }
+    };
+    
+    // Return pointer as Box<Vec<u8>> so wasmer_free can reconstruct correctly
+    let boxed = Box::new(response_bytes);
+    Box::into_raw(boxed) as *mut u8
+}
+
+/// Free memory allocated by handle_http_request
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn wasmer_free(ptr: *mut u8) {
+    if !ptr.is_null() {
+        drop(Box::from_raw(ptr as *mut Vec<u8>));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests (native only - requires hyper and tokio)
+// ---------------------------------------------------------------------------
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 
@@ -881,7 +1139,7 @@ mod tests {
     #[test]
     fn rate_limiter_allows_under_limit() {
         let rl = RateLimiter::new(10);
-        let addr: SocketAddr = "127.0.0.1:1234".parse().unwrap();
+        let addr: IpAddr = "127.0.0.1".parse().unwrap();
         for _ in 0..10 {
             assert!(rl.check(addr).unwrap());
         }
@@ -890,7 +1148,7 @@ mod tests {
     #[test]
     fn rate_limiter_blocks_over_limit() {
         let rl = RateLimiter::new(2);
-        let addr: SocketAddr = "127.0.0.1:5678".parse().unwrap();
+        let addr: IpAddr = "127.0.0.1".parse().unwrap();
         assert!(rl.check(addr).unwrap()); // 1st
         assert!(rl.check(addr).unwrap()); // 2nd
         assert!(!rl.check(addr).unwrap()); // 3rd -- blocked
@@ -899,7 +1157,7 @@ mod tests {
     #[test]
     fn rate_limiter_disabled_at_zero() {
         let rl = RateLimiter::new(0);
-        let addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+        let addr: IpAddr = "127.0.0.1".parse().unwrap();
         // Should always return true when disabled.
         for _ in 0..1000 {
             assert!(rl.check(addr).unwrap());
@@ -909,8 +1167,8 @@ mod tests {
     #[test]
     fn rate_limiter_separate_ips() {
         let rl = RateLimiter::new(1);
-        let addr1: SocketAddr = "10.0.0.1:1000".parse().unwrap();
-        let addr2: SocketAddr = "10.0.0.2:2000".parse().unwrap();
+        let addr1: IpAddr = "10.0.0.1".parse().unwrap();
+        let addr2: IpAddr = "10.0.0.2".parse().unwrap();
         assert!(rl.check(addr1).unwrap());
         assert!(rl.check(addr2).unwrap()); // different IP, separate bucket
         assert!(!rl.check(addr1).unwrap()); // addr1 exhausted

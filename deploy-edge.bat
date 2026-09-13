@@ -9,7 +9,7 @@ REM Usage: deploy-edge.bat [--skip-tests] [--skip-build] [--dry-run]
 REM ============================================================================
 
 REM --- Configuration ---
-set "WASM_BINARY=target\wasm32-wasip1\release\velocity_edge.wasm"
+set "WASM_BINARY=target\wasm32-wasip1\release\velocity-edge.wasm"
 set "MAX_WASM_SIZE_BYTES=5242880"
 set "TARGET=wasm32-wasip1"
 set "BIN_NAME=velocity-edge"

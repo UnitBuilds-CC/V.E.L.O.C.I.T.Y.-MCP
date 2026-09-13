@@ -9,7 +9,7 @@
 set -euo pipefail
 
 # --- Configuration ---
-WASM_BINARY="target/wasm32-wasip1/release/velocity_edge.wasm"
+WASM_BINARY="target/wasm32-wasip1/release/velocity-edge.wasm"
 MAX_WASM_SIZE_BYTES=5242880  # 5MB
 TARGET="wasm32-wasip1"
 BIN_NAME="velocity-edge"

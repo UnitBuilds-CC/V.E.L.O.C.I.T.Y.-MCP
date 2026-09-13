@@ -124,9 +124,10 @@ That is it. Your VELOCITY-MCP server is running on Wasmer Edge.
 |---------|------|--------|
 | HTTP/SSE transport | Yes | Yes |
 | JSON-RPC over HTTP | Yes | Yes |
-| WASM plugin runtimes (12 languages) | Yes | Yes |
-| Metering/instruction counting | Yes | Yes |
-| Module compilation caching | Yes | Yes |
+| Pure-Rust edge tools (10 built-in) | Yes | No |
+| WASM plugin runtimes (12 languages) | No | Yes |
+| Metering/instruction counting | No | Yes |
+| Module compilation caching | No | Yes |
 | NDA binary protocol | No | Yes |
 | Shared memory IPC | No | Yes |
 | Process-based sandbox (seccomp) | No | Yes |
@@ -205,17 +206,17 @@ max_instances = 3
 # Use "warn" on free tier to minimize overhead
 RUST_LOG = "warn"
 
-# Operational mode: "edge" disables OS-specific features gracefully
-VELOCITY_MODE = "edge"
-
 # Optional: API key for request authentication
 # VELOCITY_API_KEY = "your-secret-key-here"
 
 # Optional: Maximum request body size in bytes (default: 1MB)
-# VELOCITY_MAX_REQUEST_SIZE = "1048576"
+# MAX_BODY_SIZE = "1048576"
 
-# Optional: Request timeout in seconds (default: 30)
-# VELOCITY_REQUEST_TIMEOUT = "30"
+# Optional: Allowed CORS origins (comma-separated, or "*" for all)
+# ALLOWED_ORIGINS = "*"
+
+# Optional: Rate limit per minute per IP (default: 100, 0 to disable)
+# RATE_LIMIT_PER_MINUTE = "100"
 
 [edge.healthcheck]
 # Health check endpoint path
@@ -233,10 +234,10 @@ interval_seconds = 30
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `RUST_LOG` | `warn` | Logging level. Use `warn` on free tier, `info` for debugging |
-| `VELOCITY_MODE` | `edge` | Set to `edge` to disable OS-specific features |
-| `VELOCITY_API_KEY` | (none) | Bearer token for request authentication |
-| `VELOCITY_MAX_REQUEST_SIZE` | `1048576` | Maximum request body in bytes (1MB default) |
-| `VELOCITY_REQUEST_TIMEOUT` | `30` | Per-request timeout in seconds |
+| `VELOCITY_API_KEY` | (none) | API key for request authentication (X-API-Key header) |
+| `MAX_BODY_SIZE` | `1048576` | Maximum request body in bytes (1MB default) |
+| `ALLOWED_ORIGINS` | (none) | Comma-separated CORS origins, or "*" for all |
+| `RATE_LIMIT_PER_MINUTE` | `100` | Max requests per minute per IP (0 to disable) |
 | `PORT` | `8080` | HTTP listen port (overridden by Edge platform) |
 
 ### Configuration Examples
@@ -252,7 +253,7 @@ max_instances = 3
 
 [edge.env]
 RUST_LOG = "warn"
-VELOCITY_MODE = "edge"
+VELOCITY_API_KEY = "sk-your-secret-key-here"
 ```
 
 **Production deployment with authentication:**
@@ -266,10 +267,10 @@ max_instances = 20
 
 [edge.env]
 RUST_LOG = "info"
-VELOCITY_MODE = "edge"
 VELOCITY_API_KEY = "sk-..."
-VELOCITY_MAX_REQUEST_SIZE = "4194304"
-VELOCITY_REQUEST_TIMEOUT = "60"
+MAX_BODY_SIZE = "4194304"  # 4MB
+ALLOWED_ORIGINS = "*"
+RATE_LIMIT_PER_MINUTE = "200"
 ```
 
 ---
@@ -300,7 +301,7 @@ Main MCP endpoint. Accepts JSON-RPC 2.0 requests.
 
 **Request Headers:**
 - `Content-Type: application/json` (required)
-- `Authorization: Bearer <api-key>` (required if `VELOCITY_API_KEY` is set)
+- `X-API-Key: <api-key>` (required if `VELOCITY_API_KEY` is set)
 
 **Request Body:** Standard MCP JSON-RPC 2.0 format.
 
@@ -472,31 +473,38 @@ All errors follow the JSON-RPC 2.0 error format:
 | `-32602` | Invalid params |
 | `-32603` | Internal error |
 | `401` | Unauthorized (invalid or missing API key) |
-| `413` | Request too large (exceeds `VELOCITY_MAX_REQUEST_SIZE`) |
+| `413` | Request too large (exceeds `MAX_BODY_SIZE`) |
 | `429` | Too many requests (rate limit exceeded) |
 | `500` | Internal server error |
 
 ---
 
-## 5. WASM Plugin Runtimes on Edge
+## 5. Edge Tools vs Native WASM Runtimes
 
-VELOCITY-MCP Edge supports all 12 WASM language runtimes for plugin execution:
+### Edge Deployment: Pure-Rust Built-in Tools
 
-| Runtime | Language | Status | Notes |
-|---------|----------|--------|-------|
-| QuickJS | JavaScript | Full | Optimized parser bypass |
-| QuickJS | TypeScript | Full | Via QuickJS with type stripping |
-| MicroPython | Python | Full | WASI reactor mode |
-| Lua | Lua | Full | WASI reactor, optimized call path |
-| mruby | Ruby | Full | Optimized parser bypass |
-| TinyGo | Go | Full | wasm32-wasi target |
-| wasm32-wasi | Rust | Full | Native WASI |
-| interp_core | PHP | Demo | Toy interpreter |
-| interp_core | C# | Demo | Toy interpreter |
-| interp_core | Java | Demo | Toy interpreter |
-| interp_core | R | Demo | Toy interpreter |
-| interp_core | Julia | Demo | Toy interpreter |
-| interp_core | Perl | Demo | Toy interpreter |
+The WASM edge deployment uses 10 pure-Rust tools that compile to WebAssembly without external dependencies:
+
+| Tool | Description |
+|------|-------------|
+| echo | Echo back input message |
+| json_format | Parse and pretty-print JSON |
+| text_count | Count characters, words, lines, bytes |
+| text_transform | Transform text (upper, lower, title, reverse, trim, truncate, replace, slug) |
+| math_eval | Evaluate mathematical expressions |
+| bench_echo | Generate benchmark payloads of specific size |
+| timestamp | Return current UTC timestamp |
+| base64_encode | Encode text to Base64 |
+| base64_decode | Decode Base64 to text |
+| hash_text | Compute SHA-256/SHA-1/MD5 hash |
+
+**Why not WASM language runtimes on Edge?** Wasmer's Cranelift backend JIT-compiles WASM to native machine code. Inside a WASM/WASIX environment, there is no native execution environment — you cannot JIT to code you cannot run. WASM modules also cannot be loaded or instantiated from within a WASM sandbox. The edge deployment therefore uses pure Rust implementations instead.
+
+### Native Deployment: Full WASM Language Runtime Support
+
+The native build supports all 12 WASM language runtimes (QuickJS, MicroPython, Lua, mruby, TinyGo, Rust, PHP, C#, Java, R, Julia, Perl) via the Wasmer runtime with metering and caching. See the main README for details.
+
+---
 
 ### Example Plugin Manifest (Edge-Compatible)
 
@@ -536,12 +544,12 @@ Enable API key authentication by setting the `VELOCITY_API_KEY` environment vari
 VELOCITY_API_KEY = "sk-your-secret-key-here"
 ```
 
-Clients must include the key in the Authorization header:
+Clients must include the key in the X-API-Key header:
 
 ```bash
 curl -X POST https://<your-app>.wasmer.app/mcp \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer sk-your-secret-key-here" \
+  -H "X-API-Key: sk-your-secret-key-here" \
   -d '{"jsonrpc":"2.0","method":"ping","id":1}'
 ```
 
@@ -553,7 +561,9 @@ Prevent abuse by limiting request body size:
 
 ```toml
 [edge.env]
-VELOCITY_MAX_REQUEST_SIZE = "1048576"  # 1MB default
+MAX_BODY_SIZE = "1048576"  # 1MB default
+ALLOWED_ORIGINS = "*"      # CORS origins
+RATE_LIMIT_PER_MINUTE = "100"  # Rate limit per IP
 ```
 
 ### Instruction Limits (Metering)
@@ -716,11 +726,11 @@ memory_mb = 256
 
 **Requests timing out**
 
-Check `VELOCITY_REQUEST_TIMEOUT` and increase if needed. Also verify the tool being called is not hitting the instruction limit.
+Check the instruction limit in `wasmer.toml` and increase if needed. Complex tools may need more than the default 5M instructions. Also verify the tool being called is not hitting an infinite loop or excessive computation.
 
 **`401 Unauthorized` on all requests**
 
-Verify the API key is correct and the `Authorization` header format is `Bearer <key>`.
+Verify the API key is correct and the `X-API-Key` header is set to the correct key value. Note that empty API keys are treated as disabled authentication.
 
 ### Monitoring
 
@@ -785,7 +795,7 @@ For Edge deployment:
     "velocity-edge": {
       "url": "https://<your-app>.wasmer.app/mcp",
       "headers": {
-        "Authorization": "Bearer sk-your-api-key"
+        "X-API-Key": "sk-your-api-key"
       }
     }
   }

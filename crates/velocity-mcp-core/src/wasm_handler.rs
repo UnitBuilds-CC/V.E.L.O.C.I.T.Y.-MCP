@@ -20,16 +20,20 @@ pub extern "C" fn handle_http_request(input_ptr: *const u8, input_len: usize) ->
             let response = handle_mcp_request(&request);
             serialize_response(&response)
         }
-        Err(e) => {
+        Err(_) => {
+            // Sanitize: never leak internal parse errors to clients
             let error_response = serde_json::json!({
                 "jsonrpc": "2.0",
                 "error": {
                     "code": -32700,
-                    "message": e
+                    "message": "Parse error"
                 },
                 "id": null
             });
-            serde_json::to_vec(&error_response).unwrap()
+            serde_json::to_vec(&error_response).unwrap_or_else(|_| {
+                // This should never fail for a simple static JSON object
+                b"{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Internal error\"},\"id\":null}".to_vec()
+            })
         }
     };
 

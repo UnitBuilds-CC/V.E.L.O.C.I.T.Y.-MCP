@@ -397,15 +397,24 @@ pub fn verify_webhook_signature(payload: &str, signature: &str, secret: &str) ->
     }
 }
 
+/// Constant-time byte slice comparison that does not leak length via early return.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
+    let max_len = a.len().max(b.len());
+    if max_len == 0 {
+        return true;
     }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
+    
+    // Pad shorter slice to match longer one (cycling through bytes).
+    // This prevents length-based timing attacks while still comparing all bytes.
+    let mut result = if a.len() != b.len() { 1u8 } else { 0u8 };
+    
+    for i in 0..max_len {
+        let byte_a = a.get(i % a.len()).copied().unwrap_or(0);
+        let byte_b = b.get(i % b.len()).copied().unwrap_or(0);
+        result |= byte_a ^ byte_b;
     }
-    diff == 0
+    
+    result == 0
 }
 
 /// Send a webhook event to a configured endpoint.

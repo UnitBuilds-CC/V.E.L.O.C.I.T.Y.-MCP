@@ -99,11 +99,26 @@ async fn test_error_response_body_is_valid_json() {
 
 #[tokio::test]
 async fn test_error_response_code_matches_status() {
+    // Test that HTTP status codes are correctly mapped to JSON-RPC error codes
+    // per MCP/JSON-RPC 2.0 spec, not passed through as-is
+    
+    // 405 Method Not Allowed -> -32601 (Method Not Found)
     let resp = error_response(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
     let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let parsed: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
-    // 405 for METHOD_NOT_ALLOWED
-    assert_eq!(parsed["error"]["code"], 405);
+    assert_eq!(parsed["error"]["code"], -32601);
+    
+    // 400 Bad Request -> -32600 (Invalid Request)
+    let resp = error_response(StatusCode::BAD_REQUEST, "bad request");
+    let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let parsed: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(parsed["error"]["code"], -32600);
+    
+    // 500 Internal Server Error -> -32603 (Internal Error)
+    let resp = error_response(StatusCode::INTERNAL_SERVER_ERROR, "server error");
+    let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let parsed: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(parsed["error"]["code"], -32603);
 }
 
 // ---------------------------------------------------------------------------

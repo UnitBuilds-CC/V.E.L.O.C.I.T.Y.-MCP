@@ -466,7 +466,7 @@ fn handle_json_shmem(buffer: &mut SharedMemoryBuffer, input_str: &str) -> Result
                     json!({
                         "jsonrpc": "2.0",
                         "id": id,
-                        "error": { "code": -32603, "message": e }
+                        "error": { "code": -32603, "message": crate::sandbox::sanitize_error(&e) }
                     })
                 }
             }
@@ -480,7 +480,7 @@ fn handle_json_shmem(buffer: &mut SharedMemoryBuffer, input_str: &str) -> Result
             let sub_id = request["params"]["subscriberId"].as_str().unwrap_or("default");
             match crate::resources::handle_resources_subscribe(uri, sub_id) {
                 Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
-                Err(e) => json!({"jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": e }}),
+                Err(e) => json!({"jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": crate::sandbox::sanitize_error(&e) }}),
             }
         }
         "resources/unsubscribe" => {
@@ -488,7 +488,7 @@ fn handle_json_shmem(buffer: &mut SharedMemoryBuffer, input_str: &str) -> Result
             let sub_id = request["params"]["subscriberId"].as_str().unwrap_or("default");
             match crate::resources::handle_resources_unsubscribe(uri, sub_id) {
                 Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
-                Err(e) => json!({"jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": e }}),
+                Err(e) => json!({"jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": crate::sandbox::sanitize_error(&e) }}),
             }
         }
         "prompts/list" => {
@@ -500,14 +500,14 @@ fn handle_json_shmem(buffer: &mut SharedMemoryBuffer, input_str: &str) -> Result
             let arguments = &request["params"]["arguments"];
             match crate::resources::handle_prompts_get(name, arguments) {
                 Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
-                Err(e) => json!({"jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": e }}),
+                Err(e) => json!({"jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": crate::sandbox::sanitize_error(&e) }}),
             }
         }
         "sampling/createMessage" => {
             let params = &request["params"];
             match crate::sampling::handle_sampling_create_message(params) {
                 Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
-                Err(e) => json!({"jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": e }}),
+                Err(e) => json!({"jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": crate::sandbox::sanitize_error(&e) }}),
             }
         }
         "notifications/cancelled" => {

@@ -1167,7 +1167,7 @@ fn build_router(state: Arc<ServerState>) -> Router {
         .route("/admin/audit/export/csv", get(admin_audit_export_csv))
         .route("/admin/audit/summary", get(admin_audit_summary))
         .route("/sessions", get(list_sessions))
-        .route("/sessions/:id", get(delete_session))
+        .route("/sessions/:id", delete(delete_session))
         .route("/marketplace/plugins", get(marketplace_list_plugins))
         .route("/marketplace/plugins/:id", get(marketplace_get_plugin))
         .route("/marketplace/plugins/:id/review", post(marketplace_submit_review))
@@ -1332,14 +1332,23 @@ fn load_tls_config(cert_path: &str, key_path: &str) -> Result<rustls::ServerConf
 }
 
 /// Constant-time string comparison to prevent timing side-channel attacks.
+/// Constant-time string comparison that does not leak length via early return.
 fn constant_time_eq(a: &str, b: &str) -> bool {
-    if a.len() != b.len() {
-        return false;
+    let max_len = a.len().max(b.len());
+    if max_len == 0 {
+        return true;
     }
-    let mut result = 0u8;
-    for (x, y) in a.bytes().zip(b.bytes()) {
-        result |= x ^ y;
+    
+    // Pad shorter string to match longer one (cycling through bytes).
+    // This prevents length-based timing attacks while still comparing all bytes.
+    let mut result = if a.len() != b.len() { 1u8 } else { 0u8 };
+    
+    for i in 0..max_len {
+        let byte_a = a.as_bytes().get(i % a.len()).copied().unwrap_or(0);
+        let byte_b = b.as_bytes().get(i % b.len()).copied().unwrap_or(0);
+        result |= byte_a ^ byte_b;
     }
+    
     result == 0
 }
 

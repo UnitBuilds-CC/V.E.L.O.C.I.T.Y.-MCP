@@ -1691,7 +1691,7 @@ pub fn cache_nmcp_frame(json_request: &str, output_path: &str) -> Result<String,
     let tool_def = Tool {
         name: tool_name.to_string(),
         description: format!("NDA-converted tool '{}' — executes via fast binary path", tool_name),
-        input_schema: if args_schema.is_object() && !args_schema.as_object().unwrap().is_empty() {
+        input_schema: if args_schema.is_object() && !args_schema.as_object().map_or(true, |obj| obj.is_empty()) {
             args_schema.clone()
         } else {
             json!({

@@ -201,7 +201,13 @@ fn main() {
             }) {
                 eprintln!("Warning: Failed to set Ctrl+C handler: {}", e);
             }
-            let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+            let rt = match tokio::runtime::Runtime::new() {
+                Ok(runtime) => runtime,
+                Err(e) => {
+                    eprintln!("Error: Failed to create Tokio runtime: {}", e);
+                    process::exit(1);
+                }
+            };
             let tls_config = match (tls_cert, tls_key) {
                 (Some(cert), Some(key)) => Some(velocity_mcp::transport::http::TlsConfig {
                     cert_path: cert.to_string(),
