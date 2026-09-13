@@ -119,7 +119,7 @@ impl VelocityError {
             Self::Database { message } => (-32000, message.clone()),
             #[cfg(feature = "oauth2")]
             Self::OAuth2 { message } => (-32000, message.clone()),
-            Self::Io { source } => (-32000, source.to_string()),
+            Self::Io { source } => (-32000, crate::sandbox::sanitize_error(&source.to_string())),
             Self::Json { source } => (-32700, source.to_string()),
             Self::Internal { message } => (-32603, message.clone()),
         };
