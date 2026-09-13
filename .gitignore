@@ -1,5 +1,7 @@
 # Build artifacts
 target/
+target2/
+target_test/
 
 # IDE and editor files
 .idea/
