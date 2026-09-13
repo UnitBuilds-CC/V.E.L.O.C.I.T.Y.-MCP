@@ -929,6 +929,12 @@ async fn handle_websocket(socket: axum::extract::ws::WebSocket, state: Arc<Serve
         crate::audit::set_session_context(session_for_task);
         crate::audit::set_transport_context("websocket".to_string());
 
+        // Per-connection rate limiter: 50 msg/sec with burst of 100
+        let mut last_refill = std::time::Instant::now();
+        let mut tokens: u32 = 100;
+        const MAX_TOKENS: u32 = 100;
+        const REFILL_RATE: u32 = 50; // tokens per second
+        
         while let Some(msg) = StreamExt::next(&mut receiver).await {
             match msg {
                 Ok(Message::Text(text)) => {
@@ -941,6 +947,32 @@ async fn handle_websocket(socket: axum::extract::ws::WebSocket, state: Arc<Serve
                         let _ = sender.send(Message::Text(err_res.to_string())).await;
                         continue;
                     }
+                    
+                    // Refill tokens based on elapsed time
+                    let now = std::time::Instant::now();
+                    let elapsed_ms = now.duration_since(last_refill).as_millis() as u64;
+                    if elapsed_ms >= 20 { // refill every 20ms
+                        let new_tokens = (elapsed_ms * REFILL_RATE as u64 / 1000) as u32;
+                        if new_tokens > 0 {
+                            tokens = (tokens + new_tokens).min(MAX_TOKENS);
+                            last_refill = now;
+                        }
+                    }
+                    
+                    // Check rate limit
+                    if tokens == 0 {
+                        let err_res = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "error": { "code": -32008, "message": "Rate limit exceeded" },
+                            "id": null
+                        });
+                        let _ = sender.send(Message::Text(err_res.to_string())).await;
+                        // Continue processing but log the violation
+                        tracing::warn!(session = %ws_session_id, "WebSocket rate limit exceeded");
+                        continue;
+                    }
+                    tokens -= 1;
+                    
                     match serde_json::from_str::<Value>(&text) {
                         Ok(request) => {
                             // Process the request

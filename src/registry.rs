@@ -1356,11 +1356,16 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
                     format!("{}:80", host)
                 };
                 let dns_host = host_port.clone();
+                
+                // Use channel with timeout to prevent hanging on unresponsive DNS
+                let (tx, rx) = std::sync::mpsc::channel();
                 let dns_handle = std::thread::spawn(move || {
-                    (&dns_host as &str).to_socket_addrs()
-                        .map(|iter| iter.collect::<Vec<_>>())
+                    let result = (&dns_host as &str).to_socket_addrs()
+                        .map(|iter| iter.collect::<Vec<_>>());
+                    let _ = tx.send(result);
                 });
-                match dns_handle.join() {
+                
+                match rx.recv_timeout(std::time::Duration::from_secs(5)) {
                     Ok(Ok(addrs)) => {
                         for addr in addrs {
                             let ip = addr.ip();
@@ -1388,10 +1393,20 @@ pub fn call_tool_with_csharp_path(name: &str, arguments: &Value, csharp_path: &s
                     Ok(Err(_)) => {
                         tracing::warn!(host = %host, "DNS resolution failed for host validation");
                     }
-                    Err(_) => {
-                        tracing::warn!(host = %host, "DNS resolution thread panicked");
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        tracing::warn!(host = %host, "DNS resolution timed out after 5 seconds");
+                        return Err(format!(
+                            "DNS resolution timed out for host '{}'. Please check network connectivity.",
+                            host
+                        ).into());
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        tracing::warn!(host = %host, "DNS resolution thread disconnected");
                     }
                 }
+                
+                // Detach the thread since we've already received the result or timed out
+                drop(dns_handle);
             }
             
             #[cfg(feature = "oauth2")]
