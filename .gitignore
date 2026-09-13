@@ -48,3 +48,12 @@ bench_tools/mruby_wasm/mruby-host.tar.gz
 credentials.json
 secrets.toml
 audit_logs/
+
+# Benchmark output files
+benchmark_output.txt
+benchmark_run*.txt
+
+# Temp build intermediates
+*.o.tmp
+bench_tools/r_wasm/webr.wasm
+bench_tools/webr.wasm
