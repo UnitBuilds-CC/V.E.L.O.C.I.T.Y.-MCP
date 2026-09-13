@@ -399,7 +399,18 @@ fn execute_wasm_plugin_tool(tool: &PluginTool, arguments: &Value) -> Result<Stri
     // Wall-clock timeouts are not feasible here because the runtime is shared behind a Mutex.
     // Ensure metering is configured via WasmRuntimesConfig.instruction_limit.
     runtime.call_tool(&tool.name, &args_json)
-        .map_err(|e| format!("WASM tool '{}' execution failed: {}", tool.name, e))
+        .map_err(|e| {
+            let err_msg = e.to_string();
+            // Detect metering limit exceeded errors from Wasmer
+            if err_msg.contains("out of gas") || err_msg.contains("instruction limit") || err_msg.contains("metering") {
+                format!(
+                    "WASM tool '{}' exceeded resource limits (instruction count). This usually means the tool has an infinite loop or is too computationally expensive. Consider optimizing the code or increasing the instruction_limit in your configuration.",
+                    tool.name
+                )
+            } else {
+                format!("WASM tool '{}' execution failed: {}", tool.name, e)
+            }
+        })
 }
 
 fn resolve_wasm_source(executor: &PluginExecutor) -> Result<String, String> {
@@ -554,7 +565,18 @@ fn execute_standalone_wasm_tool(source_file: &str, tool_name: &str, arguments: &
         let result = execute.call(&mut store, &[
             WasmValue::I32(input_ptr),
             WasmValue::I32(args_bytes.len() as i32),
-        ]).map_err(|e| format!("tool_execute failed: {}", e))?;
+        ]).map_err(|e| {
+            let err_msg = e.to_string();
+            // Detect metering limit exceeded errors from Wasmer
+            if err_msg.contains("out of gas") || err_msg.contains("instruction limit") || err_msg.contains("metering") {
+                format!(
+                    "Standalone WASM tool '{}' exceeded resource limits (instruction count). This usually means the tool has an infinite loop or is too computationally expensive. Consider optimizing the code or increasing the instruction_limit in your configuration.",
+                    tool_name_owned
+                )
+            } else {
+                format!("tool_execute failed: {}", e)
+            }
+        })?;
 
         let encoded = result[0].unwrap_i64();
         let result_ptr = (encoded >> 32) as u32;
