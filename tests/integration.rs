@@ -14,19 +14,35 @@ use velocity_mcp::registry;
 
 pub(crate) fn test_timer(name: &str) -> impl Drop {
     let start = std::time::Instant::now();
-    struct Timer { name: String, start: std::time::Instant }
+    struct Timer {
+        name: String,
+        start: std::time::Instant,
+    }
     impl Drop for Timer {
         fn drop(&mut self) {
-            eprintln!("[TEST] {} completed in {:.3}ms", self.name, self.start.elapsed().as_secs_f64() * 1000.0);
+            eprintln!(
+                "[TEST] {} completed in {:.3}ms",
+                self.name,
+                self.start.elapsed().as_secs_f64() * 1000.0
+            );
         }
     }
-    Timer { name: name.to_string(), start }
+    Timer {
+        name: name.to_string(),
+        start,
+    }
 }
 
 fn log_throughput(test_name: &str, ops: u64, elapsed: std::time::Duration) {
     let secs = elapsed.as_secs_f64();
     let ops_per_sec = if secs > 0.0 { ops as f64 / secs } else { 0.0 };
-    eprintln!("[METRIC] {}: {} ops in {:.3}ms ({:.0} ops/sec)", test_name, ops, elapsed.as_secs_f64() * 1000.0, ops_per_sec);
+    eprintln!(
+        "[METRIC] {}: {} ops in {:.3}ms ({:.0} ops/sec)",
+        test_name,
+        ops,
+        elapsed.as_secs_f64() * 1000.0,
+        ops_per_sec
+    );
 }
 
 // ─── JSON-RPC Protocol Flow ──────────────────────────────────────────────────
@@ -39,12 +55,21 @@ fn test_full_mcp_session_flow() {
     let init_req = json!({"jsonrpc": "2.0", "method": "initialize", "id": 1});
     let init_res = handle_request(&init_req).expect("initialize must return a response");
     assert_eq!(init_res["result"]["protocolVersion"], "2024-11-05");
-    assert_eq!(init_res["result"]["serverInfo"]["name"], "velocity-mcp-rust-server");
-    assert_eq!(init_res["result"]["serverInfo"]["version"], velocity_mcp::VERSION);
+    assert_eq!(
+        init_res["result"]["serverInfo"]["name"],
+        "velocity-mcp-rust-server"
+    );
+    assert_eq!(
+        init_res["result"]["serverInfo"]["version"],
+        velocity_mcp::VERSION
+    );
 
     // Step 2: notifications/initialized (notification — no response)
     let notif = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
-    assert!(handle_request(&notif).is_none(), "notifications must not return a response");
+    assert!(
+        handle_request(&notif).is_none(),
+        "notifications must not return a response"
+    );
 
     // Step 3: tools/list
     let list_req = json!({"jsonrpc": "2.0", "method": "tools/list", "id": 2});
@@ -59,7 +84,8 @@ fn test_full_mcp_session_flow() {
         "params": { "name": "nonexistent", "arguments": {} },
         "id": 3
     });
-    let call_res = handle_request(&call_req).expect("tools/call must return a response even on error");
+    let call_res =
+        handle_request(&call_req).expect("tools/call must return a response even on error");
     assert_eq!(call_res["result"]["isError"], true);
 
     // Step 5: health/check
@@ -183,11 +209,17 @@ fn test_shmem_buffer_boundary_conditions() {
 
     // Maximum valid output (61440 bytes = TOTAL_BUFFER_SIZE - OUTPUT_BUFFER_OFFSET)
     let max_output = "x".repeat(61440);
-    assert!(buffer.write_output(&max_output).is_ok(), "Max output should succeed");
+    assert!(
+        buffer.write_output(&max_output).is_ok(),
+        "Max output should succeed"
+    );
 
     // One byte over the limit
     let over_output = "x".repeat(61441);
-    assert!(buffer.write_output(&over_output).is_err(), "Over-limit output should fail");
+    assert!(
+        buffer.write_output(&over_output).is_err(),
+        "Over-limit output should fail"
+    );
 
     drop(buffer);
     let _ = fs::remove_file(path);
@@ -231,13 +263,25 @@ fn test_registry_tool_definitions() {
     let tools = registry::get_tools();
     assert!(tools.len() >= 4, "Should have at least 4 built-in tools");
 
-    let expected_names = ["convert_to_nda_document", "convert_to_nda_tool", "read_nda", "execute_nda"];
+    let expected_names = [
+        "convert_to_nda_document",
+        "convert_to_nda_tool",
+        "read_nda",
+        "execute_nda",
+    ];
     let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
     for expected in expected_names.iter() {
-        assert!(tool_names.contains(expected), "Missing built-in tool: {}", expected);
+        assert!(
+            tool_names.contains(expected),
+            "Missing built-in tool: {}",
+            expected
+        );
     }
     // Verify schemas for the built-in tools
-    for tool in tools.iter().filter(|t| expected_names.contains(&t.name.as_str())) {
+    for tool in tools
+        .iter()
+        .filter(|t| expected_names.contains(&t.name.as_str()))
+    {
         assert!(!tool.description.is_empty());
         assert_eq!(tool.input_schema["type"], "object");
         assert!(tool.input_schema["properties"].is_object());
@@ -266,10 +310,7 @@ fn test_registry_path_validation_blocks_attacks() {
     assert!(result.unwrap_err().to_string().contains("absolute"));
 
     // Empty path
-    let result = registry::call_tool(
-        "execute_nda",
-        &json!({"ndaPath": ""}),
-    );
+    let result = registry::call_tool("execute_nda", &json!({"ndaPath": ""}));
     assert!(result.is_err());
 }
 
@@ -294,7 +335,10 @@ fn test_registry_env_var_path_override() {
     let original = std::env::var("VELOCITY_CSHARP_PATH").ok();
 
     std::env::set_var("VELOCITY_CSHARP_PATH", "C:\\custom\\path\\server.exe");
-    assert_eq!(registry::resolve_csharp_path(), "C:\\custom\\path\\server.exe");
+    assert_eq!(
+        registry::resolve_csharp_path(),
+        "C:\\custom\\path\\server.exe"
+    );
 
     // Restore original
     match original {
@@ -320,8 +364,13 @@ fn test_protocol_to_registry_dispatch() {
     let res = handle_request(&req).unwrap();
     assert_eq!(res["result"]["isError"], true);
     let text = res["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(text.contains("ndaPath is required") || text.contains("Error running tool") || text.to_lowercase().contains("rate limit"),
-            "Expected param error or rate limit, got: {}", text);
+    assert!(
+        text.contains("ndaPath is required")
+            || text.contains("Error running tool")
+            || text.to_lowercase().contains("rate limit"),
+        "Expected param error or rate limit, got: {}",
+        text
+    );
 
     // Unknown tool — should get an error (routed to C# engine which rejects it)
     let req = json!({
@@ -409,7 +458,9 @@ fn test_adversarial_deeply_nested_xml() {
         // Shared strings with moderately nested structure
         zip.start_file("xl/sharedStrings.xml", options).unwrap();
         let nested = "<sst xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">";
-        let items = (0..50).map(|i| format!("<si><t>item{}</t></si>", i)).collect::<String>();
+        let items = (0..50)
+            .map(|i| format!("<si><t>item{}</t></si>", i))
+            .collect::<String>();
         write!(zip, "{}{}</sst>", nested, items).unwrap();
 
         zip.start_file("xl/worksheets/sheet1.xml", options).unwrap();
@@ -444,7 +495,11 @@ fn test_adversarial_empty_xlsx() {
         zip.start_file("[Content_Types].xml", options).unwrap();
         write!(zip, "<Types/>").unwrap();
         zip.start_file("xl/sharedStrings.xml", options).unwrap();
-        write!(zip, "<sst xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"/>").unwrap();
+        write!(
+            zip,
+            "<sst xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"/>"
+        )
+        .unwrap();
         zip.start_file("xl/worksheets/sheet1.xml", options).unwrap();
         write!(zip, "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData/></worksheet>").unwrap();
         zip.finish().unwrap();
@@ -486,7 +541,11 @@ fn test_adversarial_sandbox_path_traversal() {
 
     for path in attack_paths {
         let result = sandbox.check_file_access(std::path::Path::new(path));
-        assert!(result.is_err(), "Path traversal should be blocked: {}", path);
+        assert!(
+            result.is_err(),
+            "Path traversal should be blocked: {}",
+            path
+        );
     }
 }
 
@@ -547,7 +606,10 @@ fn test_adversarial_sandbox_violation_recording() {
     let result = sandbox.execute("echo", &["test".to_string()]);
 
     // Should have recorded violations
-    assert!(result.violations.len() >= 2, "Should have multiple violations recorded");
+    assert!(
+        result.violations.len() >= 2,
+        "Should have multiple violations recorded"
+    );
 
     // Verify violation categories
     let categories: Vec<_> = result.violations.iter().map(|v| v.category).collect();
@@ -562,8 +624,8 @@ fn test_adversarial_sandbox_violation_recording() {
 #[test]
 fn test_adversarial_tampered_nda_detection() {
     let _t = test_timer("test_adversarial_tampered_nda_detection");
-    use velocity_mcp::nda_document::{NdaCompiler, NdaDocument};
     use ed25519_dalek::SigningKey;
+    use velocity_mcp::nda_document::{NdaCompiler, NdaDocument};
 
     let signing_key = SigningKey::from_bytes(&[42u8; 32]);
 
@@ -588,8 +650,8 @@ fn test_adversarial_tampered_nda_detection() {
 #[test]
 fn test_adversarial_signature_through_registry() {
     let _t = test_timer("test_adversarial_signature_through_registry");
-    use velocity_mcp::nda_document::NdaCompiler;
     use ed25519_dalek::SigningKey;
+    use velocity_mcp::nda_document::NdaCompiler;
 
     let temp_dir = std::env::temp_dir().join("veloc_sig_registry_test");
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -613,8 +675,10 @@ fn test_adversarial_signature_through_registry() {
     assert!(result.is_ok());
     let content = result.unwrap();
     // Should show VERIFIED signature
-    assert!(content.contains("VERIFIED") || content.contains("Signature"),
-            "Should report signature status");
+    assert!(
+        content.contains("VERIFIED") || content.contains("Signature"),
+        "Should report signature status"
+    );
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
@@ -625,7 +689,7 @@ fn test_adversarial_signature_through_registry() {
 #[test]
 fn test_adversarial_rate_limiter_burst() {
     let _t = test_timer("test_adversarial_rate_limiter_burst");
-    use velocity_mcp::rate_limit::{check_rate_limit, available_tokens};
+    use velocity_mcp::rate_limit::{available_tokens, check_rate_limit};
 
     // Drain available tokens rapidly
     let mut allowed = 0;
@@ -657,16 +721,16 @@ fn test_adversarial_audit_log_overflow() {
 
     // Write many entries to test ring buffer overflow
     for i in 0..1000 {
-        audit.record(
-            &format!("tool_{}", i),
-            start,
-            AuditOutcome::Success,
-        );
+        audit.record(&format!("tool_{}", i), start, AuditOutcome::Success);
     }
 
     // Should not panic, and recent entries should be retrievable
     let entries = audit.recent(10);
-    assert_eq!(entries.len(), 10, "Should return requested number of entries");
+    assert_eq!(
+        entries.len(),
+        10,
+        "Should return requested number of entries"
+    );
 }
 
 // ─── Adversarial: Error Sanitization ─────────────────────────────────────────
@@ -712,12 +776,22 @@ fn test_adversarial_dispatch_error_no_path_leak() {
         }
     });
 
-    let resp = velocity_mcp::protocol::json_rpc::handle_request(&req).expect("should return response");
+    let resp =
+        velocity_mcp::protocol::json_rpc::handle_request(&req).expect("should return response");
     let resp_text = resp.to_string();
 
-    assert!(!resp_text.contains("admin"), "Dispatch error must not leak username");
-    assert!(!resp_text.contains("secret_credentials"), "Dispatch error must not leak path components");
-    assert!(resp_text.contains("Error type:"), "Should still include error classification");
+    assert!(
+        !resp_text.contains("admin"),
+        "Dispatch error must not leak username"
+    );
+    assert!(
+        !resp_text.contains("secret_credentials"),
+        "Dispatch error must not leak path components"
+    );
+    assert!(
+        resp_text.contains("Error type:"),
+        "Should still include error classification"
+    );
 }
 
 // ─── Adversarial: NDA Parser Robustness ──────────────────────────────────────
@@ -726,7 +800,7 @@ fn test_adversarial_dispatch_error_no_path_leak() {
 #[test]
 fn test_adversarial_corrupted_header() {
     let _t = test_timer("test_adversarial_corrupted_header");
-    use velocity_mcp::nda_document::{NdaDocument, NdaCompiler, HEADER_SIZE};
+    use velocity_mcp::nda_document::{NdaCompiler, NdaDocument, HEADER_SIZE};
 
     // Create a valid NDA
     let mut compiler = NdaCompiler::new();
@@ -746,7 +820,7 @@ fn test_adversarial_corrupted_header() {
 #[test]
 fn test_adversarial_truncated_nda() {
     let _t = test_timer("test_adversarial_truncated_nda");
-    use velocity_mcp::nda_document::{NdaDocument, NdaCompiler};
+    use velocity_mcp::nda_document::{NdaCompiler, NdaDocument};
 
     let mut compiler = NdaCompiler::new();
     for i in 0..10 {
@@ -766,7 +840,7 @@ fn test_adversarial_truncated_nda() {
 #[test]
 fn test_adversarial_nda_with_garbage_appended() {
     let _t = test_timer("test_adversarial_nda_with_garbage_appended");
-    use velocity_mcp::nda_document::{NdaDocument, NdaCompiler};
+    use velocity_mcp::nda_document::{NdaCompiler, NdaDocument};
 
     let mut compiler = NdaCompiler::new();
     compiler.add_triple("subject", "predicate", "object");
@@ -788,7 +862,7 @@ fn test_adversarial_nda_with_garbage_appended() {
 fn test_oauth2_complete_flow() {
     let _t = test_timer("test_oauth2_complete_flow");
     use velocity_mcp::oauth2::*;
-    
+
     // Register a connector with OAuth2 config
     let config = ConnectorConfig {
         id: "test_oauth2".to_string(),
@@ -806,7 +880,7 @@ fn test_oauth2_complete_flow() {
         webhook_config: None,
     };
     register_connector(config);
-    
+
     // Generate authorization URL
     let state = "test_state_123";
     let auth_url = generate_authorize_url("test_oauth2", state, None);
@@ -815,11 +889,11 @@ fn test_oauth2_complete_flow() {
     assert!(url.contains("response_type=code"));
     assert!(url.contains("client_id=test_client"));
     assert!(url.contains("state=test_state_123"));
-    
+
     // Validate state
     let connector_id = validate_state(state);
     assert_eq!(connector_id, Some("test_oauth2".to_string()));
-    
+
     // State should be consumed
     let connector_id = validate_state(state);
     assert!(connector_id.is_none());
@@ -833,7 +907,7 @@ fn test_oauth2_complete_flow() {
 fn test_streaming_sse_integration() {
     let _t = test_timer("test_streaming_sse_integration");
     use velocity_mcp::streaming::*;
-    
+
     let token = ProgressToken::String("test_stream".to_string());
     let chunks = vec![
         StreamingChunk {
@@ -847,12 +921,12 @@ fn test_streaming_sse_integration() {
             is_final: Some(true),
         },
     ];
-    
+
     // Convert chunks to SSE events
     for chunk in &chunks {
         let event_data = chunk_to_sse_event(&token, chunk);
         assert!(!event_data.is_empty());
-        
+
         // Verify it's valid JSON
         let parsed: serde_json::Value = serde_json::from_str(&event_data).unwrap();
         assert_eq!(parsed["method"], "notifications/streaming");
@@ -867,22 +941,22 @@ fn test_streaming_sse_integration() {
 fn test_resource_subscription_flow() {
     let _t = test_timer("test_resource_subscription_flow");
     use velocity_mcp::resources::*;
-    
+
     // Register a file resource
     register_file_resource("file://test.txt", "Test File", "Test", "/tmp/test.txt");
-    
+
     // Subscribe to the resource
     let result = subscribe_resource("file://test.txt", "client1");
     assert!(result.is_ok());
-    
+
     // Subscribe another client
     let result = subscribe_resource("file://test.txt", "client2");
     assert!(result.is_ok());
-    
+
     // Unsubscribe one client
     let result = unsubscribe_resource("file://test.txt", "client1");
     assert!(result.is_ok());
-    
+
     // Unsubscribe non-existent subscription should succeed
     let result = unsubscribe_resource("file://test.txt", "client3");
     assert!(result.is_ok());
@@ -895,12 +969,12 @@ fn test_resource_subscription_flow() {
 fn test_sampling_conversation_history() {
     let _t = test_timer("test_sampling_conversation_history");
     use velocity_mcp::sampling::*;
-    
+
     let conv_id = "test_conversation";
-    
+
     // Clear any existing history
     clear_conversation(conv_id);
-    
+
     // Add user message
     let user_msg = SamplingMessage {
         role: "user".to_string(),
@@ -911,7 +985,7 @@ fn test_sampling_conversation_history() {
         },
     };
     add_to_conversation(conv_id, user_msg);
-    
+
     // Add assistant response
     let assistant_msg = SamplingMessage {
         role: "assistant".to_string(),
@@ -922,13 +996,13 @@ fn test_sampling_conversation_history() {
         },
     };
     add_to_conversation(conv_id, assistant_msg);
-    
+
     // Get conversation history
     let history = get_conversation(conv_id);
     assert_eq!(history.len(), 2);
     assert_eq!(history[0].role, "user");
     assert_eq!(history[1].role, "assistant");
-    
+
     // Clear conversation
     clear_conversation(conv_id);
     let history = get_conversation(conv_id);
@@ -943,14 +1017,14 @@ fn test_sampling_conversation_history() {
 fn test_http_security_config() {
     let _t = test_timer("test_http_security_config");
     use velocity_mcp::transport::http::HttpSecurityConfig;
-    
+
     // Test default config
     let config = HttpSecurityConfig::default();
     assert!(config.api_key.is_none());
     assert_eq!(config.max_request_size, 10 * 1024 * 1024);
     assert!(config.enable_rate_limit);
     assert!(config.cors_origins.is_none());
-    
+
     // Test custom config
     let config = HttpSecurityConfig {
         api_key: Some("test_key".to_string()),
@@ -1003,7 +1077,7 @@ mod http_auth_tests {
 fn test_batch_request_processing() {
     let _t = test_timer("test_batch_request_processing");
     use velocity_mcp::middleware::BatchRequest;
-    
+
     // This tests the batch request structure
     let batch = BatchRequest {
         requests: vec![
@@ -1020,26 +1094,34 @@ fn test_batch_request_processing() {
 fn test_resource_subscription_notifications() {
     let _t = test_timer("test_resource_subscription_notifications");
     use velocity_mcp::resources;
-    
+
     // Register a resource
-    resources::register_file_resource("test://notify", "Notify Test", "Test notifications", "/tmp/test.txt");
-    
+    resources::register_file_resource(
+        "test://notify",
+        "Notify Test",
+        "Test notifications",
+        "/tmp/test.txt",
+    );
+
     // Subscribe to it
     let result = resources::subscribe_resource("test://notify", "subscriber_1");
     assert!(result.is_ok());
-    
+
     // Trigger a notification
     resources::notify_resource_update("test://notify");
-    
+
     // Poll for updates
     let updates = resources::poll_resource_updates();
-    assert!(!updates.is_empty(), "Should have pending updates after notify");
+    assert!(
+        !updates.is_empty(),
+        "Should have pending updates after notify"
+    );
     assert_eq!(updates[0].uri, "test://notify");
-    
+
     // Drain should have cleared the updates
     let updates2 = resources::poll_resource_updates();
     assert!(updates2.is_empty(), "Updates should be drained after poll");
-    
+
     // Cleanup
     let _ = resources::unsubscribe_resource("test://notify", "subscriber_1");
 }
@@ -1056,7 +1138,7 @@ fn test_chaos_malformed_json() {
         let _: serde_json::Value = serde_json::from_str(malformed).unwrap();
     });
     assert!(result.is_err(), "Should panic on malformed JSON");
-    
+
     // Valid JSON but wrong structure - should not crash
     let wrong_structure = json!({"wrong": "structure"});
     let _result = handle_request(&wrong_structure);
@@ -1076,7 +1158,7 @@ fn test_chaos_invalid_tool_params() {
     });
     let res = handle_request(&req).expect("Should return error response");
     assert_eq!(res["result"]["isError"], true);
-    
+
     // Wrong parameter type
     let req = json!({
         "jsonrpc": "2.0",
@@ -1095,9 +1177,9 @@ fn test_chaos_file_not_found() {
     let req = json!({
         "jsonrpc": "2.0",
         "method": "tools/call",
-        "params": { 
-            "name": "file_read", 
-            "arguments": { "path": "/nonexistent/file/path.txt" } 
+        "params": {
+            "name": "file_read",
+            "arguments": { "path": "/nonexistent/file/path.txt" }
         },
         "id": 1
     });
@@ -1117,12 +1199,12 @@ fn test_chaos_shell_timeout() {
     let req = json!({
         "jsonrpc": "2.0",
         "method": "tools/call",
-        "params": { 
-            "name": "shell_exec", 
-            "arguments": { 
+        "params": {
+            "name": "shell_exec",
+            "arguments": {
                 "command": if cfg!(windows) { "echo test" } else { "echo test" },
                 "timeout": 5
-            } 
+            }
         },
         "id": 1
     });
@@ -1137,34 +1219,34 @@ fn test_chaos_shell_timeout() {
 #[test]
 fn test_chaos_concurrent_access() {
     let _t = test_timer("test_chaos_concurrent_access");
-    use std::thread;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    
+    use std::sync::Arc;
+    use std::thread;
+
     let counter = Arc::new(AtomicUsize::new(0));
     let mut handles = vec![];
-    
+
     // Spawn 10 threads that all try to register resources concurrently
     for i in 0..10 {
         let counter_clone = Arc::clone(&counter);
         let handle = thread::spawn(move || {
             let uri = format!("test://concurrent/{}", i);
             velocity_mcp::resources::register_file_resource(
-                &uri, 
-                &format!("Resource {}", i), 
-                "Test", 
-                "/tmp/test.txt"
+                &uri,
+                &format!("Resource {}", i),
+                "Test",
+                "/tmp/test.txt",
             );
             counter_clone.fetch_add(1, Ordering::SeqCst);
         });
         handles.push(handle);
     }
-    
+
     // Wait for all threads
     for handle in handles {
         handle.join().expect("Thread should not panic");
     }
-    
+
     // All registrations should succeed
     assert_eq!(counter.load(Ordering::SeqCst), 10);
 }
@@ -1174,15 +1256,15 @@ fn test_chaos_concurrent_access() {
 fn test_chaos_rate_limiting() {
     let _t = test_timer("test_chaos_rate_limiting");
     use velocity_mcp::rate_limit;
-    
+
     // Create a rate limiter with low limits for testing
     let limiter = rate_limit::RateLimiter::with_limits(5, 5);
-    
+
     // First 5 requests should succeed
     for _ in 0..5 {
         assert!(limiter.try_acquire(), "Should allow request within limit");
     }
-    
+
     // 6th request should be rate limited
     assert!(!limiter.try_acquire(), "Should reject request over limit");
 }
@@ -1194,7 +1276,12 @@ fn test_chaos_resource_limits() {
     let _t = test_timer("test_chaos_resource_limits");
     // This test verifies that constants are defined
     // Actual limit enforcement is tested in the HTTP transport tests
-    assert!(velocity_mcp::transport::http::HttpMetrics::default().total_requests.load(std::sync::atomic::Ordering::Relaxed) == 0);
+    assert!(
+        velocity_mcp::transport::http::HttpMetrics::default()
+            .total_requests
+            .load(std::sync::atomic::Ordering::Relaxed)
+            == 0
+    );
 }
 
 // ─── Concurrent Access Tests ──────────────────────────────────────────────────
@@ -1213,7 +1300,11 @@ fn test_concurrent_audit_recording() {
     for _i in 0..10 {
         let handle = thread::spawn(move || {
             for _j in 0..100 {
-                audit.record("test_tool", std::time::Instant::now(), AuditOutcome::Success);
+                audit.record(
+                    "test_tool",
+                    std::time::Instant::now(),
+                    AuditOutcome::Success,
+                );
             }
         });
         handles.push(handle);
@@ -1225,7 +1316,10 @@ fn test_concurrent_audit_recording() {
 
     let elapsed = start.elapsed();
     log_throughput("concurrent_audit_recording", 1000, elapsed);
-    eprintln!("[METRIC] concurrent_audit_recording: 10 threads × 100 ops = 1000 total ops in {:.3}ms", elapsed.as_secs_f64() * 1000.0);
+    eprintln!(
+        "[METRIC] concurrent_audit_recording: 10 threads × 100 ops = 1000 total ops in {:.3}ms",
+        elapsed.as_secs_f64() * 1000.0
+    );
 }
 
 /// Test concurrent resource subscription and unsubscription.
@@ -1241,7 +1335,12 @@ fn test_concurrent_resource_subscriptions() {
     for i in 0..10 {
         let handle = thread::spawn(move || {
             let uri = format!("test://concurrent_sub/{}", i);
-            resources::register_file_resource(&uri, &format!("Resource {}", i), "Test", "/tmp/test.txt");
+            resources::register_file_resource(
+                &uri,
+                &format!("Resource {}", i),
+                "Test",
+                "/tmp/test.txt",
+            );
 
             for j in 0..10 {
                 let client = format!("client_{}_{}", i, j);
@@ -1267,8 +1366,8 @@ fn test_concurrent_resource_subscriptions() {
 fn test_concurrent_cache_access() {
     let _t = test_timer("test_concurrent_cache_access");
     use std::thread;
-    use velocity_mcp::middleware::ResponseCache;
     use std::time::Duration;
+    use velocity_mcp::middleware::ResponseCache;
 
     let cache = std::sync::Arc::new(ResponseCache::new(Duration::from_secs(60)));
     let start = std::time::Instant::now();

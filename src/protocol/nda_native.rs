@@ -34,7 +34,7 @@
 //! - 0x11: notifications/cancelled
 
 use serde_json::{json, Value};
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::sync::{Mutex, OnceLock};
 
@@ -149,7 +149,10 @@ pub fn encode_json_value(value: &Value, buf: &mut Vec<u8>) -> Result<(), String>
             for (key, val) in obj {
                 let key_bytes = key.as_bytes();
                 if key_bytes.len() > u16::MAX as usize {
-                    return Err(format!("JSON key exceeds maximum length of {} bytes", u16::MAX));
+                    return Err(format!(
+                        "JSON key exceeds maximum length of {} bytes",
+                        u16::MAX
+                    ));
                 }
                 buf.extend_from_slice(&(key_bytes.len() as u16).to_be_bytes());
                 buf.extend_from_slice(key_bytes);
@@ -177,35 +180,59 @@ fn decode_json_value_inner(buf: &[u8], depth: u32) -> Result<(Value, usize), Box
     }
     match buf[0] {
         0x01 => {
-            if buf.len() < 5 { return Err("TLV string: missing length".into()); }
+            if buf.len() < 5 {
+                return Err("TLV string: missing length".into());
+            }
             let len = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
             if len > TLV_MAX_STRING_LEN {
-                return Err(format!("TLV string length {} exceeds maximum {}", len, TLV_MAX_STRING_LEN).into());
+                return Err(format!(
+                    "TLV string length {} exceeds maximum {}",
+                    len, TLV_MAX_STRING_LEN
+                )
+                .into());
             }
-            if buf.len() < 5 + len { return Err("TLV string: truncated data".into()); }
+            if buf.len() < 5 + len {
+                return Err("TLV string: truncated data".into());
+            }
             let s = std::str::from_utf8(&buf[5..5 + len])?.to_string();
             Ok((Value::String(s), 5 + len))
         }
         0x02 => {
-            if buf.len() < 9 { return Err("TLV integer: missing data".into()); }
-            let i = i64::from_be_bytes([buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8]]);
+            if buf.len() < 9 {
+                return Err("TLV integer: missing data".into());
+            }
+            let i = i64::from_be_bytes([
+                buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8],
+            ]);
             Ok((json!(i), 9))
         }
         0x07 => {
-            if buf.len() < 9 { return Err("TLV float: missing data".into()); }
-            let f = f64::from_be_bytes([buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8]]);
+            if buf.len() < 9 {
+                return Err("TLV float: missing data".into());
+            }
+            let f = f64::from_be_bytes([
+                buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8],
+            ]);
             Ok((json!(f), 9))
         }
         0x03 => {
-            if buf.len() < 2 { return Err("TLV bool: missing data".into()); }
+            if buf.len() < 2 {
+                return Err("TLV bool: missing data".into());
+            }
             Ok((Value::Bool(buf[1] != 0), 2))
         }
         0x04 => Ok((Value::Null, 1)),
         0x05 => {
-            if buf.len() < 5 { return Err("TLV array: missing count".into()); }
+            if buf.len() < 5 {
+                return Err("TLV array: missing count".into());
+            }
             let count = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
             if count > TLV_MAX_ELEMENTS {
-                return Err(format!("TLV array count {} exceeds maximum {}", count, TLV_MAX_ELEMENTS).into());
+                return Err(format!(
+                    "TLV array count {} exceeds maximum {}",
+                    count, TLV_MAX_ELEMENTS
+                )
+                .into());
             }
             let mut offset = 5;
             let mut items = Vec::with_capacity(count.min(1024));
@@ -217,18 +244,28 @@ fn decode_json_value_inner(buf: &[u8], depth: u32) -> Result<(Value, usize), Box
             Ok((Value::Array(items), offset))
         }
         0x06 => {
-            if buf.len() < 5 { return Err("TLV object: missing count".into()); }
+            if buf.len() < 5 {
+                return Err("TLV object: missing count".into());
+            }
             let count = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
             if count > TLV_MAX_ELEMENTS {
-                return Err(format!("TLV object count {} exceeds maximum {}", count, TLV_MAX_ELEMENTS).into());
+                return Err(format!(
+                    "TLV object count {} exceeds maximum {}",
+                    count, TLV_MAX_ELEMENTS
+                )
+                .into());
             }
             let mut offset = 5;
             let mut map = serde_json::Map::with_capacity(count.min(1024));
             for _ in 0..count {
-                if offset + 2 > buf.len() { return Err("TLV object: missing key length".into()); }
+                if offset + 2 > buf.len() {
+                    return Err("TLV object: missing key length".into());
+                }
                 let key_len = u16::from_be_bytes([buf[offset], buf[offset + 1]]) as usize;
                 offset += 2;
-                if offset + key_len > buf.len() { return Err("TLV object: truncated key".into()); }
+                if offset + key_len > buf.len() {
+                    return Err("TLV object: truncated key".into());
+                }
                 let key = std::str::from_utf8(&buf[offset..offset + key_len])?.to_string();
                 offset += key_len;
                 let (val, consumed) = decode_json_value_inner(&buf[offset..], depth + 1)?;
@@ -271,8 +308,9 @@ pub fn parse_nda_request(frame: &[u8]) -> Result<NdaRequest, Box<dyn Error>> {
     #[cfg(feature = "oauth2")]
     let payload = if is_encrypted {
         // Hard error on decryption failure — no plaintext fallback
-        let plaintext = decrypt_nda_frame_payload(frame)
-            .map_err(|e| -> Box<dyn Error> { format!("Encrypted frame decryption failed: {}", e).into() })?;
+        let plaintext = decrypt_nda_frame_payload(frame).map_err(|e| -> Box<dyn Error> {
+            format!("Encrypted frame decryption failed: {}", e).into()
+        })?;
 
         // Verify Merkle root matches decrypted plaintext
         let mut hasher = Sha256::new();
@@ -328,7 +366,11 @@ pub fn parse_nda_request(frame: &[u8]) -> Result<NdaRequest, Box<dyn Error>> {
         Value::Null
     };
 
-    Ok(NdaRequest { method, request_id, data })
+    Ok(NdaRequest {
+        method,
+        request_id,
+        data,
+    })
 }
 
 // ─── Zero-alloc in-place parsing ────────────────────────────────────────────
@@ -350,25 +392,39 @@ fn skip_tlv_value_inner(bytes: &[u8], depth: u32) -> Result<usize, Box<dyn Error
     }
     match bytes[0] {
         0x01 => {
-            if bytes.len() < 5 { return Err("TLV skip: truncated string length".into()); }
+            if bytes.len() < 5 {
+                return Err("TLV skip: truncated string length".into());
+            }
             let len = u32::from_be_bytes(bytes[1..5].try_into()?) as usize;
-            if bytes.len() < 5 + len { return Err("TLV skip: truncated string body".into()); }
+            if bytes.len() < 5 + len {
+                return Err("TLV skip: truncated string body".into());
+            }
             Ok(5 + len)
         }
         0x02 | 0x07 => {
-            if bytes.len() < 9 { return Err("TLV skip: truncated number".into()); }
+            if bytes.len() < 9 {
+                return Err("TLV skip: truncated number".into());
+            }
             Ok(9)
         }
         0x03 => {
-            if bytes.len() < 2 { return Err("TLV skip: truncated bool".into()); }
+            if bytes.len() < 2 {
+                return Err("TLV skip: truncated bool".into());
+            }
             Ok(2)
         }
         0x04 => Ok(1),
         0x05 => {
             if depth >= TLV_MAX_DEPTH {
-                return Err(format!("TLV skip: array nesting depth exceeds maximum {}", TLV_MAX_DEPTH).into());
+                return Err(format!(
+                    "TLV skip: array nesting depth exceeds maximum {}",
+                    TLV_MAX_DEPTH
+                )
+                .into());
             }
-            if bytes.len() < 5 { return Err("TLV skip: truncated array count".into()); }
+            if bytes.len() < 5 {
+                return Err("TLV skip: truncated array count".into());
+            }
             let count = u32::from_be_bytes(bytes[1..5].try_into()?) as usize;
             let mut off = 5usize;
             for _ in 0..count {
@@ -378,16 +434,26 @@ fn skip_tlv_value_inner(bytes: &[u8], depth: u32) -> Result<usize, Box<dyn Error
         }
         0x06 => {
             if depth >= TLV_MAX_DEPTH {
-                return Err(format!("TLV skip: object nesting depth exceeds maximum {}", TLV_MAX_DEPTH).into());
+                return Err(format!(
+                    "TLV skip: object nesting depth exceeds maximum {}",
+                    TLV_MAX_DEPTH
+                )
+                .into());
             }
-            if bytes.len() < 5 { return Err("TLV skip: truncated object count".into()); }
+            if bytes.len() < 5 {
+                return Err("TLV skip: truncated object count".into());
+            }
             let count = u32::from_be_bytes(bytes[1..5].try_into()?) as usize;
             let mut off = 5usize;
             for _ in 0..count {
-                if bytes.len() < off + 2 { return Err("TLV skip: truncated key length".into()); }
+                if bytes.len() < off + 2 {
+                    return Err("TLV skip: truncated key length".into());
+                }
                 let klen = u16::from_be_bytes(bytes[off..off + 2].try_into()?) as usize;
                 off += 2 + klen;
-                if bytes.len() < off { return Err("TLV skip: truncated key".into()); }
+                if bytes.len() < off {
+                    return Err("TLV skip: truncated key".into());
+                }
                 off += skip_tlv_value_inner(&bytes[off..], depth + 1)?;
             }
             Ok(off)
@@ -440,8 +506,9 @@ pub fn parse_nda_request_inplace(frame: &[u8]) -> Result<NdaRequestRef<'_>, Box<
     #[cfg(feature = "oauth2")]
     if is_encrypted {
         // Decrypt into owned buffer
-        let plaintext = decrypt_nda_frame_payload(frame)
-            .map_err(|e| -> Box<dyn Error> { format!("Encrypted frame decryption failed: {}", e).into() })?;
+        let plaintext = decrypt_nda_frame_payload(frame).map_err(|e| -> Box<dyn Error> {
+            format!("Encrypted frame decryption failed: {}", e).into()
+        })?;
 
         // Verify Merkle root over decrypted plaintext
         let mut hasher = Sha256::new();
@@ -467,7 +534,9 @@ pub fn parse_nda_request_inplace(frame: &[u8]) -> Result<NdaRequestRef<'_>, Box<
         let id_tlv_ptr = plaintext.as_ptr();
         let id_tlv = unsafe { std::slice::from_raw_parts(id_tlv_ptr.add(1), id_len) };
         let data_ptr = plaintext.as_ptr();
-        let data = unsafe { std::slice::from_raw_parts(data_ptr.add(1 + id_len), plaintext.len() - 1 - id_len) };
+        let data = unsafe {
+            std::slice::from_raw_parts(data_ptr.add(1 + id_len), plaintext.len() - 1 - id_len)
+        };
 
         return Ok(NdaRequestRef {
             method,
@@ -562,20 +631,28 @@ pub fn build_nda_error_raw(id_tlv: &[u8], error_msg: &str) -> Vec<u8> {
 /// Walk a tools/call data object (`{"name": ..., "arguments": ...}`) in
 /// place, in any key order, returning borrowed slices for the two fields.
 /// Either field may be absent (None), matching serde_json indexing semantics.
-pub fn extract_tools_call_fields(data: &[u8]) -> Result<(Option<&str>, Option<&[u8]>), Box<dyn Error>> {
+pub fn extract_tools_call_fields(
+    data: &[u8],
+) -> Result<(Option<&str>, Option<&[u8]>), Box<dyn Error>> {
     if data.is_empty() || data[0] != 0x06 {
         return Ok((None, None));
     }
-    if data.len() < 5 { return Err("tools/call data: truncated object count".into()); }
+    if data.len() < 5 {
+        return Err("tools/call data: truncated object count".into());
+    }
     let count = u32::from_be_bytes(data[1..5].try_into()?) as usize;
     let mut off = 5usize;
     let mut name = None;
     let mut arguments = None;
     for _ in 0..count {
-        if data.len() < off + 2 { return Err("tools/call data: truncated key length".into()); }
+        if data.len() < off + 2 {
+            return Err("tools/call data: truncated key length".into());
+        }
         let klen = u16::from_be_bytes(data[off..off + 2].try_into()?) as usize;
         off += 2;
-        if data.len() < off + klen { return Err("tools/call data: truncated key".into()); }
+        if data.len() < off + klen {
+            return Err("tools/call data: truncated key".into());
+        }
         let key = &data[off..off + klen];
         off += klen;
         let vlen = skip_tlv_value(&data[off..])?;
@@ -597,7 +674,10 @@ pub fn extract_tools_call_fields(data: &[u8]) -> Result<(Option<&str>, Option<&[
 /// Extract a single field's raw TLV bytes from a TLV-encoded object.
 /// Returns `None` if data is not an object or the key is not present.
 /// Does not allocate; returns a borrowed sub-slice of the input.
-pub fn extract_tlv_field<'a>(data: &'a [u8], target_key: &[u8]) -> Result<Option<&'a [u8]>, Box<dyn Error>> {
+pub fn extract_tlv_field<'a>(
+    data: &'a [u8],
+    target_key: &[u8],
+) -> Result<Option<&'a [u8]>, Box<dyn Error>> {
     if data.is_empty() || data[0] != 0x06 {
         return Ok(None);
     }
@@ -645,12 +725,19 @@ static HEALTH_RESULT_TLV: OnceLock<Vec<u8>> = OnceLock::new();
 pub fn health_result_tlv() -> &'static [u8] {
     HEALTH_RESULT_TLV.get_or_init(|| {
         let mut buf = Vec::new();
-        encode_json_value(&json!({
-            "status": "healthy",
-            "mode": "shmem-nda",
-            "version": crate::VERSION
-        }), &mut buf).unwrap_or_else(|e| {
-            tracing::error!("health_result_tlv encode failed (static keys should always fit): {}", e);
+        encode_json_value(
+            &json!({
+                "status": "healthy",
+                "mode": "shmem-nda",
+                "version": crate::VERSION
+            }),
+            &mut buf,
+        )
+        .unwrap_or_else(|e| {
+            tracing::error!(
+                "health_result_tlv encode failed (static keys should always fit): {}",
+                e
+            );
         });
         buf
     })
@@ -669,7 +756,7 @@ pub fn build_nda_frame(payload: &[u8]) -> Vec<u8> {
 }
 
 /// Build an encrypted NMCP frame.
-/// 
+///
 /// The payload is encrypted with AES-256-GCM using the session key.
 /// The Merkle root is computed over the plaintext for integrity verification.
 /// The method byte has FLAG_ENCRYPTED bit set to indicate encryption.
@@ -682,7 +769,11 @@ pub fn build_nda_frame(payload: &[u8]) -> Vec<u8> {
 /// [N bytes: ciphertext (encrypted payload)]
 /// ```
 #[cfg(feature = "oauth2")]
-pub fn build_nda_encrypted_frame(method: u8, request_id: &Value, data: &Value) -> Result<Vec<u8>, String> {
+pub fn build_nda_encrypted_frame(
+    method: u8,
+    request_id: &Value,
+    data: &Value,
+) -> Result<Vec<u8>, String> {
     // Build plaintext payload first
     let mut plaintext = Vec::new();
     plaintext.push(method | FLAG_ENCRYPTED); // Set encrypted flag
@@ -697,37 +788,40 @@ pub fn build_nda_encrypted_frame(method: u8, request_id: &Value, data: &Value) -
     let merkle = hasher.finalize();
 
     // Get session key
-    let key_store = get_session_key().lock()
+    let key_store = get_session_key()
+        .lock()
         .map_err(|e| format!("Failed to lock session key: {}", e))?;
-    
-    let key_bytes = key_store.as_ref()
+
+    let key_bytes = key_store
+        .as_ref()
         .ok_or("Session encryption key not set. Call set_session_encryption_key() first.")?;
 
     // Create cipher and encrypt
     let cipher = Aes256Gcm::new_from_slice(key_bytes)
         .map_err(|e| format!("Failed to create cipher: {}", e))?;
-    
+
     // Generate random nonce (12 bytes for AES-GCM)
     let mut nonce_bytes = [0u8; 12];
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
-    
+
     // Encrypt the payload
-    let ciphertext = cipher.encrypt(nonce, plaintext.as_slice())
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext.as_slice())
         .map_err(|e| format!("Failed to encrypt payload: {}", e))?;
-    
+
     // Build frame: magic + merkle + nonce + ciphertext
     let mut frame = Vec::with_capacity(FRAME_HEADER_SIZE + 12 + ciphertext.len());
     frame.extend_from_slice(NDA_ENCRYPTED_MAGIC);
     frame.extend_from_slice(&merkle);
     frame.extend_from_slice(&nonce_bytes);
     frame.extend_from_slice(&ciphertext);
-    
+
     Ok(frame)
 }
 
 /// Decrypt an NMCP frame payload.
-/// 
+///
 /// Returns the decrypted plaintext payload.
 #[cfg(feature = "oauth2")]
 pub fn decrypt_nda_frame_payload(encrypted_frame: &[u8]) -> Result<Vec<u8>, String> {
@@ -747,19 +841,22 @@ pub fn decrypt_nda_frame_payload(encrypted_frame: &[u8]) -> Result<Vec<u8>, Stri
     let ciphertext = &encrypted_frame[nonce_end..];
 
     // Get session key
-    let key_store = get_session_key().lock()
+    let key_store = get_session_key()
+        .lock()
         .map_err(|e| format!("Failed to lock session key: {}", e))?;
-    
-    let key_bytes = key_store.as_ref()
+
+    let key_bytes = key_store
+        .as_ref()
         .ok_or("Session encryption key not set. Call set_session_encryption_key() first.")?;
 
     // Create cipher and decrypt
     let cipher = Aes256Gcm::new_from_slice(key_bytes)
         .map_err(|e| format!("Failed to create cipher: {}", e))?;
-    
-    let plaintext = cipher.decrypt(nonce, ciphertext)
+
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext)
         .map_err(|e| format!("Failed to decrypt payload: {}", e))?;
-    
+
     Ok(plaintext)
 }
 
@@ -770,7 +867,11 @@ pub fn is_nda_frame_encrypted(frame: &[u8]) -> bool {
     frame.len() >= 4 && &frame[0..4] == NDA_ENCRYPTED_MAGIC
 }
 
-pub fn build_nda_response(status: u8, request_id: &Value, result: &Value) -> Result<Vec<u8>, String> {
+pub fn build_nda_response(
+    status: u8,
+    request_id: &Value,
+    result: &Value,
+) -> Result<Vec<u8>, String> {
     let mut payload = Vec::new();
     payload.push(status);
     encode_json_value(request_id, &mut payload)?;
@@ -786,7 +887,10 @@ pub fn build_nda_error(request_id: &Value, error_msg: &str) -> Result<Vec<u8>, S
 /// structs, skipping the intermediate serde_json::Value tree. Emits keys in
 /// sorted order (description, inputSchema, name) to match serde_json's
 /// BTreeMap iteration, so output is byte-identical to encode_json_value.
-pub fn encode_tools_list_result(buf: &mut Vec<u8>, tools: &[crate::registry::Tool]) -> Result<(), String> {
+pub fn encode_tools_list_result(
+    buf: &mut Vec<u8>,
+    tools: &[crate::registry::Tool],
+) -> Result<(), String> {
     buf.push(0x06); // outer object
     buf.extend_from_slice(&1u32.to_be_bytes());
     buf.extend_from_slice(&5u16.to_be_bytes());
@@ -959,30 +1063,61 @@ pub fn decode_flat_value(buf: &[u8], offset: &mut usize) -> Result<Value, Box<dy
     *offset += 1;
     match tag {
         0x01 => {
-            if *offset + 4 > buf.len() { return Err("Flat string: missing length".into()); }
-            let len = u32::from_le_bytes([buf[*offset], buf[*offset+1], buf[*offset+2], buf[*offset+3]]) as usize;
+            if *offset + 4 > buf.len() {
+                return Err("Flat string: missing length".into());
+            }
+            let len = u32::from_le_bytes([
+                buf[*offset],
+                buf[*offset + 1],
+                buf[*offset + 2],
+                buf[*offset + 3],
+            ]) as usize;
             *offset += 4;
-            if *offset + len > buf.len() { return Err("Flat string: truncated".into()); }
-            let s = std::str::from_utf8(&buf[*offset..*offset+len])?.to_string();
+            if *offset + len > buf.len() {
+                return Err("Flat string: truncated".into());
+            }
+            let s = std::str::from_utf8(&buf[*offset..*offset + len])?.to_string();
             *offset += len;
             Ok(Value::String(s))
         }
         0x02 => {
-            if *offset + 8 > buf.len() { return Err("Flat integer: missing data".into()); }
-            let i = i64::from_le_bytes([buf[*offset], buf[*offset+1], buf[*offset+2], buf[*offset+3],
-                                        buf[*offset+4], buf[*offset+5], buf[*offset+6], buf[*offset+7]]);
+            if *offset + 8 > buf.len() {
+                return Err("Flat integer: missing data".into());
+            }
+            let i = i64::from_le_bytes([
+                buf[*offset],
+                buf[*offset + 1],
+                buf[*offset + 2],
+                buf[*offset + 3],
+                buf[*offset + 4],
+                buf[*offset + 5],
+                buf[*offset + 6],
+                buf[*offset + 7],
+            ]);
             *offset += 8;
             Ok(json!(i))
         }
         0x05 => {
-            if *offset + 8 > buf.len() { return Err("Flat float: missing data".into()); }
-            let f = f64::from_le_bytes([buf[*offset], buf[*offset+1], buf[*offset+2], buf[*offset+3],
-                                        buf[*offset+4], buf[*offset+5], buf[*offset+6], buf[*offset+7]]);
+            if *offset + 8 > buf.len() {
+                return Err("Flat float: missing data".into());
+            }
+            let f = f64::from_le_bytes([
+                buf[*offset],
+                buf[*offset + 1],
+                buf[*offset + 2],
+                buf[*offset + 3],
+                buf[*offset + 4],
+                buf[*offset + 5],
+                buf[*offset + 6],
+                buf[*offset + 7],
+            ]);
             *offset += 8;
             Ok(json!(f))
         }
         0x03 => {
-            if *offset + 1 > buf.len() { return Err("Flat bool: missing data".into()); }
+            if *offset + 1 > buf.len() {
+                return Err("Flat bool: missing data".into());
+            }
             let b = buf[*offset] != 0;
             *offset += 1;
             Ok(Value::Bool(b))
@@ -1000,7 +1135,12 @@ fn value_to_u64(v: &Value) -> u64 {
     }
 }
 
-pub fn build_flat_request(method: u8, request_id: &Value, tool_name: &str, arguments: &Value) -> Vec<u8> {
+pub fn build_flat_request(
+    method: u8,
+    request_id: &Value,
+    tool_name: &str,
+    arguments: &Value,
+) -> Vec<u8> {
     let mut payload = Vec::with_capacity(64);
     payload.push(method);
     payload.extend_from_slice(&value_to_u64(request_id).to_le_bytes());
@@ -1041,28 +1181,51 @@ pub fn parse_flat_request(frame: &[u8]) -> Result<FlatRequest, Box<dyn Error>> {
     let method = payload[0];
     let mut offset = 1;
 
-    if offset + 8 > payload.len() { return Err("Flat: missing request id".into()); }
-    let request_id = u64::from_le_bytes([payload[offset], payload[offset+1], payload[offset+2], payload[offset+3],
-                                          payload[offset+4], payload[offset+5], payload[offset+6], payload[offset+7]]);
+    if offset + 8 > payload.len() {
+        return Err("Flat: missing request id".into());
+    }
+    let request_id = u64::from_le_bytes([
+        payload[offset],
+        payload[offset + 1],
+        payload[offset + 2],
+        payload[offset + 3],
+        payload[offset + 4],
+        payload[offset + 5],
+        payload[offset + 6],
+        payload[offset + 7],
+    ]);
     offset += 8;
 
-    if offset + 2 > payload.len() { return Err("Flat: missing tool name length".into()); }
-    let name_len = u16::from_le_bytes([payload[offset], payload[offset+1]]) as usize;
+    if offset + 2 > payload.len() {
+        return Err("Flat: missing tool name length".into());
+    }
+    let name_len = u16::from_le_bytes([payload[offset], payload[offset + 1]]) as usize;
     offset += 2;
 
-    if offset + name_len > payload.len() { return Err("Flat: truncated tool name".into()); }
-    let tool_name = std::str::from_utf8(&payload[offset..offset+name_len])?.to_string();
+    if offset + name_len > payload.len() {
+        return Err("Flat: truncated tool name".into());
+    }
+    let tool_name = std::str::from_utf8(&payload[offset..offset + name_len])?.to_string();
     offset += name_len;
 
     let mut fields = Vec::new();
     while offset < payload.len() {
         if fields.len() >= TLV_MAX_ELEMENTS {
-            return Err(format!("Flat request field count exceeds maximum {}", TLV_MAX_ELEMENTS).into());
+            return Err(format!(
+                "Flat request field count exceeds maximum {}",
+                TLV_MAX_ELEMENTS
+            )
+            .into());
         }
         fields.push(decode_flat_value(payload, &mut offset)?);
     }
 
-    Ok(FlatRequest { method, request_id, tool_name, fields })
+    Ok(FlatRequest {
+        method,
+        request_id,
+        tool_name,
+        fields,
+    })
 }
 
 pub fn build_flat_response(status: u8, request_id: u64, result: &Value) -> Vec<u8> {
@@ -1096,25 +1259,45 @@ pub fn parse_flat_response(frame: &[u8]) -> Result<FlatResponse, Box<dyn Error>>
         return Err("Flat response Merkle root mismatch".into());
     }
 
-    if payload.is_empty() { return Err("Flat response payload empty".into()); }
+    if payload.is_empty() {
+        return Err("Flat response payload empty".into());
+    }
 
     let status = payload[0];
     let mut offset = 1;
 
-    if offset + 8 > payload.len() { return Err("Flat: missing response request id".into()); }
-    let request_id = u64::from_le_bytes([payload[offset], payload[offset+1], payload[offset+2], payload[offset+3],
-                                          payload[offset+4], payload[offset+5], payload[offset+6], payload[offset+7]]);
+    if offset + 8 > payload.len() {
+        return Err("Flat: missing response request id".into());
+    }
+    let request_id = u64::from_le_bytes([
+        payload[offset],
+        payload[offset + 1],
+        payload[offset + 2],
+        payload[offset + 3],
+        payload[offset + 4],
+        payload[offset + 5],
+        payload[offset + 6],
+        payload[offset + 7],
+    ]);
     offset += 8;
 
     let mut fields = Vec::new();
     while offset < payload.len() {
         if fields.len() >= TLV_MAX_ELEMENTS {
-            return Err(format!("Flat response field count exceeds maximum {}", TLV_MAX_ELEMENTS).into());
+            return Err(format!(
+                "Flat response field count exceeds maximum {}",
+                TLV_MAX_ELEMENTS
+            )
+            .into());
         }
         fields.push(decode_flat_value(payload, &mut offset)?);
     }
 
-    Ok(FlatResponse { status, request_id, fields })
+    Ok(FlatResponse {
+        status,
+        request_id,
+        fields,
+    })
 }
 
 #[cfg(test)]
@@ -1123,11 +1306,23 @@ mod tests {
 
     fn test_timer(name: &str) -> impl Drop {
         let start = std::time::Instant::now();
-        struct Timer { name: String, start: std::time::Instant }
-        impl Drop for Timer { fn drop(&mut self) {
-            eprintln!("[TEST] {} completed in {:.3}ms", self.name, self.start.elapsed().as_secs_f64() * 1000.0);
-        }}
-        Timer { name: name.to_string(), start }
+        struct Timer {
+            name: String,
+            start: std::time::Instant,
+        }
+        impl Drop for Timer {
+            fn drop(&mut self) {
+                eprintln!(
+                    "[TEST] {} completed in {:.3}ms",
+                    self.name,
+                    self.start.elapsed().as_secs_f64() * 1000.0
+                );
+            }
+        }
+        Timer {
+            name: name.to_string(),
+            start,
+        }
     }
 
     #[test]
@@ -1308,9 +1503,12 @@ mod tests {
         let mut flat_buf = Vec::new();
         encode_flat_value(&args, &mut flat_buf);
 
-        assert!(flat_buf.len() < tlv_buf.len(),
+        assert!(
+            flat_buf.len() < tlv_buf.len(),
             "Flat args ({} bytes) should be smaller than TLV args ({} bytes)",
-            flat_buf.len(), tlv_buf.len());
+            flat_buf.len(),
+            tlv_buf.len()
+        );
     }
 
     #[test]
@@ -1329,13 +1527,16 @@ mod tests {
         let iters = 200;
 
         let tools = crate::registry::get_tools();
-        let tools_json: Vec<Value> = tools.iter().map(|t| {
-            json!({
-                "name": t.name,
-                "description": t.description,
-                "inputSchema": t.input_schema
+        let tools_json: Vec<Value> = tools
+            .iter()
+            .map(|t| {
+                json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "inputSchema": t.input_schema
+                })
             })
-        }).collect();
+            .collect();
         let result = json!({"tools": tools_json});
 
         let start = Instant::now();
@@ -1379,7 +1580,11 @@ mod tests {
         }
         let get_tools_us = start.elapsed().as_secs_f64() * 1e6 / iters as f64;
 
-        println!("PROBE tools/list ({} tools, payload {} bytes):", tools.len(), payload_len);
+        println!(
+            "PROBE tools/list ({} tools, payload {} bytes):",
+            tools.len(),
+            payload_len
+        );
         println!("  get_tools:        {:7.1} us", get_tools_us);
         println!("  TLV encode:       {:7.1} us", encode_us);
         println!("  SHA-256 only:     {:7.1} us", hash_us);
@@ -1392,23 +1597,30 @@ mod tests {
         let _t = test_timer("tools_list_direct_encoder_byte_identical");
         let tools = crate::registry::get_tools();
         // Reference: the old json!-based path.
-        let tools_json: Vec<Value> = tools.iter().map(|t| {
-            json!({
-                "name": t.name,
-                "description": t.description,
-                "inputSchema": t.input_schema
+        let tools_json: Vec<Value> = tools
+            .iter()
+            .map(|t| {
+                json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "inputSchema": t.input_schema
+                })
             })
-        }).collect();
+            .collect();
         let result = json!({"tools": tools_json});
         let mut expected = Vec::new();
         encode_json_value(&result, &mut expected).unwrap();
 
         let mut actual = Vec::new();
         encode_tools_list_result(&mut actual, &tools).unwrap();
-        assert_eq!(actual, expected, "direct encoder must be byte-identical to Value path");
+        assert_eq!(
+            actual, expected,
+            "direct encoder must be byte-identical to Value path"
+        );
 
         // Round-trip through the decoder as well.
-        let (decoded, consumed) = decode_json_value(&actual).expect("decode direct-encoded tools list");
+        let (decoded, consumed) =
+            decode_json_value(&actual).expect("decode direct-encoded tools list");
         assert_eq!(consumed, actual.len());
         assert_eq!(decoded, result);
     }
@@ -1436,7 +1648,10 @@ mod tests {
         // Repeat calls serve identical cached bytes, matching a direct encoding.
         let t0 = std::time::Instant::now();
         let (first, second, expected) = stable_encoded_triple();
-        eprintln!("[METRIC] encoded_tools_list_result (3 calls): {:.3}us", t0.elapsed().as_secs_f64() * 1e6);
+        eprintln!(
+            "[METRIC] encoded_tools_list_result (3 calls): {:.3}us",
+            t0.elapsed().as_secs_f64() * 1e6
+        );
         assert_eq!(first, second);
         assert_eq!(first, expected);
 
@@ -1451,9 +1666,16 @@ mod tests {
         let rebuilt = encoded_tools_list_result();
         assert_ne!(rebuilt, first);
         let (decoded, _) = decode_json_value(&rebuilt).expect("decode rebuilt tools list");
-        let names: Vec<&str> = decoded["tools"].as_array().expect("tools array")
-            .iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert!(names.contains(&"__nda_cache_invalidation_probe"), "cache must rebuild after registration");
+        let names: Vec<&str> = decoded["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert!(
+            names.contains(&"__nda_cache_invalidation_probe"),
+            "cache must rebuild after registration"
+        );
     }
 
     #[test]
@@ -1470,8 +1692,8 @@ mod tests {
 
     #[test]
     fn tools_list_cache_survives_concurrent_registration() {
-        use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
 
         let stop = Arc::new(AtomicBool::new(false));
         let mut handles = Vec::new();
@@ -1489,9 +1711,16 @@ mod tests {
                     let (decoded, consumed) =
                         decode_json_value(&bytes).expect("cached bytes must decode");
                     assert_eq!(consumed, bytes.len());
-                    let names: Vec<&str> = decoded["tools"].as_array().expect("tools array")
-                        .iter().map(|t| t["name"].as_str().unwrap()).collect();
-                    assert!(names.contains(&"read_nda"), "built-ins must survive caching");
+                    let names: Vec<&str> = decoded["tools"]
+                        .as_array()
+                        .expect("tools array")
+                        .iter()
+                        .map(|t| t["name"].as_str().unwrap())
+                        .collect();
+                    assert!(
+                        names.contains(&"read_nda"),
+                        "built-ins must survive caching"
+                    );
                     iters += 1;
                     if iters >= 200 && stop.load(Ordering::Relaxed) {
                         break;
@@ -1520,11 +1749,19 @@ mod tests {
         // Final state: cache reflects all registered hammer tools.
         let final_bytes = encoded_tools_list_result();
         let (decoded, _) = decode_json_value(&final_bytes).unwrap();
-        let names: Vec<&str> = decoded["tools"].as_array().unwrap()
-            .iter().map(|t| t["name"].as_str().unwrap()).collect();
+        let names: Vec<&str> = decoded["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
         for i in 0..8 {
             let probe = format!("__hammer_probe_{:02}", i);
-            assert!(names.contains(&probe.as_str()), "missing {} in final cache", probe);
+            assert!(
+                names.contains(&probe.as_str()),
+                "missing {} in final cache",
+                probe
+            );
         }
     }
 
@@ -1536,8 +1773,16 @@ mod tests {
         let cases = [
             (METHOD_PING, json!(1), Value::Null),
             (METHOD_TOOLS_LIST, json!(99), Value::Null),
-            (METHOD_TOOLS_CALL, json!("req-7"), json!({"name": "bench_echo", "arguments": {"size": 64}})),
-            (METHOD_HEALTH_CHECK, json!(2), json!({"deep": {"nested": [1, 2, {"k": "v"}]}})),
+            (
+                METHOD_TOOLS_CALL,
+                json!("req-7"),
+                json!({"name": "bench_echo", "arguments": {"size": 64}}),
+            ),
+            (
+                METHOD_HEALTH_CHECK,
+                json!(2),
+                json!({"deep": {"nested": [1, 2, {"k": "v"}]}}),
+            ),
         ];
         for (method, id, data) in &cases {
             let frame = build_nda_request(*method, id, data).unwrap();
@@ -1560,21 +1805,30 @@ mod tests {
     #[test]
     fn inplace_parse_rejects_bad_frames() {
         let frame = build_nda_request(METHOD_PING, &json!(1), &Value::Null).unwrap();
-        assert!(parse_nda_request_inplace(&frame[..10]).is_err(), "truncated header");
+        assert!(
+            parse_nda_request_inplace(&frame[..10]).is_err(),
+            "truncated header"
+        );
         let mut bad_magic = frame.clone();
         bad_magic[0] = b'X';
         assert!(parse_nda_request_inplace(&bad_magic).is_err(), "bad magic");
         let mut tampered = frame.clone();
         let last = tampered.len() - 1;
         tampered[last] ^= 0xFF;
-        assert!(parse_nda_request_inplace(&tampered).is_err(), "tampered payload");
+        assert!(
+            parse_nda_request_inplace(&tampered).is_err(),
+            "tampered payload"
+        );
         // Payload of just a method byte: no id TLV
         let no_id = build_nda_frame(&[METHOD_PING]);
         assert!(parse_nda_request_inplace(&no_id).is_err(), "missing id");
         // Truncated id TLV: string tag claiming 100 bytes
         let mut truncated = vec![METHOD_PING, 0x01, 0, 0, 0, 100];
         let trunc_frame = build_nda_frame(&mut truncated);
-        assert!(parse_nda_request_inplace(&trunc_frame).is_err(), "truncated id TLV");
+        assert!(
+            parse_nda_request_inplace(&trunc_frame).is_err(),
+            "truncated id TLV"
+        );
     }
 
     #[test]
@@ -1598,7 +1852,11 @@ mod tests {
 
         // Via encode_json_value (sorted keys: arguments before name)
         let mut sorted = Vec::new();
-        encode_json_value(&json!({"name": "echo", "arguments": {"size": 64}}), &mut sorted).unwrap();
+        encode_json_value(
+            &json!({"name": "echo", "arguments": {"size": 64}}),
+            &mut sorted,
+        )
+        .unwrap();
         let (name, args) = extract_tools_call_fields(&sorted).unwrap();
         assert_eq!(name, Some("echo"));
         let (args_val, consumed) = decode_json_value(args.unwrap()).unwrap();
@@ -1673,9 +1931,16 @@ mod tests {
         bytes.push(0x04); // null leaf
 
         let result = skip_tlv_value(&bytes);
-        assert!(result.is_err(), "should reject nesting depth > TLV_MAX_DEPTH");
+        assert!(
+            result.is_err(),
+            "should reject nesting depth > TLV_MAX_DEPTH"
+        );
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("depth exceeds maximum"), "error should mention depth limit: {}", err);
+        assert!(
+            err.contains("depth exceeds maximum"),
+            "error should mention depth limit: {}",
+            err
+        );
     }
 
     #[test]
@@ -1690,7 +1955,11 @@ mod tests {
         bytes.push(0x04); // null leaf
 
         let result = skip_tlv_value(&bytes);
-        assert!(result.is_ok(), "should accept nesting depth == TLV_MAX_DEPTH: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "should accept nesting depth == TLV_MAX_DEPTH: {:?}",
+            result.err()
+        );
         assert_eq!(result.unwrap(), bytes.len());
     }
 
@@ -1707,9 +1976,16 @@ mod tests {
         bytes.push(0x04); // null leaf (value)
 
         let result = skip_tlv_value(&bytes);
-        assert!(result.is_err(), "should reject object nesting depth > TLV_MAX_DEPTH");
+        assert!(
+            result.is_err(),
+            "should reject object nesting depth > TLV_MAX_DEPTH"
+        );
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("depth exceeds maximum"), "error should mention depth limit: {}", err);
+        assert!(
+            err.contains("depth exceeds maximum"),
+            "error should mention depth limit: {}",
+            err
+        );
     }
 
     // ─── Coverage: decode_json_value error paths ───────────────────────────
@@ -1725,7 +2001,10 @@ mod tests {
     fn test_decode_json_value_unknown_tag() {
         let result = decode_json_value(&[0xFF]);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unknown TLV type tag"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Unknown TLV type tag"));
     }
 
     #[test]
@@ -1814,7 +2093,10 @@ mod tests {
         // no key length bytes follow
         let result = decode_json_value(&buf);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("missing key length"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("missing key length"));
     }
 
     #[test]
@@ -1846,7 +2128,10 @@ mod tests {
     fn test_skip_tlv_truncated_string_length() {
         let result = skip_tlv_value(&[0x01, 0, 0]);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("truncated string length"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("truncated string length"));
     }
 
     #[test]
@@ -1856,7 +2141,10 @@ mod tests {
         buf.extend_from_slice(b"short");
         let result = skip_tlv_value(&buf);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("truncated string body"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("truncated string body"));
     }
 
     #[test]
@@ -1879,14 +2167,20 @@ mod tests {
     fn test_skip_tlv_truncated_array_count() {
         let result = skip_tlv_value(&[0x05, 0, 0]);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("truncated array count"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("truncated array count"));
     }
 
     #[test]
     fn test_skip_tlv_truncated_object_count() {
         let result = skip_tlv_value(&[0x06, 0]);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("truncated object count"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("truncated object count"));
     }
 
     #[test]
@@ -1897,7 +2191,10 @@ mod tests {
         buf.push(0);
         let result = skip_tlv_value(&buf);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("truncated key length"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("truncated key length"));
     }
 
     #[test]
@@ -1998,7 +2295,11 @@ mod tests {
         let frame = build_nda_frame(&[METHOD_PING]);
         let result = parse_flat_request(&frame);
         assert!(result.is_err());
-        assert!(result.err().unwrap().to_string().contains("missing request id"));
+        assert!(result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("missing request id"));
     }
 
     #[test]
@@ -2008,7 +2309,11 @@ mod tests {
         let frame = build_nda_frame(&payload);
         let result = parse_flat_request(&frame);
         assert!(result.is_err());
-        assert!(result.err().unwrap().to_string().contains("missing tool name length"));
+        assert!(result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("missing tool name length"));
     }
 
     #[test]
@@ -2020,7 +2325,11 @@ mod tests {
         let frame = build_nda_frame(&payload);
         let result = parse_flat_request(&frame);
         assert!(result.is_err());
-        assert!(result.err().unwrap().to_string().contains("truncated tool name"));
+        assert!(result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("truncated tool name"));
     }
 
     #[test]
@@ -2052,7 +2361,11 @@ mod tests {
         let frame = build_nda_frame(&[STATUS_OK]);
         let result = parse_flat_response(&frame);
         assert!(result.is_err());
-        assert!(result.err().unwrap().to_string().contains("missing response request id"));
+        assert!(result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("missing response request id"));
     }
 
     // ─── Coverage: decode_flat_value error paths ───────────────────────────
@@ -2155,10 +2468,19 @@ mod tests {
 
     #[test]
     fn test_method_from_str_all_variants() {
-        assert_eq!(method_from_str("logging/setLevel"), Some(METHOD_LOGGING_SET_LEVEL));
+        assert_eq!(
+            method_from_str("logging/setLevel"),
+            Some(METHOD_LOGGING_SET_LEVEL)
+        );
         assert_eq!(method_from_str("health/check"), Some(METHOD_HEALTH_CHECK));
-        assert_eq!(method_from_str("notifications/initialized"), Some(NOTIF_INITIALIZED));
-        assert_eq!(method_from_str("notifications/cancelled"), Some(NOTIF_CANCELLED));
+        assert_eq!(
+            method_from_str("notifications/initialized"),
+            Some(NOTIF_INITIALIZED)
+        );
+        assert_eq!(
+            method_from_str("notifications/cancelled"),
+            Some(NOTIF_CANCELLED)
+        );
     }
 
     // ─── Coverage: extract_tools_call_fields truncated object errors ───────
@@ -2179,7 +2501,10 @@ mod tests {
         // no key length bytes
         let result = extract_tools_call_fields(&data);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("truncated key length"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("truncated key length"));
     }
 
     #[test]
@@ -2315,7 +2640,7 @@ mod tests {
         // Verify it's a string tag with correct value
         assert_eq!(tlv[0], 0x01);
         let len = u32::from_be_bytes(tlv[1..5].try_into().unwrap()) as usize;
-        let s = std::str::from_utf8(&tlv[5..5+len]).unwrap();
+        let s = std::str::from_utf8(&tlv[5..5 + len]).unwrap();
         assert_eq!(s, "/test.txt");
     }
 
@@ -2349,13 +2674,13 @@ mod tests {
             setup_test_key();
             let req_id = json!(42);
             let data = json!({"name": "test_tool", "arguments": {"size": 64}});
-            
+
             let frame = build_nda_encrypted_frame(METHOD_TOOLS_CALL, &req_id, &data).unwrap();
-            
+
             // Verify NMCE magic
             assert_eq!(&frame[0..4], NDA_ENCRYPTED_MAGIC);
             assert!(is_nda_frame_encrypted(&frame));
-            
+
             // Parse should succeed
             let parsed = parse_nda_request(&frame).unwrap();
             assert_eq!(parsed.method, METHOD_TOOLS_CALL);
@@ -2368,14 +2693,14 @@ mod tests {
             setup_test_key();
             let req_id = json!(1);
             let data = json!({"test": "data"});
-            
+
             let frame = build_nda_encrypted_frame(METHOD_PING, &req_id, &data).unwrap();
-            
+
             // Change the key
             let mut wrong_key = [0u8; 32];
             wrong_key[0] = 0xFF;
             set_session_encryption_key(wrong_key);
-            
+
             // Parse should fail with decryption error
             let result = parse_nda_request(&frame);
             assert!(result.is_err());
@@ -2388,7 +2713,7 @@ mod tests {
             clear_session_key();
             let req_id = json!(1);
             let data = Value::Null;
-            
+
             let result = build_nda_encrypted_frame(METHOD_PING, &req_id, &data);
             assert!(result.is_err());
             assert!(result.unwrap_err().contains("key not set"));
@@ -2399,13 +2724,13 @@ mod tests {
             setup_test_key();
             let req_id = json!(1);
             let data = json!({"test": "data"});
-            
+
             let mut frame = build_nda_encrypted_frame(METHOD_PING, &req_id, &data).unwrap();
-            
+
             // Tamper with ciphertext (last byte)
             let last = frame.len() - 1;
             frame[last] ^= 0xFF;
-            
+
             // Should fail (either decryption or Merkle mismatch)
             let result = parse_nda_request(&frame);
             assert!(result.is_err());
@@ -2416,35 +2741,42 @@ mod tests {
             // This is the critical security test: encrypted frames that fail
             // decryption must be rejected, NOT silently processed as plaintext.
             setup_test_key();
-            
+
             // Build a plaintext frame with NMCP magic but make it long enough
             // to have triggered the old length-based heuristic
             let req_id = json!(1);
             let data = json!({"name": "bench_echo", "arguments": {"size": 1000}});
             let plaintext_frame = build_nda_request(METHOD_TOOLS_CALL, &req_id, &data).unwrap();
-            
+
             // This should parse fine as plaintext
             assert_eq!(&plaintext_frame[0..4], NDA_MAGIC);
             let parsed = parse_nda_request(&plaintext_frame).unwrap();
             assert_eq!(parsed.method, METHOD_TOOLS_CALL);
-            
+
             // Now build an encrypted frame with wrong key to force decryption failure
             let mut wrong_key = [0u8; 32];
             wrong_key[0] = 0xAA;
             set_session_encryption_key(wrong_key);
-            
+
             // Build with correct key first
             let correct_key = generate_session_key();
             set_session_encryption_key(correct_key);
-            let enc_frame = build_nda_encrypted_frame(METHOD_PING, &json!(1), &Value::Null).unwrap();
-            
+            let enc_frame =
+                build_nda_encrypted_frame(METHOD_PING, &json!(1), &Value::Null).unwrap();
+
             // Now switch to wrong key and try to parse
             set_session_encryption_key(wrong_key);
             let result = parse_nda_request(&enc_frame);
-            assert!(result.is_err(), "Encrypted frame with wrong key MUST be rejected");
+            assert!(
+                result.is_err(),
+                "Encrypted frame with wrong key MUST be rejected"
+            );
             let err = result.unwrap_err().to_string();
-            assert!(err.contains("decryption failed") || err.contains("Decrypt"),
-                "Error should mention decryption failure, got: {}", err);
+            assert!(
+                err.contains("decryption failed") || err.contains("Decrypt"),
+                "Error should mention decryption failure, got: {}",
+                err
+            );
         }
 
         #[test]
@@ -2452,12 +2784,12 @@ mod tests {
             setup_test_key();
             let req_id = json!(99);
             let data = json!({"name": "file_read", "arguments": {"path": "/test.txt"}});
-            
+
             let frame = build_nda_encrypted_frame(METHOD_TOOLS_CALL, &req_id, &data).unwrap();
-            
+
             let parsed = parse_nda_request_inplace(&frame).unwrap();
             assert_eq!(parsed.method, METHOD_TOOLS_CALL);
-            
+
             // Verify id_tlv decodes correctly
             let (id_val, _) = decode_json_value(parsed.id_tlv).unwrap();
             assert_eq!(id_val, json!(99));
@@ -2467,11 +2799,12 @@ mod tests {
         fn test_is_nda_frame_encrypted() {
             let plaintext = build_nda_request(METHOD_PING, &json!(1), &Value::Null).unwrap();
             assert!(!is_nda_frame_encrypted(&plaintext));
-            
+
             setup_test_key();
-            let encrypted = build_nda_encrypted_frame(METHOD_PING, &json!(1), &Value::Null).unwrap();
+            let encrypted =
+                build_nda_encrypted_frame(METHOD_PING, &json!(1), &Value::Null).unwrap();
             assert!(is_nda_frame_encrypted(&encrypted));
-            
+
             // Too short
             assert!(!is_nda_frame_encrypted(&[0u8; 3]));
         }
@@ -2481,15 +2814,14 @@ mod tests {
             // When oauth2 feature is enabled, plaintext frames (NMCP magic)
             // should still work normally — no decryption attempted.
             setup_test_key();
-            
+
             let frame = build_nda_request(METHOD_PING, &json!(1), &Value::Null).unwrap();
             assert_eq!(&frame[0..4], NDA_MAGIC);
             assert!(!is_nda_frame_encrypted(&frame));
-            
+
             let parsed = parse_nda_request(&frame).unwrap();
             assert_eq!(parsed.method, METHOD_PING);
             assert_eq!(parsed.request_id, json!(1));
         }
     }
-
 }

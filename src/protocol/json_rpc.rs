@@ -1,20 +1,20 @@
+use crate::audit::{self, AuditOutcome};
+#[cfg(feature = "oauth2")]
+use crate::oauth2;
+use crate::rate_limit;
+use crate::registry;
+use crate::resources;
+use crate::sampling;
+use crate::sandbox;
+use crate::streaming;
 use serde_json::{json, Value};
-use std::io::{self, BufRead, Read};
 use std::error::Error;
+use std::io::{self, BufRead, Read};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Mutex};
 use std::thread;
 use std::time::Instant;
-use tracing::{info, warn, debug, error};
-use crate::registry;
-use crate::audit::{self, AuditOutcome};
-use crate::rate_limit;
-use crate::resources;
-use crate::sandbox;
-use crate::sampling;
-use crate::streaming;
-#[cfg(feature = "oauth2")]
-use crate::oauth2;
+use tracing::{debug, error, info, warn};
 
 const MAX_REQUEST_SIZE: usize = 1_048_576;
 const DEFAULT_PAGE_SIZE: usize = 100;
@@ -24,7 +24,7 @@ static LOG_LEVEL: Mutex<tracing::Level> = Mutex::new(tracing::Level::INFO);
 
 /// Cache cancelled request IDs for cancellation support.
 /// Uses String keys to avoid cloning serde_json::Value trees.
-static CANCELLED_IDS: std::sync::LazyLock<Mutex<std::collections::HashSet<String>>> = 
+static CANCELLED_IDS: std::sync::LazyLock<Mutex<std::collections::HashSet<String>>> =
     std::sync::LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
 
 /// Extract a canonical string key from a JSON-RPC ID value.
@@ -68,9 +68,17 @@ pub fn handle_request(request: &Value) -> Option<Value> {
 
     match method {
         "initialize" => {
-            let client_name = request["params"]["clientInfo"]["name"].as_str().unwrap_or("unknown");
-            let client_version = request["params"]["clientInfo"]["version"].as_str().unwrap_or("unknown");
-            info!(client = client_name, version = client_version, "Client initializing");
+            let client_name = request["params"]["clientInfo"]["name"]
+                .as_str()
+                .unwrap_or("unknown");
+            let client_version = request["params"]["clientInfo"]["version"]
+                .as_str()
+                .unwrap_or("unknown");
+            info!(
+                client = client_name,
+                version = client_version,
+                "Client initializing"
+            );
             let result = super::build_initialize_response(true); // include elicitation and roots
             Some(json!({
                 "jsonrpc": "2.0",
@@ -95,13 +103,11 @@ pub fn handle_request(request: &Value) -> Option<Value> {
             streaming::handle_progress_notification(&request["params"]);
             None
         }
-        "ping" => {
-            Some(json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": {}
-            }))
-        }
+        "ping" => Some(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {}
+        })),
         "logging/setLevel" => {
             let level_str = request["params"]["level"].as_str().unwrap_or("info");
             let level = match level_str {
@@ -179,7 +185,11 @@ pub fn handle_request(request: &Value) -> Option<Value> {
 
             if !rate_limit::check_rate_limit() {
                 warn!(tool = name, "Rate limit exceeded");
-                audit::record_tool_call(name, Instant::now(), AuditOutcome::Rejected("rate limited".into()));
+                audit::record_tool_call(
+                    name,
+                    Instant::now(),
+                    AuditOutcome::Rejected("rate limited".into()),
+                );
                 return Some(json!({
                     "jsonrpc": "2.0",
                     "id": id,
@@ -208,24 +218,43 @@ pub fn handle_request(request: &Value) -> Option<Value> {
                     let err_msg = e.to_string();
                     error!(tool = name, error = %err_msg, "Tool execution failed");
                     audit::record_tool_call(name, call_start, AuditOutcome::Error(err_msg.clone()));
-                    
+
                     let sanitized = sandbox::sanitize_error(&err_msg);
-                    
+
                     // Classify error and provide actionable hint for the LLM
-                    let (error_type, hint) = if sanitized.contains("not found") || sanitized.contains("No such file") {
+                    let (error_type, hint) = if sanitized.contains("not found")
+                        || sanitized.contains("No such file")
+                    {
                         ("NOT_FOUND", "Check that the path or resource exists.")
-                    } else if sanitized.contains("Permission denied") || sanitized.contains("access") {
-                        ("PERMISSION_DENIED", "Check file permissions or run with elevated privileges.")
+                    } else if sanitized.contains("Permission denied")
+                        || sanitized.contains("access")
+                    {
+                        (
+                            "PERMISSION_DENIED",
+                            "Check file permissions or run with elevated privileges.",
+                        )
                     } else if sanitized.contains("required") || sanitized.contains("missing") {
-                        ("INVALID_ARGUMENTS", "Check that all required parameters are provided with correct types.")
+                        (
+                            "INVALID_ARGUMENTS",
+                            "Check that all required parameters are provided with correct types.",
+                        )
                     } else if sanitized.contains("timeout") || sanitized.contains("timed out") {
-                        ("TIMEOUT", "The operation took too long. Try again or increase timeout.")
+                        (
+                            "TIMEOUT",
+                            "The operation took too long. Try again or increase timeout.",
+                        )
                     } else if sanitized.contains("connection") || sanitized.contains("network") {
-                        ("NETWORK_ERROR", "A network error occurred. Check connectivity and retry.")
+                        (
+                            "NETWORK_ERROR",
+                            "A network error occurred. Check connectivity and retry.",
+                        )
                     } else {
-                        ("EXECUTION_ERROR", "Review the error message and adjust inputs accordingly.")
+                        (
+                            "EXECUTION_ERROR",
+                            "Review the error message and adjust inputs accordingly.",
+                        )
                     };
-                    
+
                     format!(
                         "Error running tool '{}': {}\n\nError type: {}\nHint: {}",
                         name, sanitized, error_type, hint
@@ -259,17 +288,15 @@ pub fn handle_request(request: &Value) -> Option<Value> {
                 }
             }))
         }
-        "health/check" => {
-            Some(json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": {
-                    "status": "healthy",
-                    "mode": "stdio",
-                    "version": crate::VERSION
-                }
-            }))
-        }
+        "health/check" => Some(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {
+                "status": "healthy",
+                "mode": "stdio",
+                "version": crate::VERSION
+            }
+        })),
         "resources/list" => {
             let cursor = request["params"]["cursor"].as_str();
             Some(json!({
@@ -290,7 +317,7 @@ pub fn handle_request(request: &Value) -> Option<Value> {
                     "jsonrpc": "2.0",
                     "id": id,
                     "result": { "content": [{"type": "text", "text": sandbox::sanitize_error(&e)}], "isError": true }
-                }))
+                })),
             }
         }
         "resources/templates/list" => {
@@ -303,7 +330,9 @@ pub fn handle_request(request: &Value) -> Option<Value> {
         }
         "resources/subscribe" => {
             let uri = request["params"]["uri"].as_str().unwrap_or("");
-            let subscriber_id = request["params"]["subscriberId"].as_str().unwrap_or("default");
+            let subscriber_id = request["params"]["subscriberId"]
+                .as_str()
+                .unwrap_or("default");
             match resources::handle_resources_subscribe(uri, subscriber_id) {
                 Ok(result) => Some(json!({
                     "jsonrpc": "2.0",
@@ -314,12 +343,14 @@ pub fn handle_request(request: &Value) -> Option<Value> {
                     "jsonrpc": "2.0",
                     "id": id,
                     "result": { "content": [{"type": "text", "text": sandbox::sanitize_error(&e)}], "isError": true }
-                }))
+                })),
             }
         }
         "resources/unsubscribe" => {
             let uri = request["params"]["uri"].as_str().unwrap_or("");
-            let subscriber_id = request["params"]["subscriberId"].as_str().unwrap_or("default");
+            let subscriber_id = request["params"]["subscriberId"]
+                .as_str()
+                .unwrap_or("default");
             match resources::handle_resources_unsubscribe(uri, subscriber_id) {
                 Ok(result) => Some(json!({
                     "jsonrpc": "2.0",
@@ -330,7 +361,7 @@ pub fn handle_request(request: &Value) -> Option<Value> {
                     "jsonrpc": "2.0",
                     "id": id,
                     "result": { "content": [{"type": "text", "text": sandbox::sanitize_error(&e)}], "isError": true }
-                }))
+                })),
             }
         }
         "prompts/list" => {
@@ -354,7 +385,7 @@ pub fn handle_request(request: &Value) -> Option<Value> {
                     "jsonrpc": "2.0",
                     "id": id,
                     "result": { "content": [{"type": "text", "text": sandbox::sanitize_error(&e)}], "isError": true }
-                }))
+                })),
             }
         }
         "sampling/createMessage" => {
@@ -369,7 +400,7 @@ pub fn handle_request(request: &Value) -> Option<Value> {
                     "jsonrpc": "2.0",
                     "id": id,
                     "error": { "code": -32603, "message": sandbox::sanitize_error(&e) }
-                }))
+                })),
             }
         }
         #[cfg(feature = "oauth2")]
@@ -385,14 +416,14 @@ pub fn handle_request(request: &Value) -> Option<Value> {
                     "jsonrpc": "2.0",
                     "id": id,
                     "error": { "code": -32603, "message": sandbox::sanitize_error(&e) }
-                }))
+                })),
             }
         }
         "elicitation/create" => {
             // Elicitation allows the server to request user input during tool execution
             let message = request["params"]["message"].as_str().unwrap_or("");
             debug!(message = message, "Elicitation request from client");
-            
+
             // For now, we just acknowledge the elicitation request
             // In a full implementation, this would pause execution and wait for user input
             Some(json!({
@@ -408,7 +439,7 @@ pub fn handle_request(request: &Value) -> Option<Value> {
             // Roots define the file system roots that the client has access to
             // This helps the server understand the file system structure
             debug!("Client requesting roots list");
-            
+
             // Return an empty roots list for now
             // In a full implementation, this would be configured by the client
             Some(json!({
@@ -490,7 +521,7 @@ fn run_stdio_nda_mode(
 
         frame_buf.resize(frame_len as usize, 0);
         match stdin_lock.read_exact(&mut frame_buf) {
-            Ok(_) => {},
+            Ok(_) => {}
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
             Err(e) => return Err(Box::new(e)),
         }
@@ -508,10 +539,13 @@ fn run_stdio_nda_mode(
             Ok(_) => {
                 frame_len = u32::from_be_bytes(len_buf);
                 if frame_len > 10 * 1024 * 1024 {
-                    tracing::error!(frame_len, "NDA stdio frame exceeds 10MB limit, closing connection");
+                    tracing::error!(
+                        frame_len,
+                        "NDA stdio frame exceeds 10MB limit, closing connection"
+                    );
                     break;
                 }
-            },
+            }
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
             Err(e) => return Err(Box::new(e)),
         }
@@ -527,18 +561,25 @@ fn handle_nda_frame(raw: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
         Err(e) => {
             // Parse errors should return error frames, not propagate as Err
             let err_msg = format!("Parse error: {}", e);
-            Ok(crate::protocol::nda_native::build_nda_error(&Value::Null, &err_msg)?)
+            Ok(crate::protocol::nda_native::build_nda_error(
+                &Value::Null,
+                &err_msg,
+            )?)
         }
     }
 }
 
-fn run_stdio_json_mode(stdin_lock: std::io::StdinLock<'_>, initial_bytes: &[u8], shutdown: &AtomicBool) -> Result<(), Box<dyn Error>> {
+fn run_stdio_json_mode(
+    stdin_lock: std::io::StdinLock<'_>,
+    initial_bytes: &[u8],
+    shutdown: &AtomicBool,
+) -> Result<(), Box<dyn Error>> {
     // Drop the inherited stdin lock so the reader thread can acquire its own.
     drop(stdin_lock);
     // Use a reader thread so stdin reads don't block shutdown checks.
     let (tx, rx) = mpsc::channel::<String>();
     let initial_bytes_owned = initial_bytes.to_vec();
-    
+
     thread::spawn(move || {
         let stdin = io::stdin();
         let mut handle = stdin.lock();
@@ -552,7 +593,8 @@ fn run_stdio_json_mode(stdin_lock: std::io::StdinLock<'_>, initial_bytes: &[u8],
                 Ok(_) => {
                     if first_line && !initial_bytes_owned.is_empty() {
                         // Prepend the peeked bytes to the first line
-                        let mut full_line = String::from_utf8_lossy(&initial_bytes_owned).to_string();
+                        let mut full_line =
+                            String::from_utf8_lossy(&initial_bytes_owned).to_string();
                         full_line.push_str(&line);
                         line = full_line;
                         first_line = false;
@@ -634,7 +676,10 @@ mod tests {
         assert_eq!(res["jsonrpc"], "2.0");
         assert_eq!(res["id"], 1);
         assert_eq!(res["result"]["protocolVersion"], crate::PROTOCOL_VERSION);
-        assert_eq!(res["result"]["serverInfo"]["name"], "velocity-mcp-rust-server");
+        assert_eq!(
+            res["result"]["serverInfo"]["name"],
+            "velocity-mcp-rust-server"
+        );
         assert_eq!(res["result"]["serverInfo"]["version"], crate::VERSION);
         assert!(res["result"]["capabilities"]["tools"].is_object());
         assert_eq!(res["result"]["capabilities"]["tools"]["listChanged"], true);
@@ -700,7 +745,10 @@ mod tests {
     fn test_tools_list_pagination_no_next_cursor_when_all_fit() {
         let req = json!({"jsonrpc": "2.0", "method": "tools/list", "id": 20});
         let res = handle_request(&req).unwrap();
-        assert!(res["result"]["tools"].as_array().is_some(), "Response should contain tools array");
+        assert!(
+            res["result"]["tools"].as_array().is_some(),
+            "Response should contain tools array"
+        );
     }
 
     #[test]
@@ -752,7 +800,10 @@ mod tests {
         });
         let res = handle_request(&req).unwrap();
         assert_eq!(res["result"]["isError"], true);
-        assert!(res["result"]["content"][0]["text"].as_str().unwrap().contains("cancelled"));
+        assert!(res["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("cancelled"));
     }
 
     #[test]
@@ -878,7 +929,10 @@ mod tests {
         assert_eq!(res["jsonrpc"], "2.0");
         assert_eq!(res["id"], 39);
         assert_eq!(res["result"]["action"], "accept");
-        assert!(res["result"]["message"].as_str().unwrap().contains("acknowledged"));
+        assert!(res["result"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("acknowledged"));
     }
 
     #[test]
@@ -919,7 +973,10 @@ mod tests {
         });
         let res = handle_request(&req).unwrap();
         assert_eq!(res["result"]["isError"], true);
-        assert!(res["result"]["content"][0]["text"].as_str().unwrap().contains("cancelled"));
+        assert!(res["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("cancelled"));
         remove_cancelled(&json!(8888));
     }
 
@@ -937,7 +994,8 @@ mod tests {
     #[test]
     fn test_nda_frame_ping() {
         use crate::protocol::nda_native;
-        let frame = nda_native::build_nda_request(nda_native::METHOD_PING, &json!(1), &Value::Null).unwrap();
+        let frame = nda_native::build_nda_request(nda_native::METHOD_PING, &json!(1), &Value::Null)
+            .unwrap();
         let result = handle_nda_frame(&frame).unwrap();
         assert!(result.len() > nda_native::FRAME_HEADER_SIZE);
         assert_eq!(result[0..4], *nda_native::NDA_MAGIC);
@@ -947,7 +1005,12 @@ mod tests {
     #[test]
     fn test_nda_frame_initialize() {
         use crate::protocol::nda_native;
-        let frame = nda_native::build_nda_request(nda_native::METHOD_INITIALIZE, &json!(2), &json!({"clientInfo": {"name": "test"}})).unwrap();
+        let frame = nda_native::build_nda_request(
+            nda_native::METHOD_INITIALIZE,
+            &json!(2),
+            &json!({"clientInfo": {"name": "test"}}),
+        )
+        .unwrap();
         let result = handle_nda_frame(&frame).unwrap();
         assert!(result.len() > nda_native::FRAME_HEADER_SIZE);
         assert_eq!(result[0..4], *nda_native::NDA_MAGIC);
@@ -957,7 +1020,9 @@ mod tests {
     #[test]
     fn test_nda_frame_initialized_notification() {
         use crate::protocol::nda_native;
-        let frame = nda_native::build_nda_request(nda_native::NOTIF_INITIALIZED, &json!(3), &Value::Null).unwrap();
+        let frame =
+            nda_native::build_nda_request(nda_native::NOTIF_INITIALIZED, &json!(3), &Value::Null)
+                .unwrap();
         let result = handle_nda_frame(&frame).unwrap();
         assert_eq!(result[0..4], *nda_native::NDA_MAGIC);
         assert_eq!(result[nda_native::FRAME_HEADER_SIZE], nda_native::STATUS_OK);
@@ -966,7 +1031,9 @@ mod tests {
     #[test]
     fn test_nda_frame_tools_list() {
         use crate::protocol::nda_native;
-        let frame = nda_native::build_nda_request(nda_native::METHOD_TOOLS_LIST, &json!(4), &Value::Null).unwrap();
+        let frame =
+            nda_native::build_nda_request(nda_native::METHOD_TOOLS_LIST, &json!(4), &Value::Null)
+                .unwrap();
         let result = handle_nda_frame(&frame).unwrap();
         assert!(result.len() > nda_native::FRAME_HEADER_SIZE);
         assert_eq!(result[0..4], *nda_native::NDA_MAGIC);
@@ -976,7 +1043,12 @@ mod tests {
     #[test]
     fn test_nda_frame_tools_call() {
         use crate::protocol::nda_native;
-        let frame = nda_native::build_nda_request(nda_native::METHOD_TOOLS_CALL, &json!(5), &json!({"name": "bench_echo", "arguments": {"size": 64}})).unwrap();
+        let frame = nda_native::build_nda_request(
+            nda_native::METHOD_TOOLS_CALL,
+            &json!(5),
+            &json!({"name": "bench_echo", "arguments": {"size": 64}}),
+        )
+        .unwrap();
         let result = handle_nda_frame(&frame).unwrap();
         assert!(result.len() > nda_native::FRAME_HEADER_SIZE);
         assert_eq!(result[0..4], *nda_native::NDA_MAGIC);
@@ -986,18 +1058,28 @@ mod tests {
     #[test]
     fn test_nda_frame_tools_call_error_path() {
         use crate::protocol::nda_native;
-        let frame = nda_native::build_nda_request(nda_native::METHOD_TOOLS_CALL, &json!(6), &json!({"name": "nonexistent_tool", "arguments": {}})).unwrap();
+        let frame = nda_native::build_nda_request(
+            nda_native::METHOD_TOOLS_CALL,
+            &json!(6),
+            &json!({"name": "nonexistent_tool", "arguments": {}}),
+        )
+        .unwrap();
         let result = handle_nda_frame(&frame).unwrap();
         assert!(result.len() > nda_native::FRAME_HEADER_SIZE);
         assert_eq!(result[0..4], *nda_native::NDA_MAGIC);
         // Tool not found returns error status from dispatch
-        assert_eq!(result[nda_native::FRAME_HEADER_SIZE], nda_native::STATUS_ERROR);
+        assert_eq!(
+            result[nda_native::FRAME_HEADER_SIZE],
+            nda_native::STATUS_ERROR
+        );
     }
 
     #[test]
     fn test_nda_frame_fallback_to_json_rpc() {
         use crate::protocol::nda_native;
-        let frame = nda_native::build_nda_request(nda_native::METHOD_HEALTH_CHECK, &json!(7), &Value::Null).unwrap();
+        let frame =
+            nda_native::build_nda_request(nda_native::METHOD_HEALTH_CHECK, &json!(7), &Value::Null)
+                .unwrap();
         let result = handle_nda_frame(&frame).unwrap();
         assert!(result.len() > nda_native::FRAME_HEADER_SIZE);
         assert_eq!(result[0..4], *nda_native::NDA_MAGIC);
@@ -1067,7 +1149,8 @@ mod tests {
 
     #[test]
     fn test_tools_list_pagination_with_cursor() {
-        let req = json!({"jsonrpc": "2.0", "method": "tools/list", "id": 200, "params": {"cursor": "0"}});
+        let req =
+            json!({"jsonrpc": "2.0", "method": "tools/list", "id": 200, "params": {"cursor": "0"}});
         let res = handle_request(&req).unwrap();
         assert!(res["result"]["tools"].as_array().unwrap().len() > 0);
     }
@@ -1091,12 +1174,17 @@ mod tests {
 
     #[test]
     fn test_resources_read_success() {
-        use tempfile::NamedTempFile;
         use std::io::Write;
+        use tempfile::NamedTempFile;
         let mut tmp = NamedTempFile::new().unwrap();
         write!(tmp, "coverage test content").unwrap();
         let path = tmp.path().to_str().unwrap().to_string();
-        crate::resources::register_file_resource("test://cov_read", "CovRead", "Coverage read", &path);
+        crate::resources::register_file_resource(
+            "test://cov_read",
+            "CovRead",
+            "Coverage read",
+            &path,
+        );
         let req = json!({"jsonrpc": "2.0", "method": "resources/read", "id": 50, "params": {"uri": "test://cov_read"}});
         let res = handle_request(&req).unwrap();
         assert_eq!(res["jsonrpc"], "2.0");
@@ -1109,7 +1197,12 @@ mod tests {
 
     #[test]
     fn test_resources_subscribe_success() {
-        crate::resources::register_file_resource("test://cov_sub", "CovSub", "Coverage sub", "/tmp/cov_sub.txt");
+        crate::resources::register_file_resource(
+            "test://cov_sub",
+            "CovSub",
+            "Coverage sub",
+            "/tmp/cov_sub.txt",
+        );
         let req = json!({"jsonrpc": "2.0", "method": "resources/subscribe", "id": 51, "params": {"uri": "test://cov_sub", "subscriberId": "cov_client"}});
         let res = handle_request(&req).unwrap();
         assert_eq!(res["jsonrpc"], "2.0");
@@ -1130,7 +1223,11 @@ mod tests {
 
     #[test]
     fn test_prompts_get_success() {
-        crate::resources::register_prompt("cov_prompt", "Hello {name}", vec![("name", "Name", true)]);
+        crate::resources::register_prompt(
+            "cov_prompt",
+            "Hello {name}",
+            vec![("name", "Name", true)],
+        );
         let req = json!({"jsonrpc": "2.0", "method": "prompts/get", "id": 53, "params": {"name": "cov_prompt", "arguments": {"name": "World"}}});
         let res = handle_request(&req).unwrap();
         assert_eq!(res["jsonrpc"], "2.0");
@@ -1156,7 +1253,11 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let restricted = dir.path().join("restricted.txt");
             std::fs::write(&restricted, "secret").unwrap();
-            std::fs::set_permissions(&restricted, std::os::unix::fs::PermissionsExt::from_mode(0o000)).ok();
+            std::fs::set_permissions(
+                &restricted,
+                std::os::unix::fs::PermissionsExt::from_mode(0o000),
+            )
+            .ok();
             let req = json!({
                 "jsonrpc": "2.0",
                 "method": "tools/call",
@@ -1218,7 +1319,12 @@ mod tests {
     #[test]
     fn test_nda_frame_tools_call_empty_args() {
         use crate::protocol::nda_native;
-        let frame = nda_native::build_nda_request(nda_native::METHOD_TOOLS_CALL, &json!(50), &json!({"name": "bench_echo", "arguments": {}})).unwrap();
+        let frame = nda_native::build_nda_request(
+            nda_native::METHOD_TOOLS_CALL,
+            &json!(50),
+            &json!({"name": "bench_echo", "arguments": {}}),
+        )
+        .unwrap();
         let result = handle_nda_frame(&frame).unwrap();
         assert!(result.len() > nda_native::FRAME_HEADER_SIZE);
         assert_eq!(result[0..4], *nda_native::NDA_MAGIC);
@@ -1230,7 +1336,12 @@ mod tests {
     #[test]
     fn test_nda_frame_fallback_sampling_error() {
         use crate::protocol::nda_native;
-        let frame = nda_native::build_nda_request(nda_native::METHOD_HEALTH_CHECK, &json!(51), &json!({"messages": [], "maxTokens": 10})).unwrap();
+        let frame = nda_native::build_nda_request(
+            nda_native::METHOD_HEALTH_CHECK,
+            &json!(51),
+            &json!({"messages": [], "maxTokens": 10}),
+        )
+        .unwrap();
         let result = handle_nda_frame(&frame).unwrap();
         assert!(result.len() > nda_native::FRAME_HEADER_SIZE);
         assert_eq!(result[0..4], *nda_native::NDA_MAGIC);
@@ -1258,7 +1369,8 @@ mod tests {
 
     #[test]
     fn test_resources_subscribe_missing_params() {
-        let req = json!({"jsonrpc": "2.0", "method": "resources/subscribe", "id": 57, "params": {}});
+        let req =
+            json!({"jsonrpc": "2.0", "method": "resources/subscribe", "id": 57, "params": {}});
         let res = handle_request(&req).unwrap();
         assert_eq!(res["result"]["isError"], true);
     }
@@ -1267,7 +1379,9 @@ mod tests {
 
     #[test]
     fn test_tools_list_pagination_next_cursor_when_exceeding_page_size() {
-        use crate::registry::{register_tool_lazy, get_macro_registry, bump_registry_generation, Tool};
+        use crate::registry::{
+            bump_registry_generation, get_macro_registry, register_tool_lazy, Tool,
+        };
 
         let prefix = "pag_test_tool_";
         for i in 0..105 {
@@ -1282,7 +1396,11 @@ mod tests {
         let req = json!({"jsonrpc": "2.0", "method": "tools/list", "id": 300});
         let res = handle_request(&req).unwrap();
         let tools = res["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 100, "First page should have exactly DEFAULT_PAGE_SIZE tools");
+        assert_eq!(
+            tools.len(),
+            100,
+            "First page should have exactly DEFAULT_PAGE_SIZE tools"
+        );
         let cursor = res["result"]["nextCursor"].as_str().unwrap();
         assert_eq!(cursor, "100");
 
@@ -1290,7 +1408,10 @@ mod tests {
         let res2 = handle_request(&req2).unwrap();
         let tools2 = res2["result"]["tools"].as_array().unwrap();
         assert!(tools2.len() > 0, "Second page should have remaining tools");
-        assert!(res2["result"]["nextCursor"].is_null(), "Last page should have no nextCursor");
+        assert!(
+            res2["result"]["nextCursor"].is_null(),
+            "Last page should have no nextCursor"
+        );
 
         if let Ok(mut registry) = get_macro_registry().lock() {
             registry.retain(|t| !t.name.starts_with(prefix));
@@ -1326,7 +1447,11 @@ mod tests {
         let res = handle_request(&req).unwrap();
         assert_eq!(res["result"]["isError"], true);
         let text = res["result"]["content"][0]["text"].as_str().unwrap_or("");
-        assert!(text.contains("cancelled"), "expected cancellation message, got: {}", text);
+        assert!(
+            text.contains("cancelled"),
+            "expected cancellation message, got: {}",
+            text
+        );
 
         injector.join().unwrap();
         remove_cancelled(&json!(77777));

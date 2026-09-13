@@ -2,19 +2,13 @@
 
 use velocity_mcp_macros::mcp_tool;
 
-#[mcp_tool(
-    name = "process_items",
-    description = "Process a list of items"
-)]
+#[mcp_tool(name = "process_items", description = "Process a list of items")]
 fn process_items(items: Vec<String>, count: Option<i64>) -> Result<String, String> {
     let total = count.unwrap_or(items.len() as i64);
     Ok(format!("Processing {} items: {:?}", total, items))
 }
 
-#[mcp_tool(
-    name = "process_numbers",
-    description = "Process a list of numbers"
-)]
+#[mcp_tool(name = "process_numbers", description = "Process a list of numbers")]
 fn process_numbers(numbers: Vec<i64>) -> Result<String, String> {
     let sum: i64 = numbers.iter().sum();
     Ok(format!("Sum: {}", sum))
@@ -57,11 +51,11 @@ mod tests {
     fn test_vec_schema_generation() {
         let schema = &PROCESS_ITEMS.input_schema;
         let props = schema["properties"].as_object().unwrap();
-        
+
         // Check that items is an array
         let items_schema = &props["items"];
         assert_eq!(items_schema["type"], "array");
-        
+
         // Check that items has item type schema
         assert!(items_schema["items"].is_object());
         assert_eq!(items_schema["items"]["type"], "string");

@@ -74,12 +74,7 @@ impl AuditLog {
     }
 
     /// Record a tool execution.
-    pub fn record(
-        &self,
-        tool_name: &str,
-        start: Instant,
-        outcome: AuditOutcome,
-    ) {
+    pub fn record(&self, tool_name: &str, start: Instant, outcome: AuditOutcome) {
         self.record_with_context(tool_name, start, outcome, None, None);
     }
 
@@ -214,7 +209,7 @@ impl AuditLog {
     pub fn export_csv(&self) -> Result<String, String> {
         let entries = self.all();
         let mut csv = String::from("sequence,timestamp_ms,tool_name,duration_us,outcome,transport,payload_size,response_size,merkle_root,session_id\n");
-        
+
         for entry in entries {
             let outcome_str = match &entry.outcome {
                 AuditOutcome::Success => "success".to_string(),
@@ -223,11 +218,17 @@ impl AuditLog {
                 AuditOutcome::Rejected(reason) => format!("rejected:{}", reason.replace(',', ";")),
             };
             let transport_str = entry.transport.unwrap_or_default();
-            let payload_str = entry.payload_size.map(|s| s.to_string()).unwrap_or_default();
-            let response_str = entry.response_size.map(|s| s.to_string()).unwrap_or_default();
+            let payload_str = entry
+                .payload_size
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            let response_str = entry
+                .response_size
+                .map(|s| s.to_string())
+                .unwrap_or_default();
             let merkle_str = entry.merkle_root.unwrap_or_default();
             let session_str = entry.session_id.unwrap_or_default();
-            
+
             csv.push_str(&format!(
                 "{},{},{},{},{},{},{},{},{},{}\n",
                 entry.sequence,
@@ -242,7 +243,7 @@ impl AuditLog {
                 session_str
             ));
         }
-        
+
         Ok(csv)
     }
 
@@ -256,8 +257,7 @@ impl AuditLog {
 }
 
 /// Global audit log instance (backward-compatible, used by direct callers like sandbox.rs).
-static GLOBAL_AUDIT: std::sync::LazyLock<AuditLog> =
-    std::sync::LazyLock::new(AuditLog::default);
+static GLOBAL_AUDIT: std::sync::LazyLock<AuditLog> = std::sync::LazyLock::new(AuditLog::default);
 
 /// Get a reference to the global audit log.
 ///
@@ -356,7 +356,8 @@ impl AuditRegistry {
                 tracing::warn!(session_id = %key, "Audit registry full ({}), evicted oldest session", MAX_AUDIT_SESSIONS);
             }
         }
-        sessions.entry(session_id.to_string())
+        sessions
+            .entry(session_id.to_string())
             .or_insert_with(|| Arc::new(AuditLog::new()))
             .clone()
     }
@@ -382,9 +383,7 @@ impl AuditRegistry {
     /// Aggregate all entries from all sessions, sorted by sequence descending.
     pub fn aggregate_all(&self) -> Vec<AuditEntry> {
         let sessions = self.sessions.read().unwrap_or_else(|p| p.into_inner());
-        let mut all: Vec<AuditEntry> = sessions.values()
-            .flat_map(|log| log.all())
-            .collect();
+        let mut all: Vec<AuditEntry> = sessions.values().flat_map(|log| log.all()).collect();
         all.sort_by_key(|a| std::cmp::Reverse(a.sequence));
         all
     }
@@ -429,6 +428,12 @@ impl AuditRegistry {
     }
 }
 
+impl Default for AuditRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Global audit registry instance.
 static AUDIT_REGISTRY: std::sync::LazyLock<AuditRegistry> =
     std::sync::LazyLock::new(|| AuditRegistry {
@@ -446,11 +451,7 @@ pub fn audit_registry() -> &'static AuditRegistry {
 ///
 /// Reads the session ID and transport from thread-local context. Falls back to "default" if
 /// no session context is set.
-pub fn record_tool_call(
-    tool_name: &str,
-    start: Instant,
-    outcome: AuditOutcome,
-) {
+pub fn record_tool_call(tool_name: &str, start: Instant, outcome: AuditOutcome) {
     let session_id = current_session_id().unwrap_or_else(|| "default".to_string());
     let transport = current_transport();
     let log = audit_registry().get_or_create(&session_id);
@@ -549,17 +550,35 @@ mod tests {
 
     fn test_timer(name: &str) -> impl Drop {
         let start = std::time::Instant::now();
-        struct Timer { name: String, start: std::time::Instant }
-        impl Drop for Timer { fn drop(&mut self) {
-            eprintln!("[TEST] {} completed in {:.3}ms", self.name, self.start.elapsed().as_secs_f64() * 1000.0);
-        }}
-        Timer { name: name.to_string(), start }
+        struct Timer {
+            name: String,
+            start: std::time::Instant,
+        }
+        impl Drop for Timer {
+            fn drop(&mut self) {
+                eprintln!(
+                    "[TEST] {} completed in {:.3}ms",
+                    self.name,
+                    self.start.elapsed().as_secs_f64() * 1000.0
+                );
+            }
+        }
+        Timer {
+            name: name.to_string(),
+            start,
+        }
     }
 
     fn log_throughput(label: &str, ops: u64, elapsed: std::time::Duration) {
         let secs = elapsed.as_secs_f64();
         if secs > 0.0 {
-            eprintln!("[METRIC] {}: {:.0} ops/sec ({} ops in {:.3}ms)", label, ops as f64 / secs, ops, elapsed.as_secs_f64() * 1000.0);
+            eprintln!(
+                "[METRIC] {}: {:.0} ops/sec ({} ops in {:.3}ms)",
+                label,
+                ops as f64 / secs,
+                ops,
+                elapsed.as_secs_f64() * 1000.0
+            );
         }
     }
 
@@ -637,7 +656,12 @@ mod tests {
 
         // NDA transport: with merkle root
         let merkle = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2".to_string();
-        log.record_with_merkle("nda_tool", start, AuditOutcome::Success, Some(merkle.clone()));
+        log.record_with_merkle(
+            "nda_tool",
+            start,
+            AuditOutcome::Success,
+            Some(merkle.clone()),
+        );
 
         let entries = log.recent(10);
         assert_eq!(entries.len(), 2);
@@ -657,12 +681,20 @@ mod tests {
         let log = AuditLog::new();
         let start = Instant::now();
         let merkle = "abcdef0123456789".to_string();
-        log.record_with_merkle("nda_tool", start, AuditOutcome::Success, Some(merkle.clone()));
+        log.record_with_merkle(
+            "nda_tool",
+            start,
+            AuditOutcome::Success,
+            Some(merkle.clone()),
+        );
         log.record("json_tool", start, AuditOutcome::Success);
 
         let t0 = Instant::now();
         let csv = log.export_csv().unwrap();
-        eprintln!("[METRIC] audit_csv_export: {:.3}us", t0.elapsed().as_secs_f64() * 1e6);
+        eprintln!(
+            "[METRIC] audit_csv_export: {:.3}us",
+            t0.elapsed().as_secs_f64() * 1e6
+        );
         assert!(csv.contains("merkle_root"));
         assert!(csv.contains(&merkle));
     }
@@ -671,7 +703,13 @@ mod tests {
     fn test_audit_csv_includes_session_id() {
         let log = AuditLog::new();
         let start = Instant::now();
-        log.record_with_context("tool_a", start, AuditOutcome::Success, None, Some("session-1".into()));
+        log.record_with_context(
+            "tool_a",
+            start,
+            AuditOutcome::Success,
+            None,
+            Some("session-1".into()),
+        );
         log.record("tool_b", start, AuditOutcome::Success);
 
         let csv = log.export_csv().unwrap();
@@ -741,7 +779,10 @@ mod tests {
 
         let t0 = Instant::now();
         let all = registry.aggregate_all();
-        eprintln!("[METRIC] registry_aggregate_all: {:.3}us", t0.elapsed().as_secs_f64() * 1e6);
+        eprintln!(
+            "[METRIC] registry_aggregate_all: {:.3}us",
+            t0.elapsed().as_secs_f64() * 1e6
+        );
         assert_eq!(all.len(), 3);
         // Sorted by sequence descending
         assert!(all[0].sequence > all[1].sequence);
@@ -795,7 +836,13 @@ mod tests {
     fn test_record_with_context_sets_session_id() {
         let log = AuditLog::new();
         let start = Instant::now();
-        log.record_with_context("tool", start, AuditOutcome::Success, None, Some("sess-42".into()));
+        log.record_with_context(
+            "tool",
+            start,
+            AuditOutcome::Success,
+            None,
+            Some("sess-42".into()),
+        );
 
         let entries = log.all();
         assert_eq!(entries.len(), 1);
@@ -892,30 +939,56 @@ mod tests {
     fn test_convenience_record_with_merkle() {
         clear_session_context();
         let start = Instant::now();
-        record_tool_call_with_merkle("nda_tool", start, AuditOutcome::Success, Some("abc123".into()));
+        record_tool_call_with_merkle(
+            "nda_tool",
+            start,
+            AuditOutcome::Success,
+            Some("abc123".into()),
+        );
 
         let entries = audit_registry().aggregate_all();
-        assert!(entries.iter().any(|e| e.tool_name == "nda_tool" && e.merkle_root == Some("abc123".into())));
+        assert!(entries
+            .iter()
+            .any(|e| e.tool_name == "nda_tool" && e.merkle_root == Some("abc123".into())));
     }
 
     #[test]
     fn test_convenience_record_with_sizes() {
         clear_session_context();
         let start = Instant::now();
-        record_tool_call_with_sizes("sized_tool", start, AuditOutcome::Success, Some(512), Some(1024), None);
+        record_tool_call_with_sizes(
+            "sized_tool",
+            start,
+            AuditOutcome::Success,
+            Some(512),
+            Some(1024),
+            None,
+        );
 
         let entries = audit_registry().aggregate_all();
-        assert!(entries.iter().any(|e| e.tool_name == "sized_tool" && e.payload_size == Some(512)));
+        assert!(entries
+            .iter()
+            .any(|e| e.tool_name == "sized_tool" && e.payload_size == Some(512)));
     }
 
     #[test]
     fn test_convenience_record_full() {
         clear_session_context();
         let start = Instant::now();
-        record_tool_call_full("full_tool", start, AuditOutcome::Success, Some("stdio".into()), Some(256), Some(512), Some("root".into()));
+        record_tool_call_full(
+            "full_tool",
+            start,
+            AuditOutcome::Success,
+            Some("stdio".into()),
+            Some(256),
+            Some(512),
+            Some("root".into()),
+        );
 
         let entries = audit_registry().aggregate_all();
-        assert!(entries.iter().any(|e| e.tool_name == "full_tool" && e.transport == Some("stdio".into())));
+        assert!(entries
+            .iter()
+            .any(|e| e.tool_name == "full_tool" && e.transport == Some("stdio".into())));
     }
 
     #[test]
@@ -975,8 +1048,16 @@ mod tests {
     fn test_csv_with_error_and_rejected_outcomes() {
         let log = AuditLog::new();
         let start = Instant::now();
-        log.record("err_tool", start, AuditOutcome::Error("error,with,commas".into()));
-        log.record("rej_tool", start, AuditOutcome::Rejected("rejected,reason".into()));
+        log.record(
+            "err_tool",
+            start,
+            AuditOutcome::Error("error,with,commas".into()),
+        );
+        log.record(
+            "rej_tool",
+            start,
+            AuditOutcome::Rejected("rejected,reason".into()),
+        );
 
         let csv = log.export_csv().unwrap();
         assert!(csv.contains("error:error;with;commas"));

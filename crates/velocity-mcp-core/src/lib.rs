@@ -193,7 +193,9 @@ fn handle_tools_list_with_executor(
 
 /// Stub tools/call — returns placeholder message (backwards compatible).
 fn handle_tools_call_stub(request: &McpRequest) -> McpResponse {
-    let tool_name = request.params.as_ref()
+    let tool_name = request
+        .params
+        .as_ref()
         .and_then(|p| p["name"].as_str())
         .unwrap_or("unknown");
 
@@ -216,9 +218,7 @@ fn handle_tools_call_with_executor(
     executor: &dyn ToolExecutor,
 ) -> McpResponse {
     let params = request.params.as_ref();
-    let tool_name = params
-        .and_then(|p| p["name"].as_str())
-        .unwrap_or("");
+    let tool_name = params.and_then(|p| p["name"].as_str()).unwrap_or("");
     let arguments = params
         .and_then(|p| p.get("arguments"))
         .cloned()
@@ -384,8 +384,7 @@ mod tests {
         fn call_tool(&self, name: &str, arguments: &Value) -> Result<String, String> {
             match name {
                 "echo" => {
-                    let msg = arguments["message"].as_str()
-                        .ok_or("message is required")?;
+                    let msg = arguments["message"].as_str().ok_or("message is required")?;
                     Ok(msg.to_string())
                 }
                 "add" => {

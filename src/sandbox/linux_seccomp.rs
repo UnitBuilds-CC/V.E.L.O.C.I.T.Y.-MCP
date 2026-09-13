@@ -65,7 +65,6 @@ pub fn apply_seccomp_filters() -> Result<(), String> {
         libc::SYS_openat,
         libc::SYS_close,
         libc::SYS_lseek,
-        
         // Memory management
         libc::SYS_brk,
         libc::SYS_mmap,
@@ -74,13 +73,11 @@ pub fn apply_seccomp_filters() -> Result<(), String> {
         libc::SYS_madvise,
         libc::SYS_mremap,
         libc::SYS_msync,
-        
         // File stats
         libc::SYS_fstat,
         libc::SYS_stat,
         libc::SYS_lstat,
         libc::SYS_newfstatat,
-        
         // Process info
         libc::SYS_getpid,
         libc::SYS_getppid,
@@ -91,7 +88,6 @@ pub fn apply_seccomp_filters() -> Result<(), String> {
         libc::SYS_getresuid,
         libc::SYS_getresgid,
         libc::SYS_getgroups,
-        
         // Time
         libc::SYS_clock_gettime,
         libc::SYS_gettimeofday,
@@ -99,17 +95,14 @@ pub fn apply_seccomp_filters() -> Result<(), String> {
         libc::SYS_clock_getres,
         libc::SYS_nanosleep,
         libc::SYS_clock_nanosleep,
-        
         // Exit
         libc::SYS_exit,
         libc::SYS_exit_group,
-        
         // Signal handling (basic)
         libc::SYS_rt_sigaction,
         libc::SYS_rt_sigprocmask,
         libc::SYS_rt_sigreturn,
         libc::SYS_sigaltstack,
-        
         // File descriptor operations
         libc::SYS_dup,
         libc::SYS_dup2,
@@ -117,18 +110,15 @@ pub fn apply_seccomp_filters() -> Result<(), String> {
         libc::SYS_fcntl,
         libc::SYS_ioctl,
         libc::SYS_futex,
-        
         // Directory operations (read-only)
         libc::SYS_getcwd,
         libc::SYS_chdir,
         libc::SYS_fchdir,
         libc::SYS_getdents,
         libc::SYS_getdents64,
-        
         // Pipe operations
         libc::SYS_pipe,
         libc::SYS_pipe2,
-        
         // Select/poll for I/O multiplexing
         libc::SYS_select,
         libc::SYS_pselect6,
@@ -139,17 +129,14 @@ pub fn apply_seccomp_filters() -> Result<(), String> {
         libc::SYS_epoll_ctl,
         libc::SYS_epoll_wait,
         libc::SYS_epoll_pwait,
-        
         // Wait for child processes
         libc::SYS_wait4,
         libc::SYS_waitpid,
-        
         // Memory mapping
         libc::SYS_mlock,
         libc::SYS_munlock,
         libc::SYS_mlockall,
         libc::SYS_munlockall,
-        
         // Misc safe syscalls
         libc::SYS_arch_prctl,
         libc::SYS_set_tid_address,
@@ -185,17 +172,26 @@ pub fn apply_seccomp_filters() -> Result<(), String> {
 
     // Create seccomp filter with default deny action
     let filter = SeccompFilter::new(
-        allowed_syscalls.into_iter().map(|sys| (sys, vec![])).collect(),
-        SeccompAction::Trap,  // Kill process on denied syscall
+        allowed_syscalls
+            .into_iter()
+            .map(|sys| (sys, vec![]))
+            .collect(),
+        SeccompAction::Trap, // Kill process on denied syscall
         SeccompAction::Allow,
-        std::env::consts::ARCH.try_into().map_err(|e| format!("Failed to convert arch: {}", e))?
-    ).map_err(|e| format!("Failed to create seccomp filter: {}", e))?;
+        std::env::consts::ARCH
+            .try_into()
+            .map_err(|e| format!("Failed to convert arch: {}", e))?,
+    )
+    .map_err(|e| format!("Failed to create seccomp filter: {}", e))?;
 
     // Compile filter to BPF
-    let bpf_prog: BpfProgram = filter.try_into().map_err(|e| format!("Failed to compile seccomp filter: {}", e))?;
+    let bpf_prog: BpfProgram = filter
+        .try_into()
+        .map_err(|e| format!("Failed to compile seccomp filter: {}", e))?;
 
     // Apply the filter
-    seccompiler::apply_filter(&bpf_prog).map_err(|e| format!("Failed to apply seccomp filter: {}", e))?;
+    seccompiler::apply_filter(&bpf_prog)
+        .map_err(|e| format!("Failed to apply seccomp filter: {}", e))?;
 
     Ok(())
 }
@@ -218,13 +214,14 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn test_seccomp_filter_creation() {
-        // Test that we can create a filter (don't apply it in tests)
-        // This validates that the filter can be created without errors
         let result = apply_seccomp_filters();
-        // Note: This will actually apply the filter to the test process,
-        // which may cause issues. In a real scenario, you'd apply this
-        // only in a child process.
-        assert!(result.is_ok() || result.is_err());
+        match &result {
+            Ok(()) => {}
+            Err(e) => assert!(
+                e.contains("seccomp") || e.contains("filter") || e.contains("permission"),
+                "unexpected error message: {e}"
+            ),
+        }
     }
 
     #[test]

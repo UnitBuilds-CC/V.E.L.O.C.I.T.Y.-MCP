@@ -18,9 +18,7 @@ fn benchmark_json_rpc_initialize(c: &mut Criterion) {
     });
 
     c.bench_function("json_rpc_initialize", |b| {
-        b.iter(|| {
-            handle_request(black_box(&request))
-        })
+        b.iter(|| handle_request(black_box(&request)))
     });
 }
 
@@ -33,9 +31,7 @@ fn benchmark_json_rpc_tools_list(c: &mut Criterion) {
     });
 
     c.bench_function("json_rpc_tools_list", |b| {
-        b.iter(|| {
-            handle_request(black_box(&request))
-        })
+        b.iter(|| handle_request(black_box(&request)))
     });
 }
 
@@ -47,9 +43,7 @@ fn benchmark_json_rpc_ping(c: &mut Criterion) {
     });
 
     c.bench_function("json_rpc_ping", |b| {
-        b.iter(|| {
-            handle_request(black_box(&request))
-        })
+        b.iter(|| handle_request(black_box(&request)))
     });
 }
 
@@ -61,9 +55,7 @@ fn benchmark_json_rpc_health_check(c: &mut Criterion) {
     });
 
     c.bench_function("json_rpc_health_check", |b| {
-        b.iter(|| {
-            handle_request(black_box(&request))
-        })
+        b.iter(|| handle_request(black_box(&request)))
     });
 }
 
@@ -85,9 +77,7 @@ fn benchmark_json_rpc_dispatch_only(c: &mut Criterion) {
     });
 
     c.bench_function("json_rpc_dispatch_only", |b| {
-        b.iter(|| {
-            handle_request(black_box(&request))
-        })
+        b.iter(|| handle_request(black_box(&request)))
     });
 }
 
@@ -109,7 +99,11 @@ fn benchmark_audit_record_throughput(c: &mut Criterion) {
 
     c.bench_function("audit_record_throughput", |b| {
         b.iter(|| {
-            audit.record(black_box("benchmark"), std::time::Instant::now(), AuditOutcome::Success);
+            audit.record(
+                black_box("benchmark"),
+                std::time::Instant::now(),
+                AuditOutcome::Success,
+            );
         })
     });
 }

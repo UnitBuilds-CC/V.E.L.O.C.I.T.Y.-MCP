@@ -2,19 +2,30 @@
 //! Comprehensive audit of tree-walk interpreter capabilities.
 //! Tests edge cases, advanced features, and failure modes.
 
-use velocity_mcp::wasm_runtime::{WasmRuntime, csharp::CSharpRuntime, java::JavaRuntime,
-    julia::JuliaRuntime, perl::PerlRuntime, php::PhpRuntime, r::RRuntime};
+use velocity_mcp::wasm_runtime::{
+    csharp::CSharpRuntime, java::JavaRuntime, julia::JuliaRuntime, perl::PerlRuntime,
+    php::PhpRuntime, r::RRuntime, WasmRuntime,
+};
 
 fn load_wasm(lang: &str) -> Vec<u8> {
-    let path = format!("bench_tools/{}_wasm/{}.wasm",
+    let path = format!(
+        "bench_tools/{}_wasm/{}.wasm",
         match lang {
-            "php" => "php", "csharp" => "csharp", "java" => "java",
-            "r" => "r", "julia" => "julia", "perl" => "perl",
+            "php" => "php",
+            "csharp" => "csharp",
+            "java" => "java",
+            "r" => "r",
+            "julia" => "julia",
+            "perl" => "perl",
             _ => panic!("unknown lang"),
         },
         match lang {
-            "php" => "php", "csharp" => "dotnet", "java" => "java",
-            "r" => "r", "julia" => "julia", "perl" => "perl",
+            "php" => "php",
+            "csharp" => "dotnet",
+            "java" => "java",
+            "r" => "r",
+            "julia" => "julia",
+            "perl" => "perl",
             _ => panic!("unknown lang"),
         }
     );
@@ -24,7 +35,8 @@ fn load_wasm(lang: &str) -> Vec<u8> {
 // Test 1: Closures with mutable captured state
 fn test_closure_mutable_state(rt: &mut dyn WasmRuntime, lang: &str) -> Result<String, String> {
     let source = match lang {
-        "php" => r#"<?php
+        "php" => {
+            r#"<?php
 function make_counter() {
     $count = 0;
     function increment() {
@@ -38,8 +50,10 @@ $a = $counter();
 $b = $counter();
 $c = $counter();
 set_tool_result($a . "," . $b . "," . $c);
-"#,
-        "perl" => r#"
+"#
+        }
+        "perl" => {
+            r#"
 sub make_counter {
     my $count = 0;
     sub increment {
@@ -53,8 +67,10 @@ $a = $counter();
 $b = $counter();
 $c = $counter();
 set_tool_result($a . "," . $b . "," . $c);
-"#,
-        _ => r#"
+"#
+        }
+        _ => {
+            r#"
 function make_counter() {
     count = 0;
     function increment() {
@@ -68,18 +84,23 @@ a = counter();
 b = counter();
 c = counter();
 set_tool_result(to_string(a) + "," + to_string(b) + "," + to_string(c));
-"#,
+"#
+        }
     };
 
-    rt.register_tool("test", source).map_err(|e| format!("register failed: {}", e))?;
-    let rc = rt.call_tool("test", "{}").map_err(|e| format!("call failed: {}", e))?;
+    rt.register_tool("test", source)
+        .map_err(|e| format!("register failed: {}", e))?;
+    let rc = rt
+        .call_tool("test", "{}")
+        .map_err(|e| format!("call failed: {}", e))?;
     Ok(rc)
 }
 
 // Test 2: Higher-order functions (functions as arguments)
 fn test_higher_order_functions(rt: &mut dyn WasmRuntime, lang: &str) -> Result<String, String> {
     let source = match lang {
-        "php" => r#"<?php
+        "php" => {
+            r#"<?php
 function apply($fn, $x) {
     return $fn($x);
 }
@@ -88,8 +109,10 @@ function double($n) {
 }
 $result = apply(double, 21);
 set_tool_result($result);
-"#,
-        "perl" => r#"
+"#
+        }
+        "perl" => {
+            r#"
 sub apply {
     my $fn = $_[0];
     my $x = $_[1];
@@ -100,8 +123,10 @@ sub double {
 }
 $result = apply(\&double, 21);
 set_tool_result($result);
-"#,
-        _ => r#"
+"#
+        }
+        _ => {
+            r#"
 function apply(fn, x) {
     return fn(x);
 }
@@ -110,40 +135,54 @@ function double(n) {
 }
 result = apply(double, 21);
 set_tool_result(result);
-"#,
+"#
+        }
     };
 
-    rt.register_tool("test", source).map_err(|e| format!("register failed: {}", e))?;
-    let rc = rt.call_tool("test", "{}").map_err(|e| format!("call failed: {}", e))?;
+    rt.register_tool("test", source)
+        .map_err(|e| format!("register failed: {}", e))?;
+    let rc = rt
+        .call_tool("test", "{}")
+        .map_err(|e| format!("call failed: {}", e))?;
     Ok(rc)
 }
 
 // Test 3: String escape sequences
 fn test_string_escapes(rt: &mut dyn WasmRuntime, lang: &str) -> Result<String, String> {
     let source = match lang {
-        "php" => r#"<?php
+        "php" => {
+            r#"<?php
 $s = "line1\nline2\ttab\\backslash\"quote";
 set_tool_result(len($s));
-"#,
-        "perl" => r#"
+"#
+        }
+        "perl" => {
+            r#"
 $s = "line1\nline2\ttab\\backslash\"quote";
 set_tool_result(len($s));
-"#,
-        _ => r#"
+"#
+        }
+        _ => {
+            r#"
 s = "line1\nline2\ttab\\backslash\"quote";
 set_tool_result(len(s));
-"#,
+"#
+        }
     };
 
-    rt.register_tool("test", source).map_err(|e| format!("register failed: {}", e))?;
-    let rc = rt.call_tool("test", "{}").map_err(|e| format!("call failed: {}", e))?;
+    rt.register_tool("test", source)
+        .map_err(|e| format!("register failed: {}", e))?;
+    let rc = rt
+        .call_tool("test", "{}")
+        .map_err(|e| format!("call failed: {}", e))?;
     Ok(rc)
 }
 
 // Test 4: Nested data structure manipulation
 fn test_nested_data_structures(rt: &mut dyn WasmRuntime, lang: &str) -> Result<String, String> {
     let source = match lang {
-        "php" => r#"<?php
+        "php" => {
+            r#"<?php
 $data = [
     ["name" => "Alice", "scores" => [95, 87, 92]],
     ["name" => "Bob", "scores" => [88, 91, 85]]
@@ -160,8 +199,10 @@ while ($i < len($data)) {
     $i = $i + 1;
 }
 set_tool_result($total);
-"#,
-        "perl" => r#"
+"#
+        }
+        "perl" => {
+            r#"
 $data = [
     {"name" => "Alice", "scores" => [95, 87, 92]},
     {"name" => "Bob", "scores" => [88, 91, 85]}
@@ -178,8 +219,10 @@ while ($i < len($data)) {
     $i = $i + 1;
 }
 set_tool_result($total);
-"#,
-        _ => r#"
+"#
+        }
+        _ => {
+            r#"
 data = [
     {"name": "Alice", "scores": [95, 87, 92]},
     {"name": "Bob", "scores": [88, 91, 85]}
@@ -196,153 +239,206 @@ while (i < len(data)) {
     i = i + 1;
 }
 set_tool_result(total);
-"#,
+"#
+        }
     };
 
-    rt.register_tool("test", source).map_err(|e| format!("register failed: {}", e))?;
-    let rc = rt.call_tool("test", "{}").map_err(|e| format!("call failed: {}", e))?;
+    rt.register_tool("test", source)
+        .map_err(|e| format!("register failed: {}", e))?;
+    let rc = rt
+        .call_tool("test", "{}")
+        .map_err(|e| format!("call failed: {}", e))?;
     Ok(rc)
 }
 
 // Test 5: Function references in data structures
-fn test_function_refs_in_structures(rt: &mut dyn WasmRuntime, lang: &str) -> Result<String, String> {
+fn test_function_refs_in_structures(
+    rt: &mut dyn WasmRuntime,
+    lang: &str,
+) -> Result<String, String> {
     let source = match lang {
-        "php" => r#"<?php
+        "php" => {
+            r#"<?php
 function add($a, $b) { return $a + $b; }
 function mul($a, $b) { return $a * $b; }
 $ops = ["+" => add, "*" => mul];
 $result = $ops["+"](10, 5) + $ops["*"](3, 4);
 set_tool_result($result);
-"#,
-        "perl" => r#"
+"#
+        }
+        "perl" => {
+            r#"
 sub add($a, $b) { return $a + $b; }
 sub mul($a, $b) { return $a * $b; }
 $ops = {"+" => add, "*" => mul};
 $result = $ops["+"](10, 5) + $ops["*"](3, 4);
 set_tool_result($result);
-"#,
-        _ => r#"
+"#
+        }
+        _ => {
+            r#"
 function add(a, b) { return a + b; }
 function mul(a, b) { return a * b; }
 ops = {"+": add, "*": mul};
 result = ops["+"](10, 5) + ops["*"](3, 4);
 set_tool_result(result);
-"#,
+"#
+        }
     };
 
-    rt.register_tool("test", source).map_err(|e| format!("register failed: {}", e))?;
-    let rc = rt.call_tool("test", "{}").map_err(|e| format!("call failed: {}", e))?;
+    rt.register_tool("test", source)
+        .map_err(|e| format!("register failed: {}", e))?;
+    let rc = rt
+        .call_tool("test", "{}")
+        .map_err(|e| format!("call failed: {}", e))?;
     Ok(rc)
 }
 
 // Test 6: Deep recursion (fibonacci)
 fn test_deep_recursion(rt: &mut dyn WasmRuntime, lang: &str) -> Result<String, String> {
     let source = match lang {
-        "php" => r#"<?php
+        "php" => {
+            r#"<?php
 function fib($n) {
     if ($n <= 1) return $n;
     return fib($n - 1) + fib($n - 2);
 }
 set_tool_result(fib(20));
-"#,
-        "perl" => r#"
+"#
+        }
+        "perl" => {
+            r#"
 sub fib {
     my $n = $_[0];
     if ($n <= 1) { return $n; }
     return fib($n - 1) + fib($n - 2);
 }
 set_tool_result(fib(20));
-"#,
-        _ => r#"
+"#
+        }
+        _ => {
+            r#"
 function fib(n) {
     if (n <= 1) { return n; }
     return fib(n - 1) + fib(n - 2);
 }
 set_tool_result(fib(20));
-"#,
+"#
+        }
     };
 
-    rt.register_tool("test", source).map_err(|e| format!("register failed: {}", e))?;
-    let rc = rt.call_tool("test", "{}").map_err(|e| format!("call failed: {}", e))?;
+    rt.register_tool("test", source)
+        .map_err(|e| format!("register failed: {}", e))?;
+    let rc = rt
+        .call_tool("test", "{}")
+        .map_err(|e| format!("call failed: {}", e))?;
     Ok(rc)
 }
 
 // Test 7: Error handling - division by zero
 fn test_division_by_zero(rt: &mut dyn WasmRuntime, lang: &str) -> Result<String, String> {
     let source = match lang {
-        "php" => r#"<?php
+        "php" => {
+            r#"<?php
 $x = 10 / 0;
 set_tool_result($x);
-"#,
-        "perl" => r#"
+"#
+        }
+        "perl" => {
+            r#"
 $x = 10 / 0;
 set_tool_result($x);
-"#,
-        _ => r#"
+"#
+        }
+        _ => {
+            r#"
 x = 10 / 0;
 set_tool_result(x);
-"#,
+"#
+        }
     };
 
-    rt.register_tool("test", source).map_err(|e| format!("register failed: {}", e))?;
-    let rc = rt.call_tool("test", "{}").map_err(|e| format!("call failed: {}", e))?;
+    rt.register_tool("test", source)
+        .map_err(|e| format!("register failed: {}", e))?;
+    let rc = rt
+        .call_tool("test", "{}")
+        .map_err(|e| format!("call failed: {}", e))?;
     Ok(rc)
 }
 
 // Test 8: Error handling - undefined variable
 fn test_undefined_variable(rt: &mut dyn WasmRuntime, lang: &str) -> Result<String, String> {
     let source = match lang {
-        "php" => r#"<?php
+        "php" => {
+            r#"<?php
 set_tool_result($undefined_var);
-"#,
-        "perl" => r#"
+"#
+        }
+        "perl" => {
+            r#"
 set_tool_result($undefined_var);
-"#,
-        _ => r#"
+"#
+        }
+        _ => {
+            r#"
 set_tool_result(undefined_var);
-"#,
+"#
+        }
     };
 
-    rt.register_tool("test", source).map_err(|e| format!("register failed: {}", e))?;
-    let rc = rt.call_tool("test", "{}").map_err(|e| format!("call failed: {}", e))?;
+    rt.register_tool("test", source)
+        .map_err(|e| format!("register failed: {}", e))?;
+    let rc = rt
+        .call_tool("test", "{}")
+        .map_err(|e| format!("call failed: {}", e))?;
     Ok(rc)
 }
 
 // Test 9: Complex string operations
 fn test_complex_string_ops(rt: &mut dyn WasmRuntime, lang: &str) -> Result<String, String> {
     let source = match lang {
-        "php" => r#"<?php
+        "php" => {
+            r#"<?php
 $s = "Hello, World!";
 $parts = split($s, ", ");
 $joined = join($parts, " - ");
 $upper = upper($joined);
 set_tool_result($upper);
-"#,
-        "perl" => r#"
+"#
+        }
+        "perl" => {
+            r#"
 $s = "Hello, World!";
 $parts = split($s, ", ");
 $joined = join($parts, " - ");
 $upper = upper($joined);
 set_tool_result($upper);
-"#,
-        _ => r#"
+"#
+        }
+        _ => {
+            r#"
 s = "Hello, World!";
 parts = split(s, ", ");
 joined = join(parts, " - ");
 upper_str = upper(joined);
 set_tool_result(upper_str);
-"#,
+"#
+        }
     };
 
-    rt.register_tool("test", source).map_err(|e| format!("register failed: {}", e))?;
-    let rc = rt.call_tool("test", "{}").map_err(|e| format!("call failed: {}", e))?;
+    rt.register_tool("test", source)
+        .map_err(|e| format!("register failed: {}", e))?;
+    let rc = rt
+        .call_tool("test", "{}")
+        .map_err(|e| format!("call failed: {}", e))?;
     Ok(rc)
 }
 
 // Test 10: Array/map mutation
 fn test_mutation(rt: &mut dyn WasmRuntime, lang: &str) -> Result<String, String> {
     let source = match lang {
-        "php" => r#"<?php
+        "php" => {
+            r#"<?php
 $arr = [1, 2, 3];
 push($arr, 4);
 push($arr, 5);
@@ -350,8 +446,10 @@ $map = {"a" => 1};
 $map["b"] = 2;
 $map["c"] = 3;
 set_tool_result(len($arr) + len(keys($map)));
-"#,
-        "perl" => r#"
+"#
+        }
+        "perl" => {
+            r#"
 $arr = [1, 2, 3];
 push($arr, 4);
 push($arr, 5);
@@ -359,8 +457,10 @@ $map = {"a" => 1};
 $map["b"] = 2;
 $map["c"] = 3;
 set_tool_result(len($arr) + len(keys($map)));
-"#,
-        _ => r#"
+"#
+        }
+        _ => {
+            r#"
 arr = [1, 2, 3];
 push(arr, 4);
 push(arr, 5);
@@ -368,11 +468,15 @@ map = {"a": 1};
 map["b"] = 2;
 map["c"] = 3;
 set_tool_result(len(arr) + len(keys(map)));
-"#,
+"#
+        }
     };
 
-    rt.register_tool("test", source).map_err(|e| format!("register failed: {}", e))?;
-    let rc = rt.call_tool("test", "{}").map_err(|e| format!("call failed: {}", e))?;
+    rt.register_tool("test", source)
+        .map_err(|e| format!("register failed: {}", e))?;
+    let rc = rt
+        .call_tool("test", "{}")
+        .map_err(|e| format!("call failed: {}", e))?;
     Ok(rc)
 }
 
@@ -394,8 +498,12 @@ fn run_test(name: &str, test_fn: fn(&mut dyn WasmRuntime, &str) -> Result<String
 
         match test_fn(rt.as_mut(), lang) {
             Ok(result) => {
-                let parsed: serde_json::Value = serde_json::from_str(&result).unwrap_or(serde_json::Value::Null);
-                let msg = parsed.get("message").and_then(|v| v.as_str()).unwrap_or(&result);
+                let parsed: serde_json::Value =
+                    serde_json::from_str(&result).unwrap_or(serde_json::Value::Null);
+                let msg = parsed
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&result);
                 println!("  {}: OK - {}", lang, msg);
             }
             Err(e) => {
@@ -429,7 +537,10 @@ fn audit_nested_structures() {
 
 #[test]
 fn audit_function_refs() {
-    run_test("Function refs in structures", test_function_refs_in_structures);
+    run_test(
+        "Function refs in structures",
+        test_function_refs_in_structures,
+    );
 }
 
 #[test]
@@ -444,7 +555,10 @@ fn audit_div_zero() {
 
 #[test]
 fn audit_undefined() {
-    run_test("Undefined variable (error handling)", test_undefined_variable);
+    run_test(
+        "Undefined variable (error handling)",
+        test_undefined_variable,
+    );
 }
 
 #[test]

@@ -7,7 +7,10 @@ fn test_tool(name: String, count: i64) -> Result<String, String> {
     Ok(format!("Hello {}, count: {}", name, count))
 }
 
-#[mcp_tool(name = "optional_params", description = "Tool with optional parameters")]
+#[mcp_tool(
+    name = "optional_params",
+    description = "Tool with optional parameters"
+)]
 fn optional_params(required: String, optional: Option<i64>) -> Result<String, String> {
     match optional {
         Some(val) => Ok(format!("{}: {}", required, val)),

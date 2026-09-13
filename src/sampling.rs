@@ -108,7 +108,8 @@ pub struct SamplingResponse {
 }
 
 /// Conversation history tracker for multi-turn sampling.
-static CONVERSATION_HISTORY: OnceLock<Mutex<HashMap<String, Vec<SamplingMessage>>>> = OnceLock::new();
+static CONVERSATION_HISTORY: OnceLock<Mutex<HashMap<String, Vec<SamplingMessage>>>> =
+    OnceLock::new();
 
 fn get_conversation_history() -> &'static Mutex<HashMap<String, Vec<SamplingMessage>>> {
     CONVERSATION_HISTORY.get_or_init(|| Mutex::new(HashMap::new()))
@@ -124,7 +125,8 @@ pub fn add_to_conversation(conversation_id: &str, message: SamplingMessage) {
                 history.remove(&oldest_key);
             }
         }
-        let messages = history.entry(conversation_id.to_string())
+        let messages = history
+            .entry(conversation_id.to_string())
             .or_insert_with(Vec::new);
         const MAX_HISTORY: usize = 1000;
         if messages.len() >= MAX_HISTORY {
@@ -150,7 +152,8 @@ pub fn clear_conversation(conversation_id: &str) {
     }
 }
 
-static SAMPLING_HANDLER: OnceLock<Mutex<Option<Box<dyn SamplingCallback + Send>>>> = OnceLock::new();
+static SAMPLING_HANDLER: OnceLock<Mutex<Option<Box<dyn SamplingCallback + Send>>>> =
+    OnceLock::new();
 
 /// Callback trait for handling sampling requests.
 pub trait SamplingCallback {
@@ -170,14 +173,15 @@ where
     where
         F: Fn(&SamplingRequest) -> Result<SamplingResponse, String> + Send,
     {
-        fn on_sampling_request(&self, request: &SamplingRequest) -> Result<SamplingResponse, String> {
+        fn on_sampling_request(
+            &self,
+            request: &SamplingRequest,
+        ) -> Result<SamplingResponse, String> {
             (self.f)(request)
         }
     }
 
-    SAMPLING_HANDLER.get_or_init(|| {
-        Mutex::new(Some(Box::new(CallbackWrapper { f: callback })))
-    });
+    SAMPLING_HANDLER.get_or_init(|| Mutex::new(Some(Box::new(CallbackWrapper { f: callback }))));
 }
 
 /// Handle a sampling/createMessage request from a client.
@@ -187,15 +191,19 @@ pub fn handle_sampling_create_message(params: &Value) -> Result<Value, String> {
     let messages: Vec<SamplingMessage> = serde_json::from_value(params["messages"].clone())
         .map_err(|e| format!("Invalid messages: {}", e))?;
 
-    let max_tokens = params["maxTokens"].as_u64().and_then(|v| u32::try_from(v).ok());
+    let max_tokens = params["maxTokens"]
+        .as_u64()
+        .and_then(|v| u32::try_from(v).ok());
     let temperature = params["temperature"].as_f64();
     let include_context = params["includeContext"].as_str().map(|s| s.to_string());
-    
+
     // Parse new enhanced fields
-    let model_preferences: Option<ModelPreferences> = params.get("modelPreferences")
+    let model_preferences: Option<ModelPreferences> = params
+        .get("modelPreferences")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
     let system_prompt = params["systemPrompt"].as_str().map(|s| s.to_string());
-    let metadata: Option<SamplingMetadata> = params.get("metadata")
+    let metadata: Option<SamplingMetadata> = params
+        .get("metadata")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
 
     let request = SamplingRequest {
@@ -221,7 +229,7 @@ pub fn handle_sampling_create_message(params: &Value) -> Result<Value, String> {
         if let Ok(lock) = handler.lock() {
             if let Some(cb) = lock.as_ref() {
                 let response = cb.on_sampling_request(&request)?;
-                
+
                 // Track assistant response in conversation history
                 if let Some(ref meta) = metadata {
                     if let Some(ref conv_id) = meta.conversation_id {
@@ -232,7 +240,7 @@ pub fn handle_sampling_create_message(params: &Value) -> Result<Value, String> {
                         add_to_conversation(conv_id, assistant_msg);
                     }
                 }
-                
+
                 return Ok(json!({
                     "role": response.role,
                     "content": response.content,
@@ -260,7 +268,7 @@ pub fn create_sampling_request(
     let mut params = json!({
         "messages": messages,
     });
-    
+
     if let Some(tokens) = max_tokens {
         params["maxTokens"] = json!(tokens);
     }
@@ -276,7 +284,7 @@ pub fn create_sampling_request(
     if let Some(meta) = metadata {
         params["metadata"] = serde_json::to_value(meta).unwrap_or(json!(null));
     }
-    
+
     json!({
         "jsonrpc": "2.0",
         "method": "sampling/createMessage",
@@ -295,16 +303,16 @@ pub fn create_sampling_request_with_history(
 ) -> Value {
     // Add new message to history
     add_to_conversation(conversation_id, new_message);
-    
+
     // Get full conversation history
     let messages = get_conversation(conversation_id);
-    
+
     let metadata = SamplingMetadata {
         progress_token: None,
         conversation_id: Some(conversation_id.to_string()),
         extra: HashMap::new(),
     };
-    
+
     create_sampling_request(
         request_id,
         messages,
@@ -346,15 +354,18 @@ mod tests {
                 resource: None,
             },
         }];
-        
+
         let prefs = ModelPreferences {
-            hints: Some(vec![ModelHint { name: Some("gpt-4".to_string()) }]),
+            hints: Some(vec![ModelHint {
+                name: Some("gpt-4".to_string()),
+            }]),
             cost_priority: Some(0.3),
             speed_priority: Some(0.7),
             intelligence_priority: Some(0.9),
         };
-        
-        let req = create_sampling_request(1, messages, Some(100), Some(0.7), Some(prefs), None, None);
+
+        let req =
+            create_sampling_request(1, messages, Some(100), Some(0.7), Some(prefs), None, None);
         assert!(req["params"]["modelPreferences"].is_object());
     }
 
@@ -368,17 +379,20 @@ mod tests {
                 resource: None,
             },
         }];
-        
+
         let req = create_sampling_request(
-            1, 
-            messages, 
-            Some(100), 
-            Some(0.7), 
-            None, 
+            1,
+            messages,
+            Some(100),
+            Some(0.7),
+            None,
             Some("You are a helpful assistant.".to_string()),
-            None
+            None,
         );
-        assert_eq!(req["params"]["systemPrompt"], "You are a helpful assistant.");
+        assert_eq!(
+            req["params"]["systemPrompt"],
+            "You are a helpful assistant."
+        );
     }
 
     #[test]
@@ -389,10 +403,10 @@ mod tests {
             "messages": [{"role": "user", "content": {"type": "text", "text": "Hello"}}],
             "maxTokens": 100
         });
-        
+
         // This will use whatever handler was registered last
         let result = handle_sampling_create_message(&params);
-        
+
         // If a handler is registered, it should succeed
         if result.is_ok() {
             let result = result.unwrap();
@@ -420,10 +434,10 @@ mod tests {
     #[test]
     fn test_conversation_history_tracking() {
         let conv_id = "test-conv-1";
-        
+
         // Clear any existing history
         clear_conversation(conv_id);
-        
+
         // Add messages
         let msg1 = SamplingMessage {
             role: "user".to_string(),
@@ -434,7 +448,7 @@ mod tests {
             },
         };
         add_to_conversation(conv_id, msg1);
-        
+
         let msg2 = SamplingMessage {
             role: "assistant".to_string(),
             content: SamplingContent {
@@ -444,13 +458,13 @@ mod tests {
             },
         };
         add_to_conversation(conv_id, msg2);
-        
+
         // Get history
         let history = get_conversation(conv_id);
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].role, "user");
         assert_eq!(history[1].role, "assistant");
-        
+
         // Clear history
         clear_conversation(conv_id);
         let history = get_conversation(conv_id);
@@ -461,7 +475,7 @@ mod tests {
     fn test_create_sampling_request_with_history() {
         let conv_id = "test-conv-2";
         clear_conversation(conv_id);
-        
+
         let msg = SamplingMessage {
             role: "user".to_string(),
             content: SamplingContent {
@@ -470,16 +484,16 @@ mod tests {
                 resource: None,
             },
         };
-        
+
         let req = create_sampling_request_with_history(1, conv_id, msg, Some(100), Some(0.7));
-        
+
         // Check that metadata includes conversation_id
         assert_eq!(req["params"]["metadata"]["conversation_id"], conv_id);
-        
+
         // Check that history was tracked
         let history = get_conversation(conv_id);
         assert_eq!(history.len(), 1);
-        
+
         clear_conversation(conv_id);
     }
 
@@ -507,10 +521,10 @@ mod tests {
                 "progress_token": "token-456"
             }
         });
-        
+
         let result = handle_sampling_create_message(&params).unwrap();
         assert_eq!(result["role"], "assistant");
-        
+
         // Verify that conversation history was tracked
         let history = get_conversation("conv-123");
         assert_eq!(history.len(), 2); // user message + assistant response
@@ -528,14 +542,17 @@ mod tests {
         // Fill up to MAX_CONVERSATIONS (256)
         for i in 0..256 {
             let conv_id = format!("evict_test_{}", i);
-            add_to_conversation(&conv_id, SamplingMessage {
-                role: "user".to_string(),
-                content: SamplingContent {
-                    content_type: "text".to_string(),
-                    text: Some(format!("Message {}", i)),
-                    resource: None,
+            add_to_conversation(
+                &conv_id,
+                SamplingMessage {
+                    role: "user".to_string(),
+                    content: SamplingContent {
+                        content_type: "text".to_string(),
+                        text: Some(format!("Message {}", i)),
+                        resource: None,
+                    },
                 },
-            });
+            );
         }
 
         // Verify we have 256 conversations
@@ -545,20 +562,26 @@ mod tests {
         }
 
         // Add one more - should evict the oldest
-        add_to_conversation("evict_test_new", SamplingMessage {
-            role: "user".to_string(),
-            content: SamplingContent {
-                content_type: "text".to_string(),
-                text: Some("New message".to_string()),
-                resource: None,
+        add_to_conversation(
+            "evict_test_new",
+            SamplingMessage {
+                role: "user".to_string(),
+                content: SamplingContent {
+                    content_type: "text".to_string(),
+                    text: Some("New message".to_string()),
+                    resource: None,
+                },
             },
-        });
+        );
 
         // Verify eviction occurred
         {
             let history = get_conversation_history().lock().unwrap();
             assert_eq!(history.len(), 256, "Should still have 256 after eviction");
-            assert!(history.contains_key("evict_test_new"), "New conversation should be present");
+            assert!(
+                history.contains_key("evict_test_new"),
+                "New conversation should be present"
+            );
         }
 
         // Clean up

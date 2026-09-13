@@ -64,21 +64,21 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 #[cfg(not(target_arch = "wasm32"))]
+use http_body_util::{BodyExt, Full};
+#[cfg(not(target_arch = "wasm32"))]
 use hyper::body::Bytes;
 #[cfg(not(target_arch = "wasm32"))]
 use hyper::service::service_fn;
 #[cfg(not(target_arch = "wasm32"))]
 use hyper::{Request, Response, StatusCode};
 #[cfg(not(target_arch = "wasm32"))]
-use http_body_util::{BodyExt, Full};
-#[cfg(not(target_arch = "wasm32"))]
 use hyper_util::rt::TokioIo;
+#[cfg(not(target_arch = "wasm32"))]
+use subtle::ConstantTimeEq;
 #[cfg(not(target_arch = "wasm32"))]
 use tracing::{info, warn};
 #[cfg(not(target_arch = "wasm32"))]
 use velocity_mcp_core::{handle_mcp_request_with_executor, parse_request, serialize_response};
-#[cfg(not(target_arch = "wasm32"))]
-use subtle::ConstantTimeEq;
 
 // Tools module - available for all targets
 mod tools;
@@ -101,8 +101,7 @@ const RATE_LIMIT_CLEANUP_INTERVAL_SECS: u64 = 60;
 
 /// Pre-serialized health-check response (avoids allocation on every probe).
 #[cfg(not(target_arch = "wasm32"))]
-const HEALTH_RESPONSE: &[u8] =
-    b"{\"status\":\"healthy\",\"version\":\"3.2.0\"}";
+const HEALTH_RESPONSE: &[u8] = b"{\"status\":\"healthy\",\"version\":\"3.2.0\"}";
 
 /// Pre-serialized 404 error (used when no route matches).
 #[cfg(not(target_arch = "wasm32"))]
@@ -167,16 +166,14 @@ impl ServerConfig {
         });
 
         // Reject empty API keys - if VELOCITY_API_KEY is set but empty, disable auth
-        let api_key = std::env::var("VELOCITY_API_KEY")
-            .ok()
-            .and_then(|k| {
-                let trimmed = k.trim().to_string();
-                if trimmed.is_empty() {
-                    None // Treat empty key as disabled
-                } else {
-                    Some(trimmed)
-                }
-            });
+        let api_key = std::env::var("VELOCITY_API_KEY").ok().and_then(|k| {
+            let trimmed = k.trim().to_string();
+            if trimmed.is_empty() {
+                None // Treat empty key as disabled
+            } else {
+                Some(trimmed)
+            }
+        });
 
         let rate_limit_per_minute = std::env::var("RATE_LIMIT_PER_MINUTE")
             .ok()
@@ -354,21 +351,21 @@ struct ServerState {
 #[cfg(not(target_arch = "wasm32"))]
 fn timing_safe_eq(a: &[u8], b: &[u8]) -> bool {
     const MAX_KEY_LEN: usize = 256;
-    
+
     // Pad both inputs to fixed length to avoid leaking length via timing
     let mut a_padded = [0u8; MAX_KEY_LEN];
     let mut b_padded = [0u8; MAX_KEY_LEN];
-    
+
     let a_len = a.len().min(MAX_KEY_LEN);
     let b_len = b.len().min(MAX_KEY_LEN);
-    
+
     a_padded[..a_len].copy_from_slice(&a[..a_len]);
     b_padded[..b_len].copy_from_slice(&b[..b_len]);
-    
+
     // Compare padded versions in constant time, but also check that original lengths match
     let length_match = a.len() == b.len();
     let content_match = a_padded.ct_eq(&b_padded).into();
-    
+
     length_match && content_match
 }
 
@@ -411,15 +408,12 @@ fn generate_correlation_id() -> String {
 /// the rightmost untrusted IP (closest to the actual client) rather than the
 /// leftmost (which can be forged by the client).
 #[cfg(not(target_arch = "wasm32"))]
-fn extract_client_ip(
-    req: &Request<impl hyper::body::Body>,
-    peer_addr: SocketAddr,
-) -> IpAddr {
+fn extract_client_ip(req: &Request<impl hyper::body::Body>, peer_addr: SocketAddr) -> IpAddr {
     // If the direct peer is not a trusted proxy, ignore X-Forwarded-For entirely
     if !is_trusted_proxy(peer_addr) {
         return peer_addr.ip();
     }
-    
+
     // Parse X-Forwarded-For and use the rightmost untrusted IP
     req.headers()
         .get("x-forwarded-for")
@@ -440,10 +434,12 @@ fn extract_client_ip(
 #[cfg(not(target_arch = "wasm32"))]
 fn is_trusted_proxy(addr: SocketAddr) -> bool {
     let ip = addr.ip();
-    ip.is_loopback() || ip.is_unspecified() || match ip {
-        std::net::IpAddr::V4(v4) => v4.is_private(),
-        std::net::IpAddr::V6(_) => false, // IPv6 private ranges are complex; skip for now
-    }
+    ip.is_loopback()
+        || ip.is_unspecified()
+        || match ip {
+            std::net::IpAddr::V4(v4) => v4.is_private(),
+            std::net::IpAddr::V6(_) => false, // IPv6 private ranges are complex; skip for now
+        }
 }
 
 // ---------------------------------------------------------------------------
@@ -454,7 +450,7 @@ fn is_trusted_proxy(addr: SocketAddr) -> bool {
 #[cfg(not(target_arch = "wasm32"))]
 fn is_origin_allowed(origin: &str, config: &ServerConfig) -> bool {
     match &config.allowed_origins {
-        None => false,                       // CORS disabled entirely
+        None => false,                               // CORS disabled entirely
         Some(allowed) if allowed.is_empty() => true, // wildcard "*"
         Some(allowed) => allowed.iter().any(|o| o == origin),
     }
@@ -498,10 +494,7 @@ fn apply_cors_headers(
 
 /// Build a JSON response with the given status code and pre-serialized body.
 #[cfg(not(target_arch = "wasm32"))]
-fn build_response(
-    status: StatusCode,
-    body: &'static [u8],
-) -> Response<Full<Bytes>> {
+fn build_response(status: StatusCode, body: &'static [u8]) -> Response<Full<Bytes>> {
     Response::builder()
         .status(status)
         .header("content-type", "application/json")
@@ -531,7 +524,11 @@ fn sanitized_error(
     detail: Option<&str>,
 ) -> Response<Full<Bytes>> {
     if let Some(d) = detail {
-        warn!(status = status.as_u16(), detail = d, "Sanitized error response");
+        warn!(
+            status = status.as_u16(),
+            detail = d,
+            "Sanitized error response"
+        );
     }
     let error_json = serde_json::json!({
         "jsonrpc": "2.0",
@@ -580,7 +577,14 @@ async fn handle_request(
             Ok(false) => {
                 warn!(client_ip = %client_ip, "Rate limit exceeded");
                 let resp = build_response(StatusCode::TOO_MANY_REQUESTS, RATE_LIMITED_BODY);
-                log_request(&method, &path, StatusCode::TOO_MANY_REQUESTS, &correlation_id, start, client_ip);
+                log_request(
+                    &method,
+                    &path,
+                    StatusCode::TOO_MANY_REQUESTS,
+                    &correlation_id,
+                    start,
+                    client_ip,
+                );
                 return Ok(resp);
             }
             Err(_) => {
@@ -613,7 +617,14 @@ async fn handle_request(
                 let resp = builder
                     .body(Full::new(Bytes::new()))
                     .unwrap_or_else(|_| build_response(StatusCode::NO_CONTENT, &[]));
-                log_request(&method, &path, StatusCode::NO_CONTENT, &correlation_id, start, client_ip);
+                log_request(
+                    &method,
+                    &path,
+                    StatusCode::NO_CONTENT,
+                    &correlation_id,
+                    start,
+                    client_ip,
+                );
                 return Ok(resp);
             }
         }
@@ -632,7 +643,11 @@ async fn handle_request(
         let origin = req.headers().get("origin").and_then(|v| v.to_str().ok());
         let resp = build_response(StatusCode::NOT_FOUND, NOT_FOUND_BODY);
         let (parts, body) = resp.into_parts();
-        let builder = apply_cors_headers(Response::builder().status(parts.status), origin, &state.config);
+        let builder = apply_cors_headers(
+            Response::builder().status(parts.status),
+            origin,
+            &state.config,
+        );
         let mut builder = builder.header("content-type", "application/json");
         for (name, value) in &parts.headers {
             builder = builder.header(name, value);
@@ -646,7 +661,14 @@ async fn handle_request(
     let resp = with_rate_limit_headers(resp, &state, client_ip);
 
     // --- Layer 6: Request Logging (P2) ---
-    log_request(&method, &path, resp.status(), &correlation_id, start, client_ip);
+    log_request(
+        &method,
+        &path,
+        resp.status(),
+        &correlation_id,
+        start,
+        client_ip,
+    );
 
     Ok(resp)
 }
@@ -709,17 +731,17 @@ fn with_rate_limit_headers(
     match state.rate_limiter.get_info(client_ip) {
         Ok(Some((limit, remaining, reset_seconds))) => {
             let headers = resp.headers_mut();
-            
+
             // X-RateLimit-Limit: maximum requests per window
             if let Ok(val) = format!("{}", limit).parse::<hyper::header::HeaderValue>() {
                 headers.insert("x-ratelimit-limit", val);
             }
-            
+
             // X-RateLimit-Remaining: remaining requests in current window
             if let Ok(val) = format!("{}", remaining).parse::<hyper::header::HeaderValue>() {
                 headers.insert("x-ratelimit-remaining", val);
             }
-            
+
             // X-RateLimit-Reset: seconds until rate limit resets (full refill)
             let reset_secs = reset_seconds.ceil() as u64;
             if let Ok(val) = format!("{}", reset_secs).parse::<hyper::header::HeaderValue>() {
@@ -793,7 +815,7 @@ async fn handle_mcp_post(
     // Read the request body with size limiting to prevent memory exhaustion.
     // Use Limited to enforce a hard cap even without Content-Length header.
     let limited_body = http_body_util::Limited::new(req.into_body(), state.config.max_body_size);
-    
+
     let body_bytes = match limited_body.collect().await {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {
@@ -839,7 +861,11 @@ async fn handle_mcp_post(
     }
 
     // Process the MCP JSON-RPC request and apply CORS headers.
-    with_cors(process_mcp_request(&body_bytes), origin.as_deref(), &state.config)
+    with_cors(
+        process_mcp_request(&body_bytes),
+        origin.as_deref(),
+        &state.config,
+    )
 }
 
 /// Process MCP JSON-RPC request and return a JSON response.
@@ -970,21 +996,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Spawn a task to handle the connection with a timeout to prevent Slowloris DoS.
         tokio::task::spawn(async move {
-            let conn = hyper::server::conn::http1::Builder::new()
-                .serve_connection(
-                    io,
-                    service_fn(move |req| {
-                        let state = Arc::clone(&state);
-                        handle_request(req, state, peer_addr)
-                    }),
-                );
-            
+            let conn = hyper::server::conn::http1::Builder::new().serve_connection(
+                io,
+                service_fn(move |req| {
+                    let state = Arc::clone(&state);
+                    handle_request(req, state, peer_addr)
+                }),
+            );
+
             // Apply a 60-second idle timeout to prevent Slowloris-style attacks.
             // This covers normal request processing while preventing indefinite connection holding.
             match tokio::time::timeout(Duration::from_secs(60), conn).await {
                 Ok(Ok(())) => {} // Success
                 Ok(Err(err)) => warn!(error = %err, "Error serving connection"),
-                Err(_) => warn!("Connection timed out after 60 seconds (possible Slowloris attack)"),
+                Err(_) => {
+                    warn!("Connection timed out after 60 seconds (possible Slowloris attack)")
+                }
             }
         });
     }
@@ -995,7 +1022,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 // ---------------------------------------------------------------------------
 
 /// WASI entry point for Wasmer Edge deployment.
-/// 
+///
 /// This provides a simple HTTP request handler that can be invoked by the
 /// wasi-http component model. For now, we provide a placeholder that
 /// demonstrates the architecture - full wasi-http integration requires
@@ -1004,10 +1031,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[no_mangle]
 pub extern "C" fn handle_http_request(input_ptr: *const u8, input_len: usize) -> *mut u8 {
     use std::slice;
-    
+
     // SAFETY: Called from WASM host with valid pointer/length
     let input_bytes = unsafe { slice::from_raw_parts(input_ptr, input_len) };
-    
+
     // Process MCP request using the core protocol logic
     let response_bytes = match velocity_mcp_core::parse_request(input_bytes) {
         Ok(request) => {
@@ -1031,7 +1058,7 @@ pub extern "C" fn handle_http_request(input_ptr: *const u8, input_len: usize) ->
             })
         }
     };
-    
+
     // Return pointer as Box<Vec<u8>> so wasmer_free can reconstruct correctly
     let boxed = Box::new(response_bytes);
     Box::into_raw(boxed) as *mut u8
@@ -1273,7 +1300,11 @@ mod tests {
             RATE_LIMITED_BODY,
         ] {
             let parsed: Result<serde_json::Value, _> = serde_json::from_slice(body);
-            assert!(parsed.is_ok(), "Pre-serialized body is not valid JSON: {:?}", String::from_utf8_lossy(body));
+            assert!(
+                parsed.is_ok(),
+                "Pre-serialized body is not valid JSON: {:?}",
+                String::from_utf8_lossy(body)
+            );
         }
     }
 }

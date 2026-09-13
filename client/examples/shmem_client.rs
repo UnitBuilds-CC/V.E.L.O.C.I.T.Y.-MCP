@@ -12,8 +12,8 @@ use velocity_mcp_client::{McpClient, ShmemTransport};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let buffer_path = std::env::var("VELOCITY_MCP_BUFFER")
-        .unwrap_or_else(|_| "velocity_mcp.bin".to_string());
+    let buffer_path =
+        std::env::var("VELOCITY_MCP_BUFFER").unwrap_or_else(|_| "velocity_mcp.bin".to_string());
 
     println!("Connecting to VELOCITY-MCP server via shared memory...");
     println!("Buffer: {}", buffer_path);
@@ -23,7 +23,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Initializing connection...");
     let init_result = client.initialize().await?;
-    println!("Connected to {} v{}", init_result.server_info.name, init_result.server_info.version);
+    println!(
+        "Connected to {} v{}",
+        init_result.server_info.name, init_result.server_info.version
+    );
     println!("Protocol: {}", init_result.protocol_version);
 
     println!("\nListing available tools...");

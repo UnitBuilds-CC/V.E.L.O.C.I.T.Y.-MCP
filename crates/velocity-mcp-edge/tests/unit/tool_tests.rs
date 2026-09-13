@@ -201,7 +201,7 @@ fn test_unknown_tool() {
 fn test_edge_tool_definitions() {
     let tools = edge_tool_definitions();
     assert!(!tools.is_empty());
-    
+
     // Verify all expected tools are present
     let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
     assert!(tool_names.contains(&"echo"));
@@ -220,7 +220,11 @@ fn test_edge_tool_definitions() {
 fn test_all_tools_have_descriptions() {
     let tools = edge_tool_definitions();
     for tool in &tools {
-        assert!(!tool.description.is_empty(), "Tool '{}' has empty description", tool.name);
+        assert!(
+            !tool.description.is_empty(),
+            "Tool '{}' has empty description",
+            tool.name
+        );
     }
 }
 
@@ -228,6 +232,10 @@ fn test_all_tools_have_descriptions() {
 fn test_all_tools_have_input_schema() {
     let tools = edge_tool_definitions();
     for tool in &tools {
-        assert!(tool.input_schema.is_object(), "Tool '{}' has invalid input schema", tool.name);
+        assert!(
+            tool.input_schema.is_object(),
+            "Tool '{}' has invalid input schema",
+            tool.name
+        );
     }
 }

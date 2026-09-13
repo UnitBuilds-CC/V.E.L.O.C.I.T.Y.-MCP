@@ -14,19 +14,9 @@ use std::time::Instant;
 
 // WASM runtime imports
 use velocity_mcp::wasm_runtime::{
-    csharp::CSharpRuntime,
-    java::JavaRuntime,
-    julia::JuliaRuntime,
-    lua::LuaRuntime,
-    micropython::MicroPythonRuntime,
-    perl::PerlRuntime,
-    php::PhpRuntime,
-    quickjs::QuickJsRuntime,
-    r::RRuntime,
-    ruby::RubyRuntime,
-    rust::RustRuntime,
-    typescript::TypeScriptRuntime,
-    WasmRuntime,
+    csharp::CSharpRuntime, java::JavaRuntime, julia::JuliaRuntime, lua::LuaRuntime,
+    micropython::MicroPythonRuntime, perl::PerlRuntime, php::PhpRuntime, quickjs::QuickJsRuntime,
+    r::RRuntime, ruby::RubyRuntime, rust::RustRuntime, typescript::TypeScriptRuntime, WasmRuntime,
 };
 
 // Constants
@@ -246,9 +236,16 @@ fn verify_wasm_result(result: &str, lang: &str) -> bool {
         if wc == 29 && cc == 159 {
             return true;
         }
-        eprintln!("  WARNING: {} WASM returned unexpected result: wc={} cc={}", lang, wc, cc);
+        eprintln!(
+            "  WARNING: {} WASM returned unexpected result: wc={} cc={}",
+            lang, wc, cc
+        );
     } else {
-        eprintln!("  WARNING: {} WASM result not valid JSON: {}", lang, &result[..result.len().min(80)]);
+        eprintln!(
+            "  WARNING: {} WASM result not valid JSON: {}",
+            lang,
+            &result[..result.len().min(80)]
+        );
     }
     false
 }
@@ -262,7 +259,10 @@ fn bench_wasm_runtime<R: WasmRuntime>(
     tool_source: &str,
     mut create_rt: impl FnMut(&[u8]) -> Result<R, Box<dyn std::error::Error>>,
 ) -> WasmRuntimeResult {
-    println!("\n─── {} ────────────────────────────────────────────────", name);
+    println!(
+        "\n─── {} ────────────────────────────────────────────────",
+        name
+    );
 
     let mut result = WasmRuntimeResult {
         name,
@@ -277,7 +277,7 @@ fn bench_wasm_runtime<R: WasmRuntime>(
     let mut cold_times = Vec::with_capacity(RUNS);
     for i in 0..RUNS {
         let start = Instant::now();
-        
+
         // Create and initialize runtime
         let mut rt = match create_rt(wasm_bytes) {
             Ok(rt) => rt,
@@ -307,7 +307,7 @@ fn bench_wasm_runtime<R: WasmRuntime>(
 
         let elapsed_ms = start.elapsed().as_nanos() as f64 / 1_000_000.0;
         cold_times.push(elapsed_ms);
-        
+
         rt.destroy().ok();
     }
 
@@ -355,7 +355,10 @@ fn bench_wasm_runtime<R: WasmRuntime>(
             }
         }
         if warmup_failures > 0 {
-            eprintln!("  {} had {} warmup failures out of {}", name, warmup_failures, WARMUP_CALLS);
+            eprintln!(
+                "  {} had {} warmup failures out of {}",
+                name, warmup_failures, WARMUP_CALLS
+            );
         }
 
         // Measurement
@@ -375,23 +378,31 @@ fn bench_wasm_runtime<R: WasmRuntime>(
             }
         }
         let total_us = bench_start.elapsed().as_nanos() as f64 / 1000.0;
-        
+
         if call_failures > 0 {
-            eprintln!("  {} had {} call failures out of {} attempts", name, call_failures, HOT_WASM_ITERS);
+            eprintln!(
+                "  {} had {} call failures out of {} attempts",
+                name, call_failures, HOT_WASM_ITERS
+            );
         }
 
         if !latencies.is_empty() {
             latencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
             result.hot_call_us = Some(total_us / HOT_WASM_ITERS as f64);
-            
+
             let p50 = percentile(&latencies, 0.50);
             let p95 = percentile(&latencies, 0.95);
             let p99 = percentile(&latencies, 0.99);
-            
-            println!("  Hot call: {:.1} µs/call ({:.1}K calls/s)", 
-                     result.hot_call_us.unwrap(), 
-                     1_000_000.0 / result.hot_call_us.unwrap());
-            println!("    P50: {:.1} µs, P95: {:.1} µs, P99: {:.1} µs", p50, p95, p99);
+
+            println!(
+                "  Hot call: {:.1} µs/call ({:.1}K calls/s)",
+                result.hot_call_us.unwrap(),
+                1_000_000.0 / result.hot_call_us.unwrap()
+            );
+            println!(
+                "    P50: {:.1} µs, P95: {:.1} µs, P99: {:.1} µs",
+                p50, p95, p99
+            );
         } else {
             eprintln!("  {} produced no successful hot calls", name);
         }
@@ -403,8 +414,8 @@ fn bench_wasm_runtime<R: WasmRuntime>(
 }
 
 fn bench_go_wasm(wasm_path: &str) -> WasmRuntimeResult {
+    use velocity_mcp::wasm_runtime::wasi::{build_wasi_imports, WasiEnv};
     use wasmer::{FunctionEnv, Instance, Module, Store, Value as WasmValue};
-    use velocity_mcp::wasm_runtime::wasi::{WasiEnv, build_wasi_imports};
 
     println!("\n─── Go (TinyGo/WASM) ─────────────────────────────────────");
 
@@ -486,21 +497,29 @@ fn bench_go_wasm(wasm_path: &str) -> WasmRuntimeResult {
             Err(_) => continue,
         };
         env.as_mut(&mut store).memory = Some(memory.clone());
-        
+
         // Simulate tool call
         let args_bytes = BENCH_INPUT_JSON.as_bytes();
         if let Ok(prepare) = instance.exports.get_function("prepare_call") {
             let _ = prepare.call(&mut store, &[]);
         }
         if let Ok(malloc) = instance.exports.get_function("malloc") {
-            if let Ok(ptr_val) = malloc.call(&mut store, &[WasmValue::I32(args_bytes.len() as i32)]) {
+            if let Ok(ptr_val) = malloc.call(&mut store, &[WasmValue::I32(args_bytes.len() as i32)])
+            {
                 let input_ptr = ptr_val[0].unwrap_i32();
-                if memory.view(&store).write(input_ptr as u64, args_bytes).is_ok() {
+                if memory
+                    .view(&store)
+                    .write(input_ptr as u64, args_bytes)
+                    .is_ok()
+                {
                     if let Ok(execute) = instance.exports.get_function("tool_execute") {
-                        let _ = execute.call(&mut store, &[
-                            WasmValue::I32(input_ptr),
-                            WasmValue::I32(args_bytes.len() as i32),
-                        ]);
+                        let _ = execute.call(
+                            &mut store,
+                            &[
+                                WasmValue::I32(input_ptr),
+                                WasmValue::I32(args_bytes.len() as i32),
+                            ],
+                        );
                     }
                 }
             }
@@ -509,10 +528,13 @@ fn bench_go_wasm(wasm_path: &str) -> WasmRuntimeResult {
     }
 
     if !cached_times.is_empty() {
-        result.cached_module_us = Some(bench_start.elapsed().as_nanos() as f64 / HOT_WASM_ITERS as f64 / 1000.0);
-        println!("  Cached module: {:.1} µs/call ({:.1}K calls/s)", 
-                 result.cached_module_us.unwrap(),
-                 1_000_000.0 / (result.cached_module_us.unwrap() * 1000.0));
+        result.cached_module_us =
+            Some(bench_start.elapsed().as_nanos() as f64 / HOT_WASM_ITERS as f64 / 1000.0);
+        println!(
+            "  Cached module: {:.1} µs/call ({:.1}K calls/s)",
+            result.cached_module_us.unwrap(),
+            1_000_000.0 / (result.cached_module_us.unwrap() * 1000.0)
+        );
     }
 
     result
@@ -522,7 +544,7 @@ fn bench_go_wasm(wasm_path: &str) -> WasmRuntimeResult {
 
 fn bench_transport_stdio_json(node_cmd: &str) -> Option<TransportResult> {
     println!("\n─── Transport: JSON-RPC stdio ─────────────────────────────");
-    
+
     let mut child = match Command::new(node_cmd)
         .args(["bench_tools/node_tool.js"])
         .stdin(Stdio::piped())
@@ -601,60 +623,97 @@ fn bench_transport_stdio_json(node_cmd: &str) -> Option<TransportResult> {
 
 fn print_wasm_summary(results: &[WasmRuntimeResult]) {
     println!("\n═══ WASM Runtime Summary ═══════════════════════════════════════════");
-    println!("{:<14} {:>12} {:>12} {:>12} {:>10}", 
-             "Language", "Cold (ms)", "Hot (µs)", "Cached (µs)", "Mem (KB)");
+    println!(
+        "{:<14} {:>12} {:>12} {:>12} {:>10}",
+        "Language", "Cold (ms)", "Hot (µs)", "Cached (µs)", "Mem (KB)"
+    );
     println!("──────────────────────────────────────────────────────────────────");
-    
+
     for r in results {
-        let cold = r.cold_start_ms.map(|v| format!("{:.1}", v)).unwrap_or_else(|| "SKIP".into());
-        let hot = r.hot_call_us.map(|v| format!("{:.1}", v)).unwrap_or_else(|| "SKIP".into());
-        let cached = r.cached_module_us.map(|v| format!("{:.1}", v)).unwrap_or_else(|| "—".into());
-        let mem = r.memory_kb.map(|v| format!("{}", v)).unwrap_or_else(|| "—".into());
-        
-        println!("{:<14} {:>12} {:>12} {:>12} {:>10}", 
-                 r.name, cold, hot, cached, mem);
+        let cold = r
+            .cold_start_ms
+            .map(|v| format!("{:.1}", v))
+            .unwrap_or_else(|| "SKIP".into());
+        let hot = r
+            .hot_call_us
+            .map(|v| format!("{:.1}", v))
+            .unwrap_or_else(|| "SKIP".into());
+        let cached = r
+            .cached_module_us
+            .map(|v| format!("{:.1}", v))
+            .unwrap_or_else(|| "—".into());
+        let mem = r
+            .memory_kb
+            .map(|v| format!("{}", v))
+            .unwrap_or_else(|| "—".into());
+
+        println!(
+            "{:<14} {:>12} {:>12} {:>12} {:>10}",
+            r.name, cold, hot, cached, mem
+        );
     }
     println!("──────────────────────────────────────────────────────────────────");
 }
 
 fn print_transport_summary(results: &[TransportResult]) {
     println!("\n═══ Transport Protocol Summary ═════════════════════════════════════");
-    println!("{:<20} {:>12} {:>12} {:>12}", 
-             "Protocol", "Ping (µs)", "List (µs)", "Call (µs)");
+    println!(
+        "{:<20} {:>12} {:>12} {:>12}",
+        "Protocol", "Ping (µs)", "List (µs)", "Call (µs)"
+    );
     println!("──────────────────────────────────────────────────────────────────");
-    
+
     for r in results {
-        let ping = r.ping_us.map(|v| format!("{:.1}", v)).unwrap_or_else(|| "SKIP".into());
-        let list = r.tools_list_us.map(|v| format!("{:.1}", v)).unwrap_or_else(|| "SKIP".into());
-        let call = r.tools_call_us.map(|v| format!("{:.1}", v)).unwrap_or_else(|| "SKIP".into());
-        
-        println!("{:<20} {:>12} {:>12} {:>12}", 
-                 r.protocol, ping, list, call);
+        let ping = r
+            .ping_us
+            .map(|v| format!("{:.1}", v))
+            .unwrap_or_else(|| "SKIP".into());
+        let list = r
+            .tools_list_us
+            .map(|v| format!("{:.1}", v))
+            .unwrap_or_else(|| "SKIP".into());
+        let call = r
+            .tools_call_us
+            .map(|v| format!("{:.1}", v))
+            .unwrap_or_else(|| "SKIP".into());
+
+        println!("{:<20} {:>12} {:>12} {:>12}", r.protocol, ping, list, call);
     }
     println!("──────────────────────────────────────────────────────────────────");
 }
 
-fn print_recommendations(wasm_results: &[WasmRuntimeResult], transport_results: &[TransportResult]) {
+fn print_recommendations(
+    wasm_results: &[WasmRuntimeResult],
+    transport_results: &[TransportResult],
+) {
     println!("\n═══ Recommendations ════════════════════════════════════════════════");
-    
+
     // Find fastest WASM runtime
-    if let Some(fastest) = wasm_results.iter()
+    if let Some(fastest) = wasm_results
+        .iter()
         .filter(|r| r.hot_call_us.is_some())
         .min_by(|a, b| a.hot_call_us.partial_cmp(&b.hot_call_us).unwrap())
     {
-        println!("  Fastest WASM runtime: {} ({:.1} µs/call)", 
-                 fastest.name, fastest.hot_call_us.unwrap());
+        println!(
+            "  Fastest WASM runtime: {} ({:.1} µs/call)",
+            fastest.name,
+            fastest.hot_call_us.unwrap()
+        );
     }
-    
+
     // Find fastest transport
-    if let Some(fastest) = transport_results.iter()
+    if let Some(fastest) = transport_results
+        .iter()
         .filter(|r| r.tools_call_us.is_some())
         .min_by(|a, b| a.tools_call_us.partial_cmp(&b.tools_call_us).unwrap())
     {
-        println!("  Fastest transport: {} ({:.1} µs)", 
-                 fastest.protocol, fastest.tools_call_us.unwrap());
+        println!(
+            "  Fastest transport: {} ({:.1} µs)",
+            fastest.protocol,
+            fastest.tools_call_us.unwrap()
+        );
     }
-    
+
     println!("\n  For low-latency tools (<100µs): Use QuickJS, MicroPython, or Lua");
     println!("  For complex computations: Use Rust WASI or TinyGo");
     println!("  For maximum compatibility: Use Node.js native with JSON-RPC stdio");
@@ -670,11 +729,14 @@ fn main() {
 
     // Check WASM files
     let quickjs_wasm = std::path::Path::new("bench_tools/quickjs_wasm/quickjs.wasm");
-    let micropython_wasm = std::path::Path::new("bench_tools/micropython_wasm/wasi-reactor/build/micropython.wasm");
+    let micropython_wasm =
+        std::path::Path::new("bench_tools/micropython_wasm/wasi-reactor/build/micropython.wasm");
     let lua_wasm = std::path::Path::new("bench_tools/lua_wasm/lua.wasm");
     let tinygo_wasm = std::path::Path::new("bench_tools/tinygo_wasm/tool.wasm");
     let ruby_wasm = std::path::Path::new("bench_tools/mruby_wasm/ruby.wasm");
-    let rust_wasm = std::path::Path::new("bench_tools/rust_wasm/target/wasm32-wasip1/release/rust_wasm_tool.wasm");
+    let rust_wasm = std::path::Path::new(
+        "bench_tools/rust_wasm/target/wasm32-wasip1/release/rust_wasm_tool.wasm",
+    );
     let php_wasm = std::path::Path::new("bench_tools/php_wasm/php.wasm");
     let csharp_wasm = std::path::Path::new("bench_tools/csharp_wasm/dotnet.wasm");
     let java_wasm = std::path::Path::new("bench_tools/java_wasm/java.wasm");
@@ -699,7 +761,11 @@ fn main() {
     ];
 
     for (name, path) in &wasm_files {
-        println!("  {}: {}", name, if path.exists() { "found" } else { "MISSING" });
+        println!(
+            "  {}: {}",
+            name,
+            if path.exists() { "found" } else { "MISSING" }
+        );
     }
 
     // Check native runtimes
@@ -711,7 +777,7 @@ fn main() {
     let mut transport_results: Vec<TransportResult> = Vec::new();
 
     // ── Benchmark WASM Runtimes ──
-    
+
     println!("\n\n╔═══════════════════════════════════════════════════════════════╗");
     println!("║  WASM Runtime Benchmarks                                     ║");
     println!("╚═══════════════════════════════════════════════════════════════╝");
@@ -745,31 +811,31 @@ fn main() {
     // Python (MicroPython) - Note: MicroPython WASM doesn't support repeated calls due to state pollution
     if micropython_wasm.exists() {
         let wasm_bytes = std::fs::read(micropython_wasm).unwrap();
-        
+
         println!("\n─── Python ────────────────────────────────────────────────");
-        
+
         // Cold start measurement only
         let mut cold_times = Vec::with_capacity(RUNS);
         for i in 0..RUNS {
             let start = Instant::now();
-            
+
             match MicroPythonRuntime::new(&wasm_bytes) {
                 Ok(mut rt) => {
                     if let Err(e) = rt.init() {
                         eprintln!("  Python init failed (run {}): {}", i + 1, e);
                         continue;
                     }
-                    
+
                     if let Err(e) = rt.register_tool("text_analyze", PY_TOOL_SOURCE) {
                         eprintln!("  Python tool registration failed (run {}): {}", i + 1, e);
                         continue;
                     }
-                    
+
                     if let Err(e) = rt.call_tool("text_analyze", BENCH_INPUT_JSON) {
                         eprintln!("  Python first call failed (run {}): {}", i + 1, e);
                         continue;
                     }
-                    
+
                     let elapsed_ms = start.elapsed().as_nanos() as f64 / 1_000_000.0;
                     cold_times.push(elapsed_ms);
                 }
@@ -779,7 +845,7 @@ fn main() {
                 }
             }
         }
-        
+
         let cold_start_ms = if !cold_times.is_empty() {
             let median = median_of(&mut cold_times);
             println!("  Cold start: {:.1} ms", median);
@@ -787,7 +853,7 @@ fn main() {
         } else {
             None
         };
-        
+
         // Correctness check (single call)
         if let Ok(mut rt) = MicroPythonRuntime::new(&wasm_bytes) {
             if rt.init().is_ok() && rt.register_tool("text_analyze", PY_TOOL_SOURCE).is_ok() {
@@ -798,10 +864,10 @@ fn main() {
                 }
             }
         }
-        
+
         // Skip hot call measurement - MicroPython WASM has state pollution issues
         println!("  Hot call: SKIP (MicroPython WASM doesn't support repeated calls)");
-        
+
         wasm_results.push(WasmRuntimeResult {
             name: "Python",
             wasm_label: "MicroPython/WASM",
@@ -815,13 +881,9 @@ fn main() {
     // Lua
     if lua_wasm.exists() {
         let wasm_bytes = std::fs::read(lua_wasm).unwrap();
-        let result = bench_wasm_runtime(
-            "Lua",
-            "Lua/WASM",
-            &wasm_bytes,
-            LUA_TOOL_SOURCE,
-            |bytes| LuaRuntime::cold_start(bytes),
-        );
+        let result = bench_wasm_runtime("Lua", "Lua/WASM", &wasm_bytes, LUA_TOOL_SOURCE, |bytes| {
+            LuaRuntime::cold_start(bytes)
+        });
         wasm_results.push(result);
     }
 
@@ -844,7 +906,7 @@ fn main() {
         let result = bench_wasm_runtime(
             "Rust",
             "Rust/WASI",
-            &[], // Don't need bytes for Rust - it loads from path
+            &[],           // Don't need bytes for Rust - it loads from path
             wasm_path_str, // Pass path as "source"
             |_| RustRuntime::new(&[]),
         );
@@ -860,13 +922,9 @@ fn main() {
     // PHP
     if php_wasm.exists() {
         let wasm_bytes = std::fs::read(php_wasm).unwrap();
-        let result = bench_wasm_runtime(
-            "PHP",
-            "PHP/WASM",
-            &wasm_bytes,
-            PHP_TOOL_SOURCE,
-            |bytes| PhpRuntime::new(bytes),
-        );
+        let result = bench_wasm_runtime("PHP", "PHP/WASM", &wasm_bytes, PHP_TOOL_SOURCE, |bytes| {
+            PhpRuntime::new(bytes)
+        });
         wasm_results.push(result);
     }
 
@@ -899,13 +957,9 @@ fn main() {
     // R
     if r_wasm.exists() {
         let wasm_bytes = std::fs::read(r_wasm).unwrap();
-        let result = bench_wasm_runtime(
-            "R",
-            "WebR/WASM",
-            &wasm_bytes,
-            R_TOOL_SOURCE,
-            |bytes| RRuntime::new(bytes),
-        );
+        let result = bench_wasm_runtime("R", "WebR/WASM", &wasm_bytes, R_TOOL_SOURCE, |bytes| {
+            RRuntime::new(bytes)
+        });
         wasm_results.push(result);
     }
 
@@ -936,7 +990,7 @@ fn main() {
     }
 
     // ── Benchmark Transport Protocols ──
-    
+
     println!("\n\n╔═══════════════════════════════════════════════════════════════╗");
     println!("║  Transport Protocol Benchmarks                               ║");
     println!("╚═══════════════════════════════════════════════════════════════╝");
@@ -948,7 +1002,7 @@ fn main() {
     }
 
     // ── Print Summaries ──
-    
+
     print_wasm_summary(&wasm_results);
     print_transport_summary(&transport_results);
     print_recommendations(&wasm_results, &transport_results);

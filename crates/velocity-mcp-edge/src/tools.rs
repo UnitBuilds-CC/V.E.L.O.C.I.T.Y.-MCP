@@ -271,16 +271,13 @@ fn tool_json_format(args: &Value) -> Result<String, String> {
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing required argument: 'json' (string)".to_string())?;
 
-    let indent = args
-        .get("indent")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(2) as usize;
+    let indent = args.get("indent").and_then(|v| v.as_u64()).unwrap_or(2) as usize;
 
     // Clamp indent to reasonable range
     let indent = indent.min(8);
 
-    let parsed: Value = serde_json::from_str(json_str)
-        .map_err(|e| format!("Invalid JSON: {}", e))?;
+    let parsed: Value =
+        serde_json::from_str(json_str).map_err(|e| format!("Invalid JSON: {}", e))?;
 
     // Pretty-print with the requested indent
     let formatted = pretty_print_json(&parsed, indent);
@@ -303,7 +300,7 @@ fn pretty_print_inner(value: &Value, out: &mut String, indent: usize, depth: usi
         out.push_str("...");
         return;
     }
-    
+
     match value {
         Value::Null => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
@@ -432,12 +429,12 @@ fn tool_text_transform(args: &Value) -> Result<String, String> {
                 .get("new")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "'replace' operation requires 'new' argument".to_string())?;
-            
+
             // Prevent string amplification DoS: reject empty 'old' which would cause infinite replacement
             if old.is_empty() {
                 return Err("'replace' operation: 'old' argument cannot be empty (would cause unbounded growth)".to_string());
             }
-            
+
             // Limit output size to prevent memory exhaustion
             let result = text.replace(old, new);
             if result.len() > 10_485_760 { // 10MB limit
@@ -565,26 +562,60 @@ fn tokenize_math(input: &str) -> Result<Vec<MathToken>, String> {
 
     while i < chars.len() {
         match chars[i] {
-            ' ' | '\t' => { i += 1; }
-            '+' => { tokens.push(MathToken::Plus); i += 1; }
-            '-' => { tokens.push(MathToken::Minus); i += 1; }
-            '*' => { tokens.push(MathToken::Star); i += 1; }
-            '/' => { tokens.push(MathToken::Slash); i += 1; }
-            '%' => { tokens.push(MathToken::Percent); i += 1; }
-            '^' => { tokens.push(MathToken::Caret); i += 1; }
-            '(' => { tokens.push(MathToken::LParen); i += 1; }
-            ')' => { tokens.push(MathToken::RParen); i += 1; }
-            ',' => { tokens.push(MathToken::Comma); i += 1; }
+            ' ' | '\t' => {
+                i += 1;
+            }
+            '+' => {
+                tokens.push(MathToken::Plus);
+                i += 1;
+            }
+            '-' => {
+                tokens.push(MathToken::Minus);
+                i += 1;
+            }
+            '*' => {
+                tokens.push(MathToken::Star);
+                i += 1;
+            }
+            '/' => {
+                tokens.push(MathToken::Slash);
+                i += 1;
+            }
+            '%' => {
+                tokens.push(MathToken::Percent);
+                i += 1;
+            }
+            '^' => {
+                tokens.push(MathToken::Caret);
+                i += 1;
+            }
+            '(' => {
+                tokens.push(MathToken::LParen);
+                i += 1;
+            }
+            ')' => {
+                tokens.push(MathToken::RParen);
+                i += 1;
+            }
+            ',' => {
+                tokens.push(MathToken::Comma);
+                i += 1;
+            }
             c if c.is_ascii_digit() || c == '.' => {
                 let start = i;
                 let mut has_dot = c == '.';
                 i += 1;
-                while i < chars.len() && (chars[i].is_ascii_digit() || (chars[i] == '.' && !has_dot)) {
-                    if chars[i] == '.' { has_dot = true; }
+                while i < chars.len()
+                    && (chars[i].is_ascii_digit() || (chars[i] == '.' && !has_dot))
+                {
+                    if chars[i] == '.' {
+                        has_dot = true;
+                    }
                     i += 1;
                 }
                 let num_str: String = chars[start..i].iter().collect();
-                let num: f64 = num_str.parse()
+                let num: f64 = num_str
+                    .parse()
                     .map_err(|_| format!("Invalid number: '{}'", num_str))?;
                 tokens.push(MathToken::Number(num));
             }
@@ -613,13 +644,22 @@ fn tokenize_math(input: &str) -> Result<Vec<MathToken>, String> {
 
 fn parse_expr(tokens: &[MathToken], pos: &mut usize, depth: usize) -> Result<f64, String> {
     if depth > MAX_MATH_RECURSION_DEPTH {
-        return Err(format!("Expression too complex (max recursion depth {})", MAX_MATH_RECURSION_DEPTH));
+        return Err(format!(
+            "Expression too complex (max recursion depth {})",
+            MAX_MATH_RECURSION_DEPTH
+        ));
     }
     let mut result = parse_term(tokens, pos, depth + 1)?;
     while *pos < tokens.len() {
         match tokens[*pos] {
-            MathToken::Plus => { *pos += 1; result += parse_term(tokens, pos, depth + 1)?; }
-            MathToken::Minus => { *pos += 1; result -= parse_term(tokens, pos, depth + 1)?; }
+            MathToken::Plus => {
+                *pos += 1;
+                result += parse_term(tokens, pos, depth + 1)?;
+            }
+            MathToken::Minus => {
+                *pos += 1;
+                result -= parse_term(tokens, pos, depth + 1)?;
+            }
             _ => break,
         }
     }
@@ -628,12 +668,18 @@ fn parse_expr(tokens: &[MathToken], pos: &mut usize, depth: usize) -> Result<f64
 
 fn parse_term(tokens: &[MathToken], pos: &mut usize, depth: usize) -> Result<f64, String> {
     if depth > MAX_MATH_RECURSION_DEPTH {
-        return Err(format!("Expression too complex (max recursion depth {})", MAX_MATH_RECURSION_DEPTH));
+        return Err(format!(
+            "Expression too complex (max recursion depth {})",
+            MAX_MATH_RECURSION_DEPTH
+        ));
     }
     let mut result = parse_power(tokens, pos, depth + 1)?;
     while *pos < tokens.len() {
         match tokens[*pos] {
-            MathToken::Star => { *pos += 1; result *= parse_power(tokens, pos, depth + 1)?; }
+            MathToken::Star => {
+                *pos += 1;
+                result *= parse_power(tokens, pos, depth + 1)?;
+            }
             MathToken::Slash => {
                 *pos += 1;
                 let divisor = parse_power(tokens, pos, depth + 1)?;
@@ -658,7 +704,10 @@ fn parse_term(tokens: &[MathToken], pos: &mut usize, depth: usize) -> Result<f64
 
 fn parse_power(tokens: &[MathToken], pos: &mut usize, depth: usize) -> Result<f64, String> {
     if depth > MAX_MATH_RECURSION_DEPTH {
-        return Err(format!("Expression too complex (max recursion depth {})", MAX_MATH_RECURSION_DEPTH));
+        return Err(format!(
+            "Expression too complex (max recursion depth {})",
+            MAX_MATH_RECURSION_DEPTH
+        ));
     }
     let base = parse_unary(tokens, pos, depth + 1)?;
     if *pos < tokens.len() {
@@ -673,12 +722,21 @@ fn parse_power(tokens: &[MathToken], pos: &mut usize, depth: usize) -> Result<f6
 
 fn parse_unary(tokens: &[MathToken], pos: &mut usize, depth: usize) -> Result<f64, String> {
     if depth > MAX_MATH_RECURSION_DEPTH {
-        return Err(format!("Expression too complex (max recursion depth {})", MAX_MATH_RECURSION_DEPTH));
+        return Err(format!(
+            "Expression too complex (max recursion depth {})",
+            MAX_MATH_RECURSION_DEPTH
+        ));
     }
     if *pos < tokens.len() {
         match tokens[*pos] {
-            MathToken::Minus => { *pos += 1; return Ok(-parse_unary(tokens, pos, depth + 1)?); }
-            MathToken::Plus => { *pos += 1; return parse_unary(tokens, pos, depth + 1); }
+            MathToken::Minus => {
+                *pos += 1;
+                return Ok(-parse_unary(tokens, pos, depth + 1)?);
+            }
+            MathToken::Plus => {
+                *pos += 1;
+                return parse_unary(tokens, pos, depth + 1);
+            }
             _ => {}
         }
     }
@@ -687,7 +745,10 @@ fn parse_unary(tokens: &[MathToken], pos: &mut usize, depth: usize) -> Result<f6
 
 fn parse_primary(tokens: &[MathToken], pos: &mut usize, depth: usize) -> Result<f64, String> {
     if depth > MAX_MATH_RECURSION_DEPTH {
-        return Err(format!("Expression too complex (max recursion depth {})", MAX_MATH_RECURSION_DEPTH));
+        return Err(format!(
+            "Expression too complex (max recursion depth {})",
+            MAX_MATH_RECURSION_DEPTH
+        ));
     }
     if *pos >= tokens.len() {
         return Err("Unexpected end of expression".to_string());
@@ -838,7 +899,9 @@ fn require_args(name: &str, args: &[f64], expected: usize) -> Result<(), String>
     if args.len() != expected {
         Err(format!(
             "{} expects {} argument(s), got {}",
-            name, expected, args.len()
+            name,
+            expected,
+            args.len()
         ))
     } else {
         Ok(())
@@ -846,10 +909,7 @@ fn require_args(name: &str, args: &[f64], expected: usize) -> Result<(), String>
 }
 
 fn tool_bench_echo(args: &Value) -> Result<String, String> {
-    let size = args
-        .get("size")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(64) as usize;
+    let size = args.get("size").and_then(|v| v.as_u64()).unwrap_or(64) as usize;
 
     // Cap at 1MB to prevent memory issues on constrained edge instances
     let size = size.min(1_048_576);
@@ -951,8 +1011,7 @@ fn tool_base64_decode(args: &Value) -> Result<String, String> {
         .ok_or_else(|| "Missing required argument: 'base64' (string)".to_string())?;
 
     let decoded = base64_decode(encoded)?;
-    String::from_utf8(decoded)
-        .map_err(|e| format!("Decoded bytes are not valid UTF-8: {}", e))
+    String::from_utf8(decoded).map_err(|e| format!("Decoded bytes are not valid UTF-8: {}", e))
 }
 
 // Minimal Base64 implementation (no external crate needed)
@@ -1042,27 +1101,21 @@ fn tool_hash_text(args: &Value) -> Result<String, String> {
 fn sha256_hex(data: &[u8]) -> String {
     // SHA-256 implementation
     let h0: [u32; 8] = [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
     ];
 
     let k: [u32; 64] = [
-        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
-        0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
-        0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
-        0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
-        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
-        0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
-        0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
-        0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
-        0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2,
     ];
 
     // Pre-processing: padding
@@ -1202,29 +1255,22 @@ fn sha1_hex(data: &[u8]) -> String {
 fn md5_hex(data: &[u8]) -> String {
     // MD5 implementation
     let s: [u32; 64] = [
-        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
-        5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
-        4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
-        6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5,
+        9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10,
+        15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
     ];
 
     let k_vals: [u32; 64] = [
-        0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee,
-        0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
-        0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be,
-        0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
-        0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa,
-        0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
-        0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed,
-        0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
-        0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c,
-        0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
-        0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05,
-        0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
-        0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039,
-        0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
-        0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1,
-        0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391,
+        0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613,
+        0xfd469501, 0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193,
+        0xa679438e, 0x49b40821, 0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d,
+        0x02441453, 0xd8a1e681, 0xe7d3fbc8, 0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed,
+        0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a, 0xfffa3942, 0x8771f681, 0x6d9d6122,
+        0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70, 0x289b7ec6, 0xeaa127fa,
+        0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665, 0xf4292244,
+        0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+        0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb,
+        0xeb86d391,
     ];
 
     let msg_len_bits = (data.len() as u64) * 8;
@@ -1261,10 +1307,7 @@ fn md5_hex(data: &[u8]) -> String {
                 _ => (c ^ (b | (!d)), (7 * i) % 16),
             };
 
-            let f = f
-                .wrapping_add(a)
-                .wrapping_add(k_vals[i])
-                .wrapping_add(m[g]);
+            let f = f.wrapping_add(a).wrapping_add(k_vals[i]).wrapping_add(m[g]);
             a = d;
             d = c;
             c = b;
@@ -1279,7 +1322,13 @@ fn md5_hex(data: &[u8]) -> String {
 
     // MD5 outputs each 32-bit word in little-endian byte order
     fn le_hex(w: u32) -> String {
-        format!("{:02x}{:02x}{:02x}{:02x}", w & 0xff, (w >> 8) & 0xff, (w >> 16) & 0xff, (w >> 24) & 0xff)
+        format!(
+            "{:02x}{:02x}{:02x}{:02x}",
+            w & 0xff,
+            (w >> 8) & 0xff,
+            (w >> 16) & 0xff,
+            (w >> 24) & 0xff
+        )
     }
     format!("{}{}{}{}", le_hex(a0), le_hex(b0), le_hex(c0), le_hex(d0))
 }
@@ -1360,7 +1409,8 @@ mod tests {
 
     #[test]
     fn test_text_transform_truncate() {
-        let args = serde_json::json!({"text": "hello world", "operation": "truncate", "max_length": 5});
+        let args =
+            serde_json::json!({"text": "hello world", "operation": "truncate", "max_length": 5});
         assert_eq!(tool_text_transform(&args).unwrap(), "hello...");
     }
 
@@ -1455,13 +1505,19 @@ mod tests {
     fn test_sha256_known_vector() {
         // SHA-256 of empty string
         let result = sha256_hex(b"");
-        assert_eq!(result, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        assert_eq!(
+            result,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
     }
 
     #[test]
     fn test_sha256_hello() {
         let result = sha256_hex(b"hello");
-        assert_eq!(result, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+        assert_eq!(
+            result,
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
     }
 
     #[test]

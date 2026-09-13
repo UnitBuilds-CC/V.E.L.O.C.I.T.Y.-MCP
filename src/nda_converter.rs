@@ -23,7 +23,8 @@ pub fn convert_to_nda(file_path: &str) -> Result<Vec<u8>, String> {
         return Err(format!("File not found: {}", file_path));
     }
 
-    let ext = path.extension()
+    let ext = path
+        .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_lowercase())
         .unwrap_or_default();
@@ -34,9 +35,8 @@ pub fn convert_to_nda(file_path: &str) -> Result<Vec<u8>, String> {
         "docx" => convert_docx(file_path),
         "pdf" => convert_pdf(file_path),
         "png" | "jpg" | "jpeg" | "webp" => convert_image(file_path, None),
-        "cs" | "js" | "ts" | "py" | "rs" | "html" | "css" | "json" | "xml"
-        | "md" | "sh" | "ps1" | "txt" | "go" | "java" | "cpp" | "c" | "h" | "hpp"
-            => convert_code(file_path),
+        "cs" | "js" | "ts" | "py" | "rs" | "html" | "css" | "json" | "xml" | "md" | "sh"
+        | "ps1" | "txt" | "go" | "java" | "cpp" | "c" | "h" | "hpp" => convert_code(file_path),
         _ => convert_binary(file_path),
     }
 }
@@ -45,23 +45,33 @@ pub fn convert_to_nda(file_path: &str) -> Result<Vec<u8>, String> {
 
 fn convert_csv(file_path: &str) -> Result<Vec<u8>, String> {
     let mut compiler = NdaCompiler::new();
-    let filename = Path::new(file_path).file_name()
-        .and_then(|n| n.to_str()).unwrap_or("unknown.csv");
+    let filename = Path::new(file_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown.csv");
     let sheet_id = format!("CSV_SHEET_{}", random_hex_id());
 
     compiler.add_triple(&sheet_id, "TYPE", "SpreadsheetGrid");
     compiler.add_triple(&sheet_id, "FILENAME", filename);
 
-    let csv_meta = std::fs::metadata(file_path)
-        .map_err(|e| format!("Failed to stat CSV: {}", e))?;
+    let csv_meta =
+        std::fs::metadata(file_path).map_err(|e| format!("Failed to stat CSV: {}", e))?;
     if csv_meta.len() > 10 * 1024 * 1024 {
         return Err("CSV file exceeds 10MB limit".to_string());
     }
-    let content = std::fs::read_to_string(file_path)
-        .map_err(|e| format!("Failed to read CSV: {}", e))?;
+    let content =
+        std::fs::read_to_string(file_path).map_err(|e| format!("Failed to read CSV: {}", e))?;
     let rows: Vec<&str> = content.lines().collect();
 
-    compiler.add_command(1, 0x00E5FFFF, 20, 35, 300, 22, &format!("Spreadsheet: {}", filename));
+    compiler.add_command(
+        1,
+        0x00E5FFFF,
+        20,
+        35,
+        300,
+        22,
+        &format!("Spreadsheet: {}", filename),
+    );
 
     let mut current_y: u16 = 80;
     let col_width: u16 = 140;
@@ -76,7 +86,11 @@ fn convert_csv(file_path: &str) -> Result<Vec<u8>, String> {
             let cell_id = format!("{}_R{}C{}", sheet_id, r_idx, c_idx);
 
             compiler.add_triple(&sheet_id, "HAS_CELL", &cell_id);
-            compiler.add_triple(&cell_id, "COORDINATE", &format!("{}{}", (b'A' + c_idx as u8) as char, r_idx + 1));
+            compiler.add_triple(
+                &cell_id,
+                "COORDINATE",
+                &format!("{}{}", (b'A' + c_idx as u8) as char, r_idx + 1),
+            );
             compiler.add_triple(&cell_id, "VALUE", cell_val);
 
             let cell_x: u16 = 30 + c_idx as u16 * col_width;
@@ -96,7 +110,15 @@ fn convert_csv(file_path: &str) -> Result<Vec<u8>, String> {
                 0xECEFF1FF
             };
 
-            compiler.add_command(1, color, cell_x, current_y, col_width.saturating_sub(10), 16, cell_val);
+            compiler.add_command(
+                1,
+                color,
+                cell_x,
+                current_y,
+                col_width.saturating_sub(10),
+                16,
+                cell_val,
+            );
         }
         current_y = current_y.saturating_add(row_height);
     }
@@ -108,26 +130,35 @@ fn convert_csv(file_path: &str) -> Result<Vec<u8>, String> {
 
 fn convert_xlsx(file_path: &str) -> Result<Vec<u8>, String> {
     let mut compiler = NdaCompiler::new();
-    let filename = Path::new(file_path).file_name()
-        .and_then(|n| n.to_str()).unwrap_or("unknown.xlsx");
+    let filename = Path::new(file_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown.xlsx");
     let sheet_id = format!("XLSX_SHEET_{}", random_hex_id());
 
     compiler.add_triple(&sheet_id, "TYPE", "SpreadsheetGrid");
     compiler.add_triple(&sheet_id, "FILENAME", filename);
 
     let file_bytes = {
-        let meta = std::fs::metadata(file_path)
-            .map_err(|e| format!("Failed to stat XLSX: {}", e))?;
+        let meta =
+            std::fs::metadata(file_path).map_err(|e| format!("Failed to stat XLSX: {}", e))?;
         if meta.len() > 50 * 1024 * 1024 {
             return Err("XLSX file exceeds 50MB limit".to_string());
         }
-        std::fs::read(file_path)
-            .map_err(|e| format!("Failed to read XLSX: {}", e))?
+        std::fs::read(file_path).map_err(|e| format!("Failed to read XLSX: {}", e))?
     };
 
     let (_shared_strings, cells) = parse_xlsx_data(&file_bytes)?;
 
-    compiler.add_command(1, 0x00E5FFFF, 20, 35, 300, 22, &format!("Spreadsheet: {}", filename));
+    compiler.add_command(
+        1,
+        0x00E5FFFF,
+        20,
+        35,
+        300,
+        22,
+        &format!("Spreadsheet: {}", filename),
+    );
 
     let col_width: u16 = 140;
     let row_height: u16 = 25;
@@ -140,7 +171,9 @@ fn convert_xlsx(file_path: &str) -> Result<Vec<u8>, String> {
         for c in 0..4u32 {
             let coord = format!("{}{}", (b'A' + c as u8) as char, r + 1);
             let cell_val = cells.get(&coord).cloned().unwrap_or_default();
-            if cell_val.is_empty() { continue; }
+            if cell_val.is_empty() {
+                continue;
+            }
 
             let cell_id = format!("{}_{}", sheet_id, coord);
             compiler.add_triple(&sheet_id, "HAS_CELL", &cell_id);
@@ -150,7 +183,15 @@ fn convert_xlsx(file_path: &str) -> Result<Vec<u8>, String> {
             let cell_x: u16 = 30 + c as u16 * col_width;
 
             if r == 0 {
-                compiler.add_command(3, 0x00E5FFFF, cell_x.saturating_sub(5), 60, 1, 15 * row_height, "");
+                compiler.add_command(
+                    3,
+                    0x00E5FFFF,
+                    cell_x.saturating_sub(5),
+                    60,
+                    1,
+                    15 * row_height,
+                    "",
+                );
             }
 
             let color = if r == 0 {
@@ -163,7 +204,15 @@ fn convert_xlsx(file_path: &str) -> Result<Vec<u8>, String> {
                 0xECEFF1FF
             };
 
-            compiler.add_command(1, color, cell_x, current_y, col_width.saturating_sub(10), 16, &cell_val);
+            compiler.add_command(
+                1,
+                color,
+                cell_x,
+                current_y,
+                col_width.saturating_sub(10),
+                16,
+                &cell_val,
+            );
         }
     }
 
@@ -171,14 +220,16 @@ fn convert_xlsx(file_path: &str) -> Result<Vec<u8>, String> {
 }
 
 /// Parse XLSX shared strings and cell values from a zip archive.
-fn parse_xlsx_data(data: &[u8]) -> Result<(Vec<String>, std::collections::HashMap<String, String>), String> {
+fn parse_xlsx_data(
+    data: &[u8],
+) -> Result<(Vec<String>, std::collections::HashMap<String, String>), String> {
     use std::collections::HashMap;
-    use zip::ZipArchive;
     use std::io::Read;
+    use zip::ZipArchive;
 
     let cursor = std::io::Cursor::new(data);
-    let mut archive = ZipArchive::new(cursor)
-        .map_err(|e| format!("Failed to open XLSX zip: {}", e))?;
+    let mut archive =
+        ZipArchive::new(cursor).map_err(|e| format!("Failed to open XLSX zip: {}", e))?;
 
     let mut shared_strings = Vec::new();
     let mut cells: HashMap<String, String> = HashMap::new();
@@ -187,7 +238,8 @@ fn parse_xlsx_data(data: &[u8]) -> Result<(Vec<String>, std::collections::HashMa
     if let Ok(mut ss_entry) = archive.by_name("xl/sharedStrings.xml") {
         let mut ss_xml = String::new();
         let mut limited = std::io::Read::take(&mut ss_entry, 10 * 1024 * 1024);
-        limited.read_to_string(&mut ss_xml)
+        limited
+            .read_to_string(&mut ss_xml)
             .map_err(|e| format!("Failed to read sharedStrings.xml: {}", e))?;
         shared_strings = extract_xml_texts(&ss_xml, "t");
     }
@@ -196,7 +248,8 @@ fn parse_xlsx_data(data: &[u8]) -> Result<(Vec<String>, std::collections::HashMa
     if let Ok(mut sheet_entry) = archive.by_name("xl/worksheets/sheet1.xml") {
         let mut sheet_xml = String::new();
         let mut limited = std::io::Read::take(&mut sheet_entry, 10 * 1024 * 1024);
-        limited.read_to_string(&mut sheet_xml)
+        limited
+            .read_to_string(&mut sheet_xml)
             .map_err(|e| format!("Failed to read sheet1.xml: {}", e))?;
         cells = parse_xlsx_cells(&sheet_xml, &shared_strings);
     }
@@ -207,8 +260,8 @@ fn parse_xlsx_data(data: &[u8]) -> Result<(Vec<String>, std::collections::HashMa
 /// Extract text content from XML elements with the given tag name.
 /// Uses quick-xml for safe, spec-compliant XML parsing.
 fn extract_xml_texts(xml: &str, tag: &str) -> Vec<String> {
-    use quick_xml::Reader;
     use quick_xml::events::Event;
+    use quick_xml::Reader;
 
     let mut results = Vec::new();
     let mut reader = Reader::from_str(xml);
@@ -245,9 +298,12 @@ fn extract_xml_texts(xml: &str, tag: &str) -> Vec<String> {
 
 /// Parse XLSX cell elements from sheet XML.
 /// Uses quick-xml for safe, spec-compliant XML parsing.
-fn parse_xlsx_cells(xml: &str, shared_strings: &[String]) -> std::collections::HashMap<String, String> {
-    use quick_xml::Reader;
+fn parse_xlsx_cells(
+    xml: &str,
+    shared_strings: &[String],
+) -> std::collections::HashMap<String, String> {
     use quick_xml::events::Event;
+    use quick_xml::Reader;
     use std::collections::HashMap;
 
     let mut cells: HashMap<String, String> = HashMap::new();
@@ -309,7 +365,10 @@ fn parse_xlsx_cells(xml: &str, shared_strings: &[String]) -> std::collections::H
                             if cell_type == "s" {
                                 if let Ok(idx) = cell_value.parse::<usize>() {
                                     if idx < shared_strings.len() {
-                                        cells.insert(cell_coord.clone(), shared_strings[idx].clone());
+                                        cells.insert(
+                                            cell_coord.clone(),
+                                            shared_strings[idx].clone(),
+                                        );
                                     }
                                 }
                             } else {
@@ -335,21 +394,22 @@ fn parse_xlsx_cells(xml: &str, shared_strings: &[String]) -> std::collections::H
 
 fn convert_docx(file_path: &str) -> Result<Vec<u8>, String> {
     let mut compiler = NdaCompiler::new();
-    let filename = Path::new(file_path).file_name()
-        .and_then(|n| n.to_str()).unwrap_or("unknown.docx");
+    let filename = Path::new(file_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown.docx");
     let doc_id = format!("DOCX_FLOW_{}", random_hex_id());
 
     compiler.add_triple(&doc_id, "TYPE", "FlowLayoutDocument");
     compiler.add_triple(&doc_id, "FILENAME", filename);
 
     let file_bytes = {
-        let meta = std::fs::metadata(file_path)
-            .map_err(|e| format!("Failed to stat DOCX: {}", e))?;
+        let meta =
+            std::fs::metadata(file_path).map_err(|e| format!("Failed to stat DOCX: {}", e))?;
         if meta.len() > 50 * 1024 * 1024 {
             return Err("DOCX file exceeds 50MB limit".to_string());
         }
-        std::fs::read(file_path)
-            .map_err(|e| format!("Failed to read DOCX: {}", e))?
+        std::fs::read(file_path).map_err(|e| format!("Failed to read DOCX: {}", e))?
     };
 
     let paragraphs = parse_docx_paragraphs(&file_bytes)?;
@@ -373,7 +433,9 @@ fn convert_docx(file_path: &str) -> Result<Vec<u8>, String> {
                 current_y = current_y.saturating_add(22);
                 line = word.to_string();
             } else {
-                if !line.is_empty() { line.push(' '); }
+                if !line.is_empty() {
+                    line.push(' ');
+                }
                 line.push_str(word);
             }
         }
@@ -389,19 +451,20 @@ fn convert_docx(file_path: &str) -> Result<Vec<u8>, String> {
 
 /// Parse paragraphs from a DOCX zip archive.
 fn parse_docx_paragraphs(data: &[u8]) -> Result<Vec<String>, String> {
-    use quick_xml::Reader;
     use quick_xml::events::Event;
-    use zip::ZipArchive;
+    use quick_xml::Reader;
     use std::io::Read;
+    use zip::ZipArchive;
 
     let cursor = std::io::Cursor::new(data);
-    let mut archive = ZipArchive::new(cursor)
-        .map_err(|e| format!("Failed to open DOCX zip: {}", e))?;
+    let mut archive =
+        ZipArchive::new(cursor).map_err(|e| format!("Failed to open DOCX zip: {}", e))?;
 
     let mut doc_xml = String::new();
     if let Ok(mut entry) = archive.by_name("word/document.xml") {
         let mut limited = std::io::Read::take(&mut entry, 10 * 1024 * 1024);
-        limited.read_to_string(&mut doc_xml)
+        limited
+            .read_to_string(&mut doc_xml)
             .map_err(|e| format!("Failed to read document.xml: {}", e))?;
     } else {
         return Err("DOCX does not contain word/document.xml".to_string());
@@ -464,21 +527,22 @@ fn parse_docx_paragraphs(data: &[u8]) -> Result<Vec<String>, String> {
 
 fn convert_pdf(file_path: &str) -> Result<Vec<u8>, String> {
     let mut compiler = NdaCompiler::new();
-    let filename = Path::new(file_path).file_name()
-        .and_then(|n| n.to_str()).unwrap_or("unknown.pdf");
+    let filename = Path::new(file_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown.pdf");
     let pdf_id = format!("PDF_DOC_{}", random_hex_id());
 
     compiler.add_triple(&pdf_id, "TYPE", "PdfDocument");
     compiler.add_triple(&pdf_id, "FILENAME", filename);
 
     let file_bytes = {
-        let meta = std::fs::metadata(file_path)
-            .map_err(|e| format!("Failed to stat PDF: {}", e))?;
+        let meta =
+            std::fs::metadata(file_path).map_err(|e| format!("Failed to stat PDF: {}", e))?;
         if meta.len() > 50 * 1024 * 1024 {
             return Err("PDF file exceeds 50MB limit".to_string());
         }
-        std::fs::read(file_path)
-            .map_err(|e| format!("Failed to read PDF: {}", e))?
+        std::fs::read(file_path).map_err(|e| format!("Failed to read PDF: {}", e))?
     };
 
     // Try to extract text from PDF using ASCII + regex (same approach as C#)
@@ -532,11 +596,14 @@ fn convert_pdf(file_path: &str) -> Result<Vec<u8>, String> {
 fn convert_image(file_path: &str, ocr_text: Option<&str>) -> Result<Vec<u8>, String> {
     let mut compiler = NdaCompiler::new();
     let path = Path::new(file_path);
-    let filename = path.file_name()
-        .and_then(|n| n.to_str()).unwrap_or("unknown.img");
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown.img");
     let img_id = format!("IMG_ASSET_{}", random_hex_id());
 
-    let ext = path.extension()
+    let ext = path
+        .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_lowercase())
         .unwrap_or_default();
@@ -546,13 +613,12 @@ fn convert_image(file_path: &str, ocr_text: Option<&str>) -> Result<Vec<u8>, Str
     compiler.add_triple(&img_id, "FORMAT", &ext.to_uppercase());
 
     let file_bytes = {
-        let meta = std::fs::metadata(file_path)
-            .map_err(|e| format!("Failed to stat image: {}", e))?;
+        let meta =
+            std::fs::metadata(file_path).map_err(|e| format!("Failed to stat image: {}", e))?;
         if meta.len() > 50 * 1024 * 1024 {
             return Err("Image file exceeds 50MB limit".to_string());
         }
-        std::fs::read(file_path)
-            .map_err(|e| format!("Failed to read image: {}", e))?
+        std::fs::read(file_path).map_err(|e| format!("Failed to read image: {}", e))?
     };
 
     let mime_type = match ext.as_str() {
@@ -562,7 +628,7 @@ fn convert_image(file_path: &str, ocr_text: Option<&str>) -> Result<Vec<u8>, Str
         _ => "application/octet-stream",
     };
 
-    use base64::{Engine as _, engine::general_purpose};
+    use base64::{engine::general_purpose, Engine as _};
     let base64_data = general_purpose::STANDARD.encode(&file_bytes);
     let data_url = format!("data:{};base64,{}", mime_type, base64_data);
 
@@ -573,7 +639,11 @@ fn convert_image(file_path: &str, ocr_text: Option<&str>) -> Result<Vec<u8>, Str
         compiler.add_command(3, 0x00E5FF33, 30, 30, 200, 30, "");
         compiler.add_command(1, 0x00E5FFFF, 35, 50, 190, 16, ocr);
     } else {
-        compiler.add_triple(&img_id, "AI_OCR_CAPTION", "Image asset compiled into unilateral NDA frame.");
+        compiler.add_triple(
+            &img_id,
+            "AI_OCR_CAPTION",
+            "Image asset compiled into unilateral NDA frame.",
+        );
     }
 
     Ok(compiler.compile())
@@ -584,11 +654,14 @@ fn convert_image(file_path: &str, ocr_text: Option<&str>) -> Result<Vec<u8>, Str
 fn convert_code(file_path: &str) -> Result<Vec<u8>, String> {
     let mut compiler = NdaCompiler::new();
     let path = Path::new(file_path);
-    let filename = path.file_name()
-        .and_then(|n| n.to_str()).unwrap_or("unknown.txt");
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown.txt");
     let code_id = format!("CODE_ASSET_{}", random_hex_id());
 
-    let ext = path.extension()
+    let ext = path
+        .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_lowercase())
         .unwrap_or_default();
@@ -610,7 +683,15 @@ fn convert_code(file_path: &str) -> Result<Vec<u8>, String> {
 
     compiler.add_triple(&code_id, "LINE_COUNT", &lines.len().to_string());
 
-    compiler.add_command(1, 0x00E5FFFF, 30, 35, 400, 22, &format!("Code Editor: {}", filename));
+    compiler.add_command(
+        1,
+        0x00E5FFFF,
+        30,
+        35,
+        400,
+        22,
+        &format!("Code Editor: {}", filename),
+    );
     compiler.add_command(3, 0x0A0B0EFF, 20, 50, 600, 420, ""); // dark bg
 
     let mut current_y: u16 = 80;
@@ -619,16 +700,24 @@ fn convert_code(file_path: &str) -> Result<Vec<u8>, String> {
         compiler.add_command(1, 0x546E7AFF, 30, current_y, 40, 16, &line_num);
 
         let trimmed = line_text.trim();
-        let color = if trimmed.starts_with("//") || trimmed.starts_with('#')
-            || trimmed.starts_with("/*") || trimmed.starts_with('*')
+        let color = if trimmed.starts_with("//")
+            || trimmed.starts_with('#')
+            || trimmed.starts_with("/*")
+            || trimmed.starts_with('*')
         {
             0x00E676FF // comment green
-        } else if trimmed.starts_with("using ") || trimmed.starts_with("import ")
-            || trimmed.starts_with("namespace ") || trimmed.starts_with("public ")
-            || trimmed.starts_with("private ") || trimmed.starts_with("class ")
-            || trimmed.starts_with("struct ") || trimmed.starts_with("return ")
-            || trimmed.starts_with("void ") || trimmed.starts_with("fn ")
-            || trimmed.starts_with("let ") || trimmed.starts_with("const ")
+        } else if trimmed.starts_with("using ")
+            || trimmed.starts_with("import ")
+            || trimmed.starts_with("namespace ")
+            || trimmed.starts_with("public ")
+            || trimmed.starts_with("private ")
+            || trimmed.starts_with("class ")
+            || trimmed.starts_with("struct ")
+            || trimmed.starts_with("return ")
+            || trimmed.starts_with("void ")
+            || trimmed.starts_with("fn ")
+            || trimmed.starts_with("let ")
+            || trimmed.starts_with("const ")
             || trimmed.starts_with("package ")
         {
             0xF48FB1FF // keyword pink
@@ -647,8 +736,10 @@ fn convert_code(file_path: &str) -> Result<Vec<u8>, String> {
 
 fn convert_binary(file_path: &str) -> Result<Vec<u8>, String> {
     let mut compiler = NdaCompiler::new();
-    let filename = Path::new(file_path).file_name()
-        .and_then(|n| n.to_str()).unwrap_or("unknown.bin");
+    let filename = Path::new(file_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown.bin");
     let bin_id = format!("BIN_ASSET_{}", random_hex_id());
 
     compiler.add_triple(&bin_id, "TYPE", "BinaryPayload");
@@ -660,17 +751,24 @@ fn convert_binary(file_path: &str) -> Result<Vec<u8>, String> {
         if meta.len() > 50 * 1024 * 1024 {
             return Err("Binary file exceeds 50MB limit".to_string());
         }
-        std::fs::read(file_path)
-            .map_err(|e| format!("Failed to read binary file: {}", e))?
+        std::fs::read(file_path).map_err(|e| format!("Failed to read binary file: {}", e))?
     };
     compiler.add_triple(&bin_id, "SIZE_BYTES", &bytes.len().to_string());
 
-    use base64::{Engine as _, engine::general_purpose};
+    use base64::{engine::general_purpose, Engine as _};
     let base64_data = general_purpose::STANDARD.encode(&bytes);
     compiler.add_triple(&bin_id, "BASE64_DATA", &base64_data);
 
     // Terminal view layout
-    compiler.add_command(1, 0x00E5FFFF, 30, 35, 400, 22, &format!("Binary Ingestion: {}", filename));
+    compiler.add_command(
+        1,
+        0x00E5FFFF,
+        30,
+        35,
+        400,
+        22,
+        &format!("Binary Ingestion: {}", filename),
+    );
     compiler.add_command(3, 0x0D0E12FF, 20, 55, 600, 330, ""); // dark terminal bg
 
     // Hex dump (up to 160 bytes = 10 lines)
@@ -688,7 +786,11 @@ fn convert_binary(file_path: &str) -> Result<Vec<u8>, String> {
             if idx < bytes.len() {
                 hex_parts.push_str(&format!("{:02X} ", bytes[idx]));
                 let ch = bytes[idx];
-                ascii_parts.push(if (32..=126).contains(&ch) { ch as char } else { '.' });
+                ascii_parts.push(if (32..=126).contains(&ch) {
+                    ch as char
+                } else {
+                    '.'
+                });
             } else {
                 hex_parts.push_str("   ");
             }
@@ -701,7 +803,15 @@ fn convert_binary(file_path: &str) -> Result<Vec<u8>, String> {
 
     // Download button
     compiler.add_command(3, 0x00E676FF, 120, 400, 400, 40, "");
-    compiler.add_command(1, 0x073B1BFF, 195, 425, 250, 18, "UNPACK & DOWNLOAD ORIGINAL FILE");
+    compiler.add_command(
+        1,
+        0x073B1BFF,
+        195,
+        425,
+        250,
+        18,
+        "UNPACK & DOWNLOAD ORIGINAL FILE",
+    );
 
     Ok(compiler.compile())
 }
@@ -732,10 +842,18 @@ mod tests {
         // Create a temp CSV
         let dir = std::env::temp_dir();
         let csv_path = dir.join("test_velocity_convert.csv");
-        std::fs::write(&csv_path, "Name,Value,Status\nAlice,100,OK\nBob,-50,Pending\n").unwrap();
+        std::fs::write(
+            &csv_path,
+            "Name,Value,Status\nAlice,100,OK\nBob,-50,Pending\n",
+        )
+        .unwrap();
 
         let result = convert_to_nda(csv_path.to_str().unwrap());
-        assert!(result.is_ok(), "CSV conversion should succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "CSV conversion should succeed: {:?}",
+            result
+        );
         let nda_data = result.unwrap();
 
         // Verify it's a valid NDA document
@@ -746,7 +864,7 @@ mod tests {
         // Check for spreadsheet type triple
         let has_type = doc.triples.iter().any(|t| {
             doc.get_string(t.predicate_offset).unwrap_or_default() == "TYPE"
-            && doc.get_string(t.object_offset).unwrap_or_default() == "SpreadsheetGrid"
+                && doc.get_string(t.object_offset).unwrap_or_default() == "SpreadsheetGrid"
         });
         assert!(has_type, "Should have TYPE=SpreadsheetGrid triple");
 
@@ -760,19 +878,23 @@ mod tests {
         std::fs::write(&code_path, "fn main() {\n    println!(\"Hello\");\n}\n").unwrap();
 
         let result = convert_to_nda(code_path.to_str().unwrap());
-        assert!(result.is_ok(), "Code conversion should succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Code conversion should succeed: {:?}",
+            result
+        );
         let nda_data = result.unwrap();
 
         let doc = NdaDocument::read(&nda_data).unwrap();
         let has_type = doc.triples.iter().any(|t| {
             doc.get_string(t.predicate_offset).unwrap_or_default() == "TYPE"
-            && doc.get_string(t.object_offset).unwrap_or_default() == "SourceCode"
+                && doc.get_string(t.object_offset).unwrap_or_default() == "SourceCode"
         });
         assert!(has_type, "Should have TYPE=SourceCode triple");
 
         let has_lang = doc.triples.iter().any(|t| {
             doc.get_string(t.predicate_offset).unwrap_or_default() == "LANGUAGE"
-            && doc.get_string(t.object_offset).unwrap_or_default() == "RS"
+                && doc.get_string(t.object_offset).unwrap_or_default() == "RS"
         });
         assert!(has_lang, "Should have LANGUAGE=RS triple");
 
@@ -786,20 +908,25 @@ mod tests {
         std::fs::write(&bin_path, &[0x00, 0x01, 0x02, 0xFF, 0xFE, 0x41, 0x42]).unwrap();
 
         let result = convert_to_nda(bin_path.to_str().unwrap());
-        assert!(result.is_ok(), "Binary conversion should succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Binary conversion should succeed: {:?}",
+            result
+        );
         let nda_data = result.unwrap();
 
         let doc = NdaDocument::read(&nda_data).unwrap();
         let has_type = doc.triples.iter().any(|t| {
             doc.get_string(t.predicate_offset).unwrap_or_default() == "TYPE"
-            && doc.get_string(t.object_offset).unwrap_or_default() == "BinaryPayload"
+                && doc.get_string(t.object_offset).unwrap_or_default() == "BinaryPayload"
         });
         assert!(has_type, "Should have TYPE=BinaryPayload triple");
 
         // Should have BASE64_DATA triple
-        let has_b64 = doc.triples.iter().any(|t| {
-            doc.get_string(t.predicate_offset).unwrap_or_default() == "BASE64_DATA"
-        });
+        let has_b64 = doc
+            .triples
+            .iter()
+            .any(|t| doc.get_string(t.predicate_offset).unwrap_or_default() == "BASE64_DATA");
         assert!(has_b64, "Should have BASE64_DATA triple");
 
         let _ = std::fs::remove_file(&bin_path);
@@ -814,9 +941,10 @@ mod tests {
         let result = convert_to_nda(path.to_str().unwrap());
         assert!(result.is_ok());
         let doc = NdaDocument::read(&result.unwrap()).unwrap();
-        let has_type = doc.triples.iter().any(|t| {
-            doc.get_string(t.object_offset).unwrap_or_default() == "BinaryPayload"
-        });
+        let has_type = doc
+            .triples
+            .iter()
+            .any(|t| doc.get_string(t.object_offset).unwrap_or_default() == "BinaryPayload");
         assert!(has_type);
 
         let _ = std::fs::remove_file(&path);
@@ -834,17 +962,22 @@ mod tests {
         let dir = std::env::temp_dir();
         let pdf_path = dir.join("test_velocity_convert.pdf");
         // Fake PDF with Tj text objects that the regex will extract
-        let fake_pdf = b"%PDF-1.4\n(Some Header Text) Tj\n(Body content here) Tj\n(Another line) Tj\n%%EOF";
+        let fake_pdf =
+            b"%PDF-1.4\n(Some Header Text) Tj\n(Body content here) Tj\n(Another line) Tj\n%%EOF";
         std::fs::write(&pdf_path, fake_pdf).unwrap();
 
         let result = convert_to_nda(pdf_path.to_str().unwrap());
-        assert!(result.is_ok(), "PDF conversion should succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "PDF conversion should succeed: {:?}",
+            result
+        );
         let nda_data = result.unwrap();
 
         let doc = NdaDocument::read(&nda_data).unwrap();
         let has_type = doc.triples.iter().any(|t| {
             doc.get_string(t.predicate_offset).unwrap_or_default() == "TYPE"
-            && doc.get_string(t.object_offset).unwrap_or_default() == "PdfDocument"
+                && doc.get_string(t.object_offset).unwrap_or_default() == "PdfDocument"
         });
         assert!(has_type, "Should have TYPE=PdfDocument triple");
         assert!(doc.commands.len() > 0, "Should have display commands");
@@ -870,7 +1003,10 @@ mod tests {
             let text = doc.get_string(t.object_offset).unwrap_or_default();
             text.contains("OCR") || text.contains("vision model")
         });
-        assert!(has_fallback, "Should have fallback OCR text for scanned PDF");
+        assert!(
+            has_fallback,
+            "Should have fallback OCR text for scanned PDF"
+        );
 
         let _ = std::fs::remove_file(&pdf_path);
     }
@@ -886,35 +1022,42 @@ mod tests {
             0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, // 1x1
             0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE, // 8-bit RGB
             0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, // IDAT chunk
-            0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00, 0x00,
-            0x00, 0x02, 0x00, 0x01, 0xE2, 0x21, 0xBC, 0x33,
-            0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, // IEND chunk
+            0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01, 0xE2, 0x21,
+            0xBC, 0x33, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, // IEND chunk
             0xAE, 0x42, 0x60, 0x82,
         ];
         std::fs::write(&img_path, minimal_png).unwrap();
 
         let result = convert_to_nda(img_path.to_str().unwrap());
-        assert!(result.is_ok(), "Image conversion should succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Image conversion should succeed: {:?}",
+            result
+        );
         let nda_data = result.unwrap();
 
         let doc = NdaDocument::read(&nda_data).unwrap();
         let has_type = doc.triples.iter().any(|t| {
             doc.get_string(t.predicate_offset).unwrap_or_default() == "TYPE"
-            && doc.get_string(t.object_offset).unwrap_or_default() == "ImageDocument"
+                && doc.get_string(t.object_offset).unwrap_or_default() == "ImageDocument"
         });
         assert!(has_type, "Should have TYPE=ImageDocument triple");
 
         let has_format = doc.triples.iter().any(|t| {
             doc.get_string(t.predicate_offset).unwrap_or_default() == "FORMAT"
-            && doc.get_string(t.object_offset).unwrap_or_default() == "PNG"
+                && doc.get_string(t.object_offset).unwrap_or_default() == "PNG"
         });
         assert!(has_format, "Should have FORMAT=PNG triple");
 
         // Should have AI_OCR_CAPTION since no OCR text provided
-        let has_ocr_caption = doc.triples.iter().any(|t| {
-            doc.get_string(t.predicate_offset).unwrap_or_default() == "AI_OCR_CAPTION"
-        });
-        assert!(has_ocr_caption, "Should have AI_OCR_CAPTION for image without OCR");
+        let has_ocr_caption = doc
+            .triples
+            .iter()
+            .any(|t| doc.get_string(t.predicate_offset).unwrap_or_default() == "AI_OCR_CAPTION");
+        assert!(
+            has_ocr_caption,
+            "Should have AI_OCR_CAPTION for image without OCR"
+        );
 
         let _ = std::fs::remove_file(&img_path);
     }
@@ -927,19 +1070,23 @@ mod tests {
         std::fs::write(&code_path, code).unwrap();
 
         let result = convert_to_nda(code_path.to_str().unwrap());
-        assert!(result.is_ok(), "Code with comments conversion should succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Code with comments conversion should succeed: {:?}",
+            result
+        );
         let nda_data = result.unwrap();
 
         let doc = NdaDocument::read(&nda_data).unwrap();
         let has_type = doc.triples.iter().any(|t| {
             doc.get_string(t.predicate_offset).unwrap_or_default() == "TYPE"
-            && doc.get_string(t.object_offset).unwrap_or_default() == "SourceCode"
+                && doc.get_string(t.object_offset).unwrap_or_default() == "SourceCode"
         });
         assert!(has_type, "Should have TYPE=SourceCode triple");
 
         let has_lang = doc.triples.iter().any(|t| {
             doc.get_string(t.predicate_offset).unwrap_or_default() == "LANGUAGE"
-            && doc.get_string(t.object_offset).unwrap_or_default() == "JS"
+                && doc.get_string(t.object_offset).unwrap_or_default() == "JS"
         });
         assert!(has_lang, "Should have LANGUAGE=JS triple");
 
@@ -950,13 +1097,20 @@ mod tests {
     fn test_convert_csv_with_positive_values() {
         let dir = std::env::temp_dir();
         let csv_path = dir.join("test_velocity_positive.csv");
-        std::fs::write(&csv_path, "Item,Change\nStock A,+25.5\nStock B,-10.3\nStock C,normal\n").unwrap();
+        std::fs::write(
+            &csv_path,
+            "Item,Change\nStock A,+25.5\nStock B,-10.3\nStock C,normal\n",
+        )
+        .unwrap();
 
         let result = convert_to_nda(csv_path.to_str().unwrap());
         assert!(result.is_ok());
         let nda_data = result.unwrap();
         let doc = NdaDocument::read(&nda_data).unwrap();
-        assert!(doc.commands.len() > 0, "Should have display commands for CSV with +/- values");
+        assert!(
+            doc.commands.len() > 0,
+            "Should have display commands for CSV with +/- values"
+        );
 
         let _ = std::fs::remove_file(&csv_path);
     }
@@ -1005,22 +1159,29 @@ mod tests {
         zip.finish().unwrap();
 
         let result = convert_to_nda(xlsx_path.to_str().unwrap());
-        assert!(result.is_ok(), "XLSX conversion should succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "XLSX conversion should succeed: {:?}",
+            result
+        );
         let nda_data = result.unwrap();
 
         let doc = NdaDocument::read(&nda_data).unwrap();
         let has_type = doc.triples.iter().any(|t| {
             doc.get_string(t.predicate_offset).unwrap_or_default() == "TYPE"
-            && doc.get_string(t.object_offset).unwrap_or_default() == "SpreadsheetGrid"
+                && doc.get_string(t.object_offset).unwrap_or_default() == "SpreadsheetGrid"
         });
         assert!(has_type, "Should have TYPE=SpreadsheetGrid triple for XLSX");
 
         // Should have cell values from shared strings
         let has_cell = doc.triples.iter().any(|t| {
             doc.get_string(t.predicate_offset).unwrap_or_default() == "VALUE"
-            && doc.get_string(t.object_offset).unwrap_or_default() == "Header1"
+                && doc.get_string(t.object_offset).unwrap_or_default() == "Header1"
         });
-        assert!(has_cell, "Should have cell VALUE=Header1 from shared strings");
+        assert!(
+            has_cell,
+            "Should have cell VALUE=Header1 from shared strings"
+        );
 
         let _ = std::fs::remove_file(&xlsx_path);
     }
@@ -1055,15 +1216,22 @@ mod tests {
         zip.finish().unwrap();
 
         let result = convert_to_nda(docx_path.to_str().unwrap());
-        assert!(result.is_ok(), "DOCX conversion should succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "DOCX conversion should succeed: {:?}",
+            result
+        );
         let nda_data = result.unwrap();
 
         let doc = NdaDocument::read(&nda_data).unwrap();
         let has_type = doc.triples.iter().any(|t| {
             doc.get_string(t.predicate_offset).unwrap_or_default() == "TYPE"
-            && doc.get_string(t.object_offset).unwrap_or_default() == "FlowLayoutDocument"
+                && doc.get_string(t.object_offset).unwrap_or_default() == "FlowLayoutDocument"
         });
-        assert!(has_type, "Should have TYPE=FlowLayoutDocument triple for DOCX");
+        assert!(
+            has_type,
+            "Should have TYPE=FlowLayoutDocument triple for DOCX"
+        );
 
         // Should have paragraph text
         let has_para = doc.triples.iter().any(|t| {
@@ -1106,7 +1274,10 @@ mod tests {
         let id1 = random_hex_id();
         let id2 = random_hex_id();
         assert_eq!(id1.len(), 8, "Hex ID should be 8 chars");
-        assert!(id1.chars().all(|c| c.is_ascii_hexdigit()), "Should be hex digits");
+        assert!(
+            id1.chars().all(|c| c.is_ascii_hexdigit()),
+            "Should be hex digits"
+        );
         // IDs might collide if nanos are same, but format should be consistent
         assert_eq!(id2.len(), 8);
     }

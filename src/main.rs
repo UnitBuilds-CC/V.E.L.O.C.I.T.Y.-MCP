@@ -3,9 +3,9 @@ use std::process;
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "http")]
 use std::sync::Arc;
-use tracing::{info, error, warn};
+use tracing::{error, info, warn};
 
-use velocity_mcp::{protocol, registry, benchmark, audit, config::ServerConfig, plugins};
+use velocity_mcp::{audit, benchmark, config::ServerConfig, plugins, protocol, registry};
 
 /// Server version string, referenced by all protocol handlers and help text.
 pub const VERSION: &str = velocity_mcp::VERSION;
@@ -225,7 +225,12 @@ fn main() {
                 enable_rate_limit: config.http.enable_rate_limit,
                 cors_origins: config.http.cors_origins.clone(),
             };
-            if let Err(e) = rt.block_on(velocity_mcp::transport::http::run_http_server(addr, shutdown, Some(security_config), tls_config)) {
+            if let Err(e) = rt.block_on(velocity_mcp::transport::http::run_http_server(
+                addr,
+                shutdown,
+                Some(security_config),
+                tls_config,
+            )) {
                 error!(error = %e, "HTTP server encountered error");
                 eprintln!("HTTP server encountered error: {}", e);
                 process::exit(1);
@@ -238,14 +243,17 @@ fn main() {
         }
         _ => {
             error!(mode = mode, "Invalid mode");
-            eprintln!("Error: Invalid mode '{}'. Supported modes: stdio, shmem, http", mode);
+            eprintln!(
+                "Error: Invalid mode '{}'. Supported modes: stdio, shmem, http",
+                mode
+            );
             process::exit(1);
         }
     }
 
     // Flush audit log to disk on shutdown
-    let audit_path = std::env::var("VELOCITY_AUDIT_LOG_PATH")
-        .unwrap_or_else(|_| "audit_logs".to_string());
+    let audit_path =
+        std::env::var("VELOCITY_AUDIT_LOG_PATH").unwrap_or_else(|_| "audit_logs".to_string());
     match audit::flush_audit(&audit_path) {
         Ok(n) => info!(entries = n, path = audit_path, "Audit log flushed to disk"),
         Err(e) => warn!(error = %e, "Failed to flush audit log"),
@@ -271,5 +279,7 @@ fn print_help() {
     println!();
     println!("Environment Variables:");
     println!("  VELOCITY_CSHARP_PATH          Override path to C# NdaMcpServer.exe");
-    println!("  RUST_LOG                      Set log level (e.g., info, debug, trace). Default: info");
+    println!(
+        "  RUST_LOG                      Set log level (e.g., info, debug, trace). Default: info"
+    );
 }

@@ -1,14 +1,17 @@
-use std::time::Instant;
-use std::hint::black_box;
-use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
-use std::thread;
-use tracing::info;
-use serde_json::{json, Value};
-use crate::protocol::nmcp_binary::NmcpBinaryFrame;
-use crate::protocol::nda_native;
 use crate::ipc::shmem::SharedMemoryBuffer;
+use crate::protocol::nda_native;
+use crate::protocol::nmcp_binary::NmcpBinaryFrame;
 use crate::registry;
 use crate::wasm_runtime::WasmRuntime;
+use serde_json::{json, Value};
+use std::hint::black_box;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
+use std::thread;
+use std::time::Instant;
+use tracing::info;
 
 pub fn run_benchmarks() {
     info!("Starting V.E.L.O.C.I.T.Y.-MCP v3.0.0 Performance Benchmark Suite");
@@ -29,14 +32,14 @@ pub fn run_benchmarks() {
     bench_nmcp_conversion();
     bench_audit_multi_tenant();
     bench_cross_language_tools();
-    
+
     // v3.0 feature benchmarks
     #[cfg(feature = "oauth2")]
     bench_oauth2_encryption();
-    
+
     #[cfg(feature = "http")]
     bench_streaming_chunks();
-    
+
     #[cfg(feature = "database")]
     bench_database_queries();
 
@@ -57,12 +60,18 @@ fn bench_json_parsing() {
     for _ in 0..iterations {
         let val: Value = serde_json::from_str(black_box(json_req)).unwrap();
         if let Some(method) = val["method"].as_str() {
-            for b in method.bytes() { checksum = checksum.wrapping_add(b as u32); }
+            for b in method.bytes() {
+                checksum = checksum.wrapping_add(b as u32);
+            }
         }
     }
     let json_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
     black_box(checksum);
-    println!("  JSON-RPC parse:  {:.1} ns/req  ({:.2}M req/s)", json_ns, 1000.0 / json_ns);
+    println!(
+        "  JSON-RPC parse:  {:.1} ns/req  ({:.2}M req/s)",
+        json_ns,
+        1000.0 / json_ns
+    );
 }
 
 fn bench_nda_native_parsing() {
@@ -72,10 +81,14 @@ fn bench_nda_native_parsing() {
         nda_native::METHOD_TOOLS_CALL,
         &json!(101),
         &json!({"name": "read_nda", "arguments": {"ndaPath": "C:/invoices/inv-001.nda"}}),
-    ).unwrap();
+    )
+    .unwrap();
     let iterations = 1_000_000;
 
-    println!("  Zero-alloc parse + Merkle verify ({} iterations)...", iterations);
+    println!(
+        "  Zero-alloc parse + Merkle verify ({} iterations)...",
+        iterations
+    );
     let start = Instant::now();
     let mut checksum: u32 = 0;
     for _ in 0..iterations {
@@ -91,7 +104,11 @@ fn bench_nda_native_parsing() {
     }
     let nda_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
     black_box(checksum);
-    println!("  NDA-native parse: {:.1} ns/req  ({:.2}M req/s)", nda_ns, 1000.0 / nda_ns);
+    println!(
+        "  NDA-native parse: {:.1} ns/req  ({:.2}M req/s)",
+        nda_ns,
+        1000.0 / nda_ns
+    );
 
     let mut binary_buffer = Vec::new();
     binary_buffer.extend_from_slice(b"NMCP");
@@ -103,11 +120,17 @@ fn bench_nda_native_parsing() {
     let mut checksum2: u32 = 0;
     for _ in 0..iterations {
         let f = NmcpBinaryFrame::parse(black_box(&binary_buffer)).unwrap();
-        for &b in f.payload { checksum2 = checksum2.wrapping_add(b as u32); }
+        for &b in f.payload {
+            checksum2 = checksum2.wrapping_add(b as u32);
+        }
     }
     let legacy_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
     black_box(checksum2);
-    println!("  Legacy frame parse: {:.1} ns/req  ({:.2}M req/s)", legacy_ns, 1000.0 / legacy_ns);
+    println!(
+        "  Legacy frame parse: {:.1} ns/req  ({:.2}M req/s)",
+        legacy_ns,
+        1000.0 / legacy_ns
+    );
 }
 
 fn bench_protocol_overhead() {
@@ -127,13 +150,19 @@ fn bench_protocol_overhead() {
     for _ in 0..iterations {
         let val: Value = serde_json::from_str(black_box(tool_call_json)).unwrap();
         if let Some(name) = val["params"]["name"].as_str() {
-            for b in name.bytes() { json_checksum = json_checksum.wrapping_add(b as u32); }
+            for b in name.bytes() {
+                json_checksum = json_checksum.wrapping_add(b as u32);
+            }
         }
         if let Some(args) = val["params"]["arguments"].as_object() {
             for (k, v) in args {
-                for b in k.bytes() { json_checksum = json_checksum.wrapping_add(b as u32); }
+                for b in k.bytes() {
+                    json_checksum = json_checksum.wrapping_add(b as u32);
+                }
                 if let Some(s) = v.as_str() {
-                    for b in s.bytes() { json_checksum = json_checksum.wrapping_add(b as u32); }
+                    for b in s.bytes() {
+                        json_checksum = json_checksum.wrapping_add(b as u32);
+                    }
                 }
             }
         }
@@ -147,13 +176,19 @@ fn bench_protocol_overhead() {
         match nda_native::parse_nda_request(black_box(&nda_frame)) {
             Ok(req) => {
                 if let Some(name) = req.data["name"].as_str() {
-                    for b in name.bytes() { nda_checksum = nda_checksum.wrapping_add(b as u32); }
+                    for b in name.bytes() {
+                        nda_checksum = nda_checksum.wrapping_add(b as u32);
+                    }
                 }
                 if let Some(args) = req.data["arguments"].as_object() {
                     for (k, v) in args {
-                        for b in k.bytes() { nda_checksum = nda_checksum.wrapping_add(b as u32); }
+                        for b in k.bytes() {
+                            nda_checksum = nda_checksum.wrapping_add(b as u32);
+                        }
                         if let Some(s) = v.as_str() {
-                            for b in s.bytes() { nda_checksum = nda_checksum.wrapping_add(b as u32); }
+                            for b in s.bytes() {
+                                nda_checksum = nda_checksum.wrapping_add(b as u32);
+                            }
                         }
                     }
                 }
@@ -166,10 +201,19 @@ fn bench_protocol_overhead() {
 
     println!("  JSON full parse + extract:   {:.1} ns", json_ns);
     println!("  NDA-native parse + extract:  {:.1} ns", nda_ns);
-    println!("  NDA speedup:                 {:.1}x faster", json_ns / nda_ns);
-    println!("  JSON frame size:             {} bytes", tool_call_json.len());
+    println!(
+        "  NDA speedup:                 {:.1}x faster",
+        json_ns / nda_ns
+    );
+    println!(
+        "  JSON frame size:             {} bytes",
+        tool_call_json.len()
+    );
     println!("  NDA frame size:              {} bytes", nda_frame.len());
-    println!("  Size reduction:              {:.1}x smaller", tool_call_json.len() as f64 / nda_frame.len() as f64);
+    println!(
+        "  Size reduction:              {:.1}x smaller",
+        tool_call_json.len() as f64 / nda_frame.len() as f64
+    );
 }
 
 fn bench_tlv_encoding() {
@@ -213,7 +257,10 @@ fn bench_tlv_encoding() {
     println!("  TLV decode:        {:.1} ns", decode_ns);
     println!("  TLV size:          {} bytes", encoded_size);
     println!("  JSON size:         {} bytes", json_str.len());
-    println!("  Size ratio:        {:.1}x", json_str.len() as f64 / encoded_size as f64);
+    println!(
+        "  Size ratio:        {:.1}x",
+        json_str.len() as f64 / encoded_size as f64
+    );
 
     let start = Instant::now();
     let mut checksum2: u32 = 0;
@@ -224,7 +271,10 @@ fn bench_tlv_encoding() {
     let json_parse_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
     black_box(checksum2);
     println!("  JSON parse:        {:.1} ns", json_parse_ns);
-    println!("  TLV decode speedup: {:.1}x over JSON parse", json_parse_ns / decode_ns);
+    println!(
+        "  TLV decode speedup: {:.1}x over JSON parse",
+        json_parse_ns / decode_ns
+    );
 }
 
 fn bench_flat_encoding() {
@@ -240,7 +290,10 @@ fn bench_flat_encoding() {
 
     println!("  TLV encoded size:  {} bytes", tlv_buf.len());
     println!("  Flat encoded size: {} bytes", flat_buf.len());
-    println!("  Size reduction:    {:.1}x smaller", tlv_buf.len() as f64 / flat_buf.len() as f64);
+    println!(
+        "  Size reduction:    {:.1}x smaller",
+        tlv_buf.len() as f64 / flat_buf.len() as f64
+    );
 
     let start = Instant::now();
     let mut tlv_size = 0;
@@ -285,14 +338,36 @@ fn bench_flat_encoding() {
     black_box(checksum2);
 
     println!("  TLV encode:        {:.1} ns", tlv_encode_ns);
-    println!("  Flat encode:       {:.1} ns  ({:.1}x faster)", flat_encode_ns, tlv_encode_ns / flat_encode_ns);
+    println!(
+        "  Flat encode:       {:.1} ns  ({:.1}x faster)",
+        flat_encode_ns,
+        tlv_encode_ns / flat_encode_ns
+    );
     println!("  TLV decode:        {:.1} ns", tlv_decode_ns);
-    println!("  Flat decode:       {:.1} ns  ({:.1}x faster)", flat_decode_ns, tlv_decode_ns / flat_decode_ns);
+    println!(
+        "  Flat decode:       {:.1} ns  ({:.1}x faster)",
+        flat_decode_ns,
+        tlv_decode_ns / flat_decode_ns
+    );
 
-    let flat_frame = nda_native::build_flat_request(nda_native::METHOD_TOOLS_CALL, &json!(1), "read_file", &args);
-    let tlv_frame = nda_native::build_nda_request(nda_native::METHOD_TOOLS_CALL, &json!(1), &json!({"name": "read_file", "arguments": &args})).unwrap();
+    let flat_frame = nda_native::build_flat_request(
+        nda_native::METHOD_TOOLS_CALL,
+        &json!(1),
+        "read_file",
+        &args,
+    );
+    let tlv_frame = nda_native::build_nda_request(
+        nda_native::METHOD_TOOLS_CALL,
+        &json!(1),
+        &json!({"name": "read_file", "arguments": &args}),
+    )
+    .unwrap();
     println!("  Full TLV frame:    {} bytes", tlv_frame.len());
-    println!("  Full flat frame:   {} bytes  ({:.1}x smaller)", flat_frame.len(), tlv_frame.len() as f64 / flat_frame.len() as f64);
+    println!(
+        "  Full flat frame:   {} bytes  ({:.1}x smaller)",
+        flat_frame.len(),
+        tlv_frame.len() as f64 / flat_frame.len() as f64
+    );
 }
 
 fn bench_shmem_throughput() {
@@ -300,7 +375,8 @@ fn bench_shmem_throughput() {
 
     let path = "temp_bench_shmem.bin";
     let _ = std::fs::remove_file(path);
-    let mut buffer = SharedMemoryBuffer::create_or_open(path).expect("Failed to create shmem buffer for benchmark");
+    let mut buffer = SharedMemoryBuffer::create_or_open(path)
+        .expect("Failed to create shmem buffer for benchmark");
 
     let json_req = r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"read_nda","arguments":{"ndaPath":"C:/test.nda"}},"id":1}"#;
     let iterations = 200_000;
@@ -308,11 +384,17 @@ fn bench_shmem_throughput() {
     println!("  JSON write+read shmem ({} iterations)...", iterations);
     let start = Instant::now();
     for _ in 0..iterations {
-        buffer.write_input(black_box(json_req)).expect("shmem write_input failed");
+        buffer
+            .write_input(black_box(json_req))
+            .expect("shmem write_input failed");
         let _ = black_box(buffer.read_input().expect("shmem read_input failed"));
     }
     let shmem_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
-    println!("  JSON shmem R/W:    {:.1} ns  ({:.2}M ops/s)", shmem_ns, 1000.0 / shmem_ns);
+    println!(
+        "  JSON shmem R/W:    {:.1} ns  ({:.2}M ops/s)",
+        shmem_ns,
+        1000.0 / shmem_ns
+    );
 
     let _ = std::fs::remove_file(path);
 }
@@ -322,23 +404,35 @@ fn bench_nda_native_shmem() {
 
     let path = "temp_bench_nda_shmem.bin";
     let _ = std::fs::remove_file(path);
-    let mut buffer = SharedMemoryBuffer::create_or_open(path).expect("Failed to create shmem buffer for benchmark");
+    let mut buffer = SharedMemoryBuffer::create_or_open(path)
+        .expect("Failed to create shmem buffer for benchmark");
 
     let nda_frame = nda_native::build_nda_request(
         nda_native::METHOD_TOOLS_CALL,
         &json!(1),
         &json!({"name": "read_nda", "arguments": {"ndaPath": "C:/test.nda"}}),
-    ).unwrap();
+    )
+    .unwrap();
     let iterations = 200_000;
 
     println!("  NDA write+read shmem ({} iterations)...", iterations);
     let start = Instant::now();
     for _ in 0..iterations {
-        buffer.write_output_raw(black_box(&nda_frame)).expect("shmem write_output_raw failed");
-        let _ = black_box(buffer.read_input_raw().expect("shmem read_input_raw failed"));
+        buffer
+            .write_output_raw(black_box(&nda_frame))
+            .expect("shmem write_output_raw failed");
+        let _ = black_box(
+            buffer
+                .read_input_raw()
+                .expect("shmem read_input_raw failed"),
+        );
     }
     let nda_shmem_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
-    println!("  NDA shmem R/W:     {:.1} ns  ({:.2}M ops/s)", nda_shmem_ns, 1000.0 / nda_shmem_ns);
+    println!(
+        "  NDA shmem R/W:     {:.1} ns  ({:.2}M ops/s)",
+        nda_shmem_ns,
+        1000.0 / nda_shmem_ns
+    );
 
     let _ = std::fs::remove_file(path);
 }
@@ -368,13 +462,20 @@ fn bench_concurrent_dispatch() {
             })
         }).collect();
 
-        for h in handles { h.join().expect("benchmark worker thread panicked"); }
+        for h in handles {
+            h.join().expect("benchmark worker thread panicked");
+        }
         let elapsed = start.elapsed();
         let total = counter.load(Ordering::Relaxed);
         let throughput = total as f64 / elapsed.as_secs_f64();
 
-        println!("  {} thread(s) x {} reqs:  {:>10.0} req/s  ({:.2} ms total)",
-            num_threads, requests_per_thread, throughput, elapsed.as_secs_f64() * 1000.0);
+        println!(
+            "  {} thread(s) x {} reqs:  {:>10.0} req/s  ({:.2} ms total)",
+            num_threads,
+            requests_per_thread,
+            throughput,
+            elapsed.as_secs_f64() * 1000.0
+        );
     }
 
     println!("\n  NDA-native concurrent dispatch:");
@@ -385,27 +486,38 @@ fn bench_concurrent_dispatch() {
             nda_native::METHOD_TOOLS_CALL,
             &json!(1),
             &json!({"name": "read_nda", "arguments": {"ndaPath": "C:/test.nda"}}),
-        ).unwrap();
+        )
+        .unwrap();
 
         let start = Instant::now();
-        let handles: Vec<_> = (0..num_threads).map(|_| {
-            let counter = Arc::clone(&counter);
-            let frame = nda_frame.clone();
-            thread::spawn(move || {
-                for _ in 0..requests_per_thread {
-                    let _ = nda_native::parse_nda_request(&frame).expect("NDA parse failed in benchmark");
-                    counter.fetch_add(1, Ordering::Relaxed);
-                }
+        let handles: Vec<_> = (0..num_threads)
+            .map(|_| {
+                let counter = Arc::clone(&counter);
+                let frame = nda_frame.clone();
+                thread::spawn(move || {
+                    for _ in 0..requests_per_thread {
+                        let _ = nda_native::parse_nda_request(&frame)
+                            .expect("NDA parse failed in benchmark");
+                        counter.fetch_add(1, Ordering::Relaxed);
+                    }
+                })
             })
-        }).collect();
+            .collect();
 
-        for h in handles { h.join().expect("benchmark worker thread panicked"); }
+        for h in handles {
+            h.join().expect("benchmark worker thread panicked");
+        }
         let elapsed = start.elapsed();
         let total = counter.load(Ordering::Relaxed);
         let throughput = total as f64 / elapsed.as_secs_f64();
 
-        println!("  {} thread(s) x {} reqs:  {:>10.0} req/s  ({:.2} ms total)",
-            num_threads, requests_per_thread, throughput, elapsed.as_secs_f64() * 1000.0);
+        println!(
+            "  {} thread(s) x {} reqs:  {:>10.0} req/s  ({:.2} ms total)",
+            num_threads,
+            requests_per_thread,
+            throughput,
+            elapsed.as_secs_f64() * 1000.0
+        );
     }
 }
 
@@ -421,12 +533,16 @@ fn bench_e2e_tool_calls() {
 
     let test_file = "temp_bench_test.txt";
     let test_nda = "temp_bench_test.nda";
-    std::fs::write(test_file, "Benchmark test content for NDA conversion.\n").expect("Failed to write test file for benchmark");
+    std::fs::write(test_file, "Benchmark test content for NDA conversion.\n")
+        .expect("Failed to write test file for benchmark");
 
     let iterations = 10;
     let cwd = std::env::current_dir().expect("Failed to get current directory for benchmark");
 
-    println!("  JSON tool call: convert_to_nda_document ({} iterations)...", iterations);
+    println!(
+        "  JSON tool call: convert_to_nda_document ({} iterations)...",
+        iterations
+    );
     let start = Instant::now();
     let mut successes = 0;
     for _ in 0..iterations {
@@ -464,13 +580,15 @@ fn bench_e2e_tool_calls() {
 #[cfg(feature = "oauth2")]
 fn bench_oauth2_encryption() {
     println!("\n─── 10. OAuth2 Token Encryption ─────────────────────────────────");
-    
-    use crate::oauth2::{OAuth2Token, encrypt_token, decrypt_token, set_encryption_key, generate_encryption_key};
-    
+
+    use crate::oauth2::{
+        decrypt_token, encrypt_token, generate_encryption_key, set_encryption_key, OAuth2Token,
+    };
+
     // Set up encryption key
     let key = generate_encryption_key();
     set_encryption_key(key);
-    
+
     let token = OAuth2Token {
         access_token: "test_access_token_12345".to_string(),
         refresh_token: Some("test_refresh_token_67890".to_string()),
@@ -479,9 +597,9 @@ fn bench_oauth2_encryption() {
         expires_at: None,
         issued_at: None,
     };
-    
+
     let iterations = 10_000;
-    
+
     // Benchmark encryption
     println!("  Token encryption ({} iterations)...", iterations);
     let start = Instant::now();
@@ -492,14 +610,20 @@ fn bench_oauth2_encryption() {
         black_box(encrypted);
     }
     let encrypt_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
-    println!("  Encrypt:  {:.1} μs  (size: {} bytes)", encrypt_ns / 1000.0, encrypted_size);
-    
+    println!(
+        "  Encrypt:  {:.1} μs  (size: {} bytes)",
+        encrypt_ns / 1000.0,
+        encrypted_size
+    );
+
     // Benchmark decryption
-    let encrypted = encrypt_token(&token).expect("OAuth2 token encryption failed for decrypt benchmark");
+    let encrypted =
+        encrypt_token(&token).expect("OAuth2 token encryption failed for decrypt benchmark");
     println!("  Token decryption ({} iterations)...", iterations);
     let start = Instant::now();
     for _ in 0..iterations {
-        let decrypted = decrypt_token(black_box(&encrypted)).expect("OAuth2 token decryption failed");
+        let decrypted =
+            decrypt_token(black_box(&encrypted)).expect("OAuth2 token decryption failed");
         black_box(decrypted);
     }
     let decrypt_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
@@ -509,18 +633,18 @@ fn bench_oauth2_encryption() {
 #[cfg(feature = "http")]
 fn bench_streaming_chunks() {
     println!("\n─── 11. Streaming Chunk Conversion ──────────────────────────────");
-    
-    use crate::streaming::{StreamingChunk, ProgressToken, chunk_to_sse_event};
-    
+
+    use crate::streaming::{chunk_to_sse_event, ProgressToken, StreamingChunk};
+
     let token = ProgressToken::String("bench_token".to_string());
     let chunk = StreamingChunk {
         chunk_id: 0,
         data: json!({"content": "test data for streaming benchmark", "index": 42}),
         is_final: Some(false),
     };
-    
+
     let iterations = 50_000;
-    
+
     println!("  Chunk to SSE event ({} iterations)...", iterations);
     let start = Instant::now();
     let mut event_size = 0;
@@ -530,15 +654,18 @@ fn bench_streaming_chunks() {
         black_box(event);
     }
     let chunk_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
-    println!("  Chunk conversion:  {:.1} ns  (event size: {} bytes)", chunk_ns, event_size);
+    println!(
+        "  Chunk conversion:  {:.1} ns  (event size: {} bytes)",
+        chunk_ns, event_size
+    );
 }
 
 #[cfg(feature = "database")]
 fn bench_database_queries() {
     println!("\n─── 12. Database Resource Queries ───────────────────────────────");
-    
-    use crate::resources::{register_db_resource, read_resource};
-    
+
+    use crate::resources::{read_resource, register_db_resource};
+
     // Register a simple query resource
     register_db_resource(
         "db://bench_test",
@@ -547,9 +674,9 @@ fn bench_database_queries() {
         "SELECT 1 as id, 'test' as name, 42 as value",
         vec![],
     );
-    
+
     let iterations = 100;
-    
+
     println!("  Database query execution ({} iterations)...", iterations);
     let start = Instant::now();
     let mut successes = 0;
@@ -566,7 +693,9 @@ fn bench_database_queries() {
 fn bench_audit_multi_tenant() {
     println!("\n─── 9. Multi-Tenant Audit Isolation ────────────────────────────");
 
-    use crate::audit::{AuditLog, AuditRegistry, AuditOutcome, set_session_context, clear_session_context};
+    use crate::audit::{
+        clear_session_context, set_session_context, AuditLog, AuditOutcome, AuditRegistry,
+    };
 
     let iterations = 100_000;
     let start = Instant::now();
@@ -577,7 +706,11 @@ fn bench_audit_multi_tenant() {
         log.record(&format!("tool_{}", i % 50), start, AuditOutcome::Success);
     }
     let direct_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
-    println!("  Direct AuditLog::record:   {:.1} ns/op  ({:.2}M ops/s)", direct_ns, 1000.0 / direct_ns);
+    println!(
+        "  Direct AuditLog::record:   {:.1} ns/op  ({:.2}M ops/s)",
+        direct_ns,
+        1000.0 / direct_ns
+    );
 
     // 2. Registry-routed recording (single session, via thread-local context)
     let registry = AuditRegistry::new();
@@ -585,14 +718,29 @@ fn bench_audit_multi_tenant() {
 
     let start = Instant::now();
     for i in 0..iterations {
-        let session_id = crate::audit::current_session_id().unwrap_or_else(|| "default".to_string());
+        let session_id =
+            crate::audit::current_session_id().unwrap_or_else(|| "default".to_string());
         let log = registry.get_or_create(&session_id);
-        log.record_with_context(&format!("tool_{}", i % 50), start, AuditOutcome::Success, None, Some(session_id));
+        log.record_with_context(
+            &format!("tool_{}", i % 50),
+            start,
+            AuditOutcome::Success,
+            None,
+            Some(session_id),
+        );
     }
     let routed_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
     clear_session_context();
-    println!("  Registry-routed record:    {:.1} ns/op  ({:.2}M ops/s)", routed_ns, 1000.0 / routed_ns);
-    println!("  Routing overhead:          {:.1} ns  ({:.1}x vs direct)", routed_ns - direct_ns, routed_ns / direct_ns);
+    println!(
+        "  Registry-routed record:    {:.1} ns/op  ({:.2}M ops/s)",
+        routed_ns,
+        1000.0 / routed_ns
+    );
+    println!(
+        "  Routing overhead:          {:.1} ns  ({:.1}x vs direct)",
+        routed_ns - direct_ns,
+        routed_ns / direct_ns
+    );
 
     // 3. Concurrent multi-session throughput
     println!("\n  Concurrent multi-session recording:");
@@ -603,26 +751,42 @@ fn bench_audit_multi_tenant() {
         let registry = Arc::new(AuditRegistry::new());
         let start = Instant::now();
 
-        let handles: Vec<_> = (0..n_sessions).map(|s| {
-            let registry = Arc::clone(&registry);
-            thread::spawn(move || {
-                let session_id = format!("session-{}", s);
-                set_session_context(session_id.clone());
-                for i in 0..ops_per_session {
-                    let sid = crate::audit::current_session_id().unwrap_or_else(|| "default".to_string());
-                    let log = registry.get_or_create(&sid);
-                    log.record_with_context(&format!("tool_{}", i % 20), Instant::now(), AuditOutcome::Success, None, Some(sid));
-                }
-                clear_session_context();
+        let handles: Vec<_> = (0..n_sessions)
+            .map(|s| {
+                let registry = Arc::clone(&registry);
+                thread::spawn(move || {
+                    let session_id = format!("session-{}", s);
+                    set_session_context(session_id.clone());
+                    for i in 0..ops_per_session {
+                        let sid = crate::audit::current_session_id()
+                            .unwrap_or_else(|| "default".to_string());
+                        let log = registry.get_or_create(&sid);
+                        log.record_with_context(
+                            &format!("tool_{}", i % 20),
+                            Instant::now(),
+                            AuditOutcome::Success,
+                            None,
+                            Some(sid),
+                        );
+                    }
+                    clear_session_context();
+                })
             })
-        }).collect();
+            .collect();
 
-        for h in handles { h.join().unwrap(); }
+        for h in handles {
+            h.join().unwrap();
+        }
         let elapsed = start.elapsed();
         let total_ops = n_sessions * ops_per_session;
         let throughput = total_ops as f64 / elapsed.as_secs_f64();
-        println!("  {} session(s) x {} ops:  {:>10.0} ops/s  ({:.2} ms total)",
-            n_sessions, ops_per_session, throughput, elapsed.as_secs_f64() * 1000.0);
+        println!(
+            "  {} session(s) x {} ops:  {:>10.0} ops/s  ({:.2} ms total)",
+            n_sessions,
+            ops_per_session,
+            throughput,
+            elapsed.as_secs_f64() * 1000.0
+        );
     }
 
     // 4. Aggregate cost across sessions
@@ -643,26 +807,37 @@ fn bench_audit_multi_tenant() {
         black_box(all.len());
     }
     let agg_ns = agg_start.elapsed().as_nanos() as f64 / agg_iterations as f64;
-    println!("  64 sessions x {} entries:  {:.1} μs/aggregate  ({} total entries)",
-        entries_per_session, agg_ns / 1000.0, 64 * entries_per_session);
+    println!(
+        "  64 sessions x {} entries:  {:.1} μs/aggregate  ({} total entries)",
+        entries_per_session,
+        agg_ns / 1000.0,
+        64 * entries_per_session
+    );
 
     // 5. Flush to disk
     let flush_path = "temp_bench_audit_flush";
     let _ = std::fs::remove_dir_all(flush_path);
     let flush_start = Instant::now();
-    let flushed = registry.flush_all(flush_path).expect("audit flush benchmark failed");
+    let flushed = registry
+        .flush_all(flush_path)
+        .expect("audit flush benchmark failed");
     let flush_ms = flush_start.elapsed().as_millis() as f64;
-    println!("\n  Flush {} sessions ({} entries):  {:.1} ms", 64, flushed, flush_ms);
+    println!(
+        "\n  Flush {} sessions ({} entries):  {:.1} ms",
+        64, flushed, flush_ms
+    );
     let _ = std::fs::remove_dir_all(flush_path);
 }
 
 fn bench_cached_nmcp_frame() {
     println!("\n─── 9. Cached NMCP Frame Execution (Zero-Alloc TLV Extraction) ──");
 
-
     // Benchmark 1: Direct native call (baseline)
     let iterations = 1000;
-    println!("  Direct native call: bench_echo({{size: 64}}) ({} iterations)...", iterations);
+    println!(
+        "  Direct native call: bench_echo({{size: 64}}) ({} iterations)...",
+        iterations
+    );
     let start = Instant::now();
     let mut direct_successes = 0;
     for _ in 0..iterations {
@@ -673,17 +848,25 @@ fn bench_cached_nmcp_frame() {
         }
     }
     let direct_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
-    println!("  Mean: {:.1} μs ({}/{})", direct_ns / 1000.0, direct_successes, iterations);
+    println!(
+        "  Mean: {:.1} μs ({}/{})",
+        direct_ns / 1000.0,
+        direct_successes,
+        iterations
+    );
 
     // Benchmark 2: Convert to NMCP frame, then execute (cached path with zero-alloc)
     println!("  Converting bench_echo to NMCP frame...");
     let json_request = r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"bench_echo","arguments":{"size":64}},"id":1}"#;
     let output_path = "temp_bench_echo_frame.bin";
-    
+
     match registry::cache_nmcp_frame(json_request, output_path) {
         Ok(_) => {
             let cached_binary = std::fs::read(output_path).expect("read cached frame");
-            println!("  Executing cached NMCP frame ({} iterations)...", iterations);
+            println!(
+                "  Executing cached NMCP frame ({} iterations)...",
+                iterations
+            );
             let start = Instant::now();
             let mut cached_successes = 0;
             for _ in 0..iterations {
@@ -694,19 +877,28 @@ fn bench_cached_nmcp_frame() {
                 }
             }
             let cached_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
-            println!("  Mean: {:.1} μs ({}/{})", cached_ns / 1000.0, cached_successes, iterations);
-            
+            println!(
+                "  Mean: {:.1} μs ({}/{})",
+                cached_ns / 1000.0,
+                cached_successes,
+                iterations
+            );
+
             // Calculate speedup/overhead
             if direct_ns > 0.0 {
                 if cached_ns < direct_ns {
-                    println!("  Improvement: {:.1}% faster than direct native call", 
-                        ((direct_ns - cached_ns) / direct_ns) * 100.0);
+                    println!(
+                        "  Improvement: {:.1}% faster than direct native call",
+                        ((direct_ns - cached_ns) / direct_ns) * 100.0
+                    );
                 } else {
-                    println!("  Overhead: {:.1}% vs direct native call", 
-                        ((cached_ns - direct_ns) / direct_ns) * 100.0);
+                    println!(
+                        "  Overhead: {:.1}% vs direct native call",
+                        ((cached_ns - direct_ns) / direct_ns) * 100.0
+                    );
                 }
             }
-            
+
             let _ = std::fs::remove_file(output_path);
         }
         Err(e) => {
@@ -715,11 +907,21 @@ fn bench_cached_nmcp_frame() {
     }
 
     // Benchmark 3: File read tool (string argument extraction)
-    let test_file = std::env::current_dir().unwrap().join("temp_bench_cached_read.txt").to_string_lossy().to_string();
-    std::fs::write(&test_file, "Test content for cached NMCP frame benchmark.\n")
-        .expect("Failed to write test file");
-    
-    println!("\n  Direct native call: file_read ({} iterations)...", iterations);
+    let test_file = std::env::current_dir()
+        .unwrap()
+        .join("temp_bench_cached_read.txt")
+        .to_string_lossy()
+        .to_string();
+    std::fs::write(
+        &test_file,
+        "Test content for cached NMCP frame benchmark.\n",
+    )
+    .expect("Failed to write test file");
+
+    println!(
+        "\n  Direct native call: file_read ({} iterations)...",
+        iterations
+    );
     let start = Instant::now();
     let mut file_direct_successes = 0;
     for _ in 0..iterations {
@@ -730,7 +932,12 @@ fn bench_cached_nmcp_frame() {
         }
     }
     let file_direct_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
-    println!("  Mean: {:.1} μs ({}/{})", file_direct_ns / 1000.0, file_direct_successes, iterations);
+    println!(
+        "  Mean: {:.1} μs ({}/{})",
+        file_direct_ns / 1000.0,
+        file_direct_successes,
+        iterations
+    );
 
     println!("  Converting file_read to NMCP frame...");
     let json_request = serde_json::to_string(&json!({
@@ -741,13 +948,17 @@ fn bench_cached_nmcp_frame() {
             "arguments": {"path": &test_file}
         },
         "id": 2
-    })).unwrap();
+    }))
+    .unwrap();
     let output_path = "temp_bench_file_read_frame.bin";
-    
+
     match registry::cache_nmcp_frame(&json_request, output_path) {
         Ok(_) => {
             let cached_binary = std::fs::read(output_path).expect("read cached frame");
-            println!("  Executing cached NMCP frame ({} iterations)...", iterations);
+            println!(
+                "  Executing cached NMCP frame ({} iterations)...",
+                iterations
+            );
             let start = Instant::now();
             let mut file_cached_successes = 0;
             for _ in 0..iterations {
@@ -758,18 +969,27 @@ fn bench_cached_nmcp_frame() {
                 }
             }
             let file_cached_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
-            println!("  Mean: {:.1} μs ({}/{})", file_cached_ns / 1000.0, file_cached_successes, iterations);
-            
+            println!(
+                "  Mean: {:.1} μs ({}/{})",
+                file_cached_ns / 1000.0,
+                file_cached_successes,
+                iterations
+            );
+
             if file_direct_ns > 0.0 {
                 if file_cached_ns < file_direct_ns {
-                    println!("  Improvement: {:.1}% faster than direct native call", 
-                        ((file_direct_ns - file_cached_ns) / file_direct_ns) * 100.0);
+                    println!(
+                        "  Improvement: {:.1}% faster than direct native call",
+                        ((file_direct_ns - file_cached_ns) / file_direct_ns) * 100.0
+                    );
                 } else {
-                    println!("  Overhead: {:.1}% vs direct native call", 
-                        ((file_cached_ns - file_direct_ns) / file_direct_ns) * 100.0);
+                    println!(
+                        "  Overhead: {:.1}% vs direct native call",
+                        ((file_cached_ns - file_direct_ns) / file_direct_ns) * 100.0
+                    );
                 }
             }
-            
+
             let _ = std::fs::remove_file(output_path);
         }
         Err(e) => {
@@ -784,15 +1004,15 @@ fn bench_cached_nmcp_frame() {
 
 fn bench_nmcp_conversion() {
     println!("\n─── 12. NMCP Frame Conversion (json_to_nmcp_frame) ──────────────");
-    
+
     use crate::registry;
     use std::time::Instant;
-    
+
     let iterations = 200;
-    
+
     // Simple tool with basic arguments
     let simple_request = r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"simple_tool","arguments":{"x":42,"y":"hello"}},"id":1}"#;
-    
+
     println!("  Converting simple tool ({} iterations)...", iterations);
     let start = Instant::now();
     let mut successes = 0;
@@ -803,11 +1023,16 @@ fn bench_nmcp_conversion() {
         }
     }
     let simple_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
-    println!("  Mean: {:.1} μs ({}/{})", simple_ns / 1000.0, successes, iterations);
-    
+    println!(
+        "  Mean: {:.1} μs ({}/{})",
+        simple_ns / 1000.0,
+        successes,
+        iterations
+    );
+
     // Complex tool with nested objects and arrays
     let complex_request = r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"complex_tool","arguments":{"config":{"timeout":30,"retries":3},"items":[1,"two",true,null],"query":"a=b;c","nested":{"deep":{"value":"found"}}}},"id":2}"#;
-    
+
     println!("  Converting complex tool ({} iterations)...", iterations);
     let start = Instant::now();
     let mut successes = 0;
@@ -818,11 +1043,18 @@ fn bench_nmcp_conversion() {
         }
     }
     let complex_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
-    println!("  Mean: {:.1} μs ({}/{})", complex_ns / 1000.0, successes, iterations);
-    
+    println!(
+        "  Mean: {:.1} μs ({}/{})",
+        complex_ns / 1000.0,
+        successes,
+        iterations
+    );
+
     if simple_ns > 0.0 {
-        println!("  Complexity overhead: {:.1}% larger payload", 
-            ((complex_ns - simple_ns) / simple_ns) * 100.0);
+        println!(
+            "  Complexity overhead: {:.1}% larger payload",
+            ((complex_ns - simple_ns) / simple_ns) * 100.0
+        );
     }
 }
 
@@ -847,7 +1079,8 @@ fn bench_cross_language_tools() {
                  Pack my box with five dozen liquor jugs. \
                  How vexingly quick daft zebras jump. \
                  Bright vixens jump; dozy fowl quack."
-    })).unwrap();
+    }))
+    .unwrap();
 
     let mut wasm_ns: f64 = 0.0;
     let mut node_ns: f64 = 0.0;
@@ -883,7 +1116,7 @@ fn bench_cross_language_tools() {
             "The quick brown fox jumps over the lazy dog. \
              Pack my box with five dozen liquor jugs. \
              How vexingly quick daft zebras jump. \
-             Bright vixens jump; dozy fowl quack."
+             Bright vixens jump; dozy fowl quack.",
         ));
         if let Some(wc) = result["word_count"].as_u64() {
             native_checksum = native_checksum.wrapping_add(wc as u32);
@@ -891,13 +1124,19 @@ fn bench_cross_language_tools() {
     }
     let native_ns = start.elapsed().as_nanos() as f64 / iterations as f64;
     black_box(native_checksum);
-    println!("    {:>10} iterations:  {:.1} ns/call  ({:.2}M calls/s)",
-        iterations, native_ns, 1000.0 / native_ns);
+    println!(
+        "    {:>10} iterations:  {:.1} ns/call  ({:.2}M calls/s)",
+        iterations,
+        native_ns,
+        1000.0 / native_ns
+    );
 
     // ── 2. WASM via Wasmer ─────────────────────────────────────────────────
     println!("\n  [2] WASM (Wasmer, in-process):");
 
-    let wasm_path = std::path::Path::new("bench_tools/wasm_tool/target/wasm32-unknown-unknown/release/wasm_text_tool.wasm");
+    let wasm_path = std::path::Path::new(
+        "bench_tools/wasm_tool/target/wasm32-unknown-unknown/release/wasm_text_tool.wasm",
+    );
     if !wasm_path.exists() {
         println!("    SKIP — WASM file not found.");
         println!("    Build with: cd bench_tools/wasm_tool && cargo build --target wasm32-unknown-unknown --release");
@@ -912,25 +1151,35 @@ fn bench_cross_language_tools() {
             let engine = wasmer::Engine::from(wasmer::Cranelift::default());
             let module = wasmer::Module::new(&engine, &wasm_bytes).unwrap();
             let mut store = wasmer::Store::new(engine);
-            let imports = wasmer::imports!{};
+            let imports = wasmer::imports! {};
             let _instance = wasmer::Instance::new(&mut store, &module, &imports).unwrap();
         }
         let cold_ns = start.elapsed().as_nanos() as f64 / cold_iters as f64;
-        println!("    Cold start (compile+instantiate): {:.1} μs", cold_ns / 1000.0);
+        println!(
+            "    Cold start (compile+instantiate): {:.1} μs",
+            cold_ns / 1000.0
+        );
 
         // Warm setup: compile once, instantiate once
         let engine = wasmer::Engine::from(wasmer::Cranelift::default());
         let module = wasmer::Module::new(&engine, &wasm_bytes).unwrap();
         let mut store = wasmer::Store::new(engine);
-        let imports = wasmer::imports!{};
+        let imports = wasmer::imports! {};
         let instance = wasmer::Instance::new(&mut store, &module, &imports).unwrap();
 
-        let memory = instance.exports.get_memory("memory").expect("memory export");
-        let prepare_fn = instance.exports.get_function("prepare_call")
+        let memory = instance
+            .exports
+            .get_memory("memory")
+            .expect("memory export");
+        let prepare_fn = instance
+            .exports
+            .get_function("prepare_call")
             .expect("prepare_call export")
             .typed::<(), ()>(&store)
             .expect("prepare_call typed");
-        let execute_fn = instance.exports.get_function("tool_execute")
+        let execute_fn = instance
+            .exports
+            .get_function("tool_execute")
             .expect("tool_execute export")
             .typed::<(i32, i32), i64>(&store)
             .expect("tool_execute typed");
@@ -939,16 +1188,24 @@ fn bench_cross_language_tools() {
         let input_bytes = wasm_input.as_bytes();
         let input_ptr = 1024;
         let input_len = input_bytes.len() as i32;
-        memory.view(&store).write(input_ptr as u64, input_bytes).unwrap();
-        let result = execute_fn.call(&mut store, input_ptr as i32, input_len).unwrap();
+        memory
+            .view(&store)
+            .write(input_ptr as u64, input_bytes)
+            .unwrap();
+        let result = execute_fn.call(&mut store, input_ptr, input_len).unwrap();
         let result_ptr = (result >> 32) as u32;
         let result_len = (result & 0xFFFF_FFFF) as u32;
         let mut result_buf = vec![0u8; result_len as usize];
-        memory.view(&store).read(result_ptr as u64, &mut result_buf).unwrap();
+        memory
+            .view(&store)
+            .read(result_ptr as u64, &mut result_buf)
+            .unwrap();
         let result_str = String::from_utf8(result_buf).unwrap();
         let result_val: Value = serde_json::from_str(&result_str).unwrap();
-        println!("    Verify: word_count={}, char_count={}, line_count={}",
-            result_val["word_count"], result_val["char_count"], result_val["line_count"]);
+        println!(
+            "    Verify: word_count={}, char_count={}, line_count={}",
+            result_val["word_count"], result_val["char_count"], result_val["line_count"]
+        );
 
         // Warm benchmark: reset alloc + write input + call per iteration
         let iterations = 50_000;
@@ -956,8 +1213,11 @@ fn bench_cross_language_tools() {
         let mut wasm_checksum: u32 = 0;
         for _ in 0..iterations {
             prepare_fn.call(&mut store).unwrap();
-            memory.view(&store).write(input_ptr as u64, input_bytes).unwrap();
-            let r = execute_fn.call(&mut store, input_ptr as i32, input_len).unwrap();
+            memory
+                .view(&store)
+                .write(input_ptr as u64, input_bytes)
+                .unwrap();
+            let r = execute_fn.call(&mut store, input_ptr, input_len).unwrap();
             let rp = (r >> 32) as u32;
             let rl = (r & 0xFFFF_FFFF) as u32;
             let mut buf = vec![0u8; rl as usize];
@@ -972,8 +1232,12 @@ fn bench_cross_language_tools() {
         black_box(wasm_checksum);
         wasm_ns = wasm_ns_val;
         wasm_available = true;
-        println!("    {:>10} iterations:  {:.1} ns/call  ({:.2}M calls/s)",
-            iterations, wasm_ns, 1000.0 / wasm_ns);
+        println!(
+            "    {:>10} iterations:  {:.1} ns/call  ({:.2}M calls/s)",
+            iterations,
+            wasm_ns,
+            1000.0 / wasm_ns
+        );
         println!("    Overhead vs native: {:.1}x", wasm_ns / native_ns);
     }
 
@@ -1005,11 +1269,16 @@ fn bench_cross_language_tools() {
                 stdin.flush().unwrap();
             }
             let mut line = String::new();
-            BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+            BufReader::new(child.stdout.take().unwrap())
+                .read_line(&mut line)
+                .unwrap();
             let _ = child.wait();
         }
         let cold_ns = start.elapsed().as_nanos() as f64 / cold_iters as f64;
-        println!("    Cold start (spawn + 1 call): {:.1} ms", cold_ns / 1_000_000.0);
+        println!(
+            "    Cold start (spawn + 1 call): {:.1} ms",
+            cold_ns / 1_000_000.0
+        );
 
         // Warm: persistent process, many calls
         let mut child = Command::new("node")
@@ -1031,9 +1300,14 @@ fn bench_cross_language_tools() {
         let mut reader = BufReader::new(stdout);
         reader.read_line(&mut warmup_line).unwrap();
         let warmup_val: Value = serde_json::from_str(warmup_line.trim()).unwrap();
-        println!("    Verify: size={}, payload_len={}",
+        println!(
+            "    Verify: size={}, payload_len={}",
             warmup_val["result"]["size"],
-            warmup_val["result"]["payload"].as_str().map(|s| s.len()).unwrap_or(0));
+            warmup_val["result"]["payload"]
+                .as_str()
+                .map(|s| s.len())
+                .unwrap_or(0)
+        );
 
         // Need to put stdout back for subsequent reads — BufReader consumed it.
         // Re-create the child for the actual benchmark.
@@ -1071,8 +1345,12 @@ fn bench_cross_language_tools() {
         black_box(node_checksum);
         node_ns = node_ns_val;
         node_available = true;
-        println!("    {:>10} iterations:  {:.1} μs/call  ({:.0}K calls/s)",
-            iterations, node_ns / 1000.0, 1_000_000.0 / node_ns);
+        println!(
+            "    {:>10} iterations:  {:.1} μs/call  ({:.0}K calls/s)",
+            iterations,
+            node_ns / 1000.0,
+            1_000_000.0 / node_ns
+        );
         println!("    Overhead vs native: {:.0}x", node_ns / native_ns);
 
         child.kill().ok();
@@ -1095,17 +1373,21 @@ fn bench_cross_language_tools() {
                 "capabilities": {},
                 "clientInfo": { "name": "bench", "version": "1.0" }
             }
-        })).unwrap();
+        }))
+        .unwrap();
         let init_notify = serde_json::to_string(&json!({
             "jsonrpc": "2.0", "method": "notifications/initialized"
-        })).unwrap();
+        }))
+        .unwrap();
         let sdk_echo_request = serde_json::to_string(&json!({
             "jsonrpc": "2.0", "method": "tools/call", "id": 1,
             "params": { "name": "bench_echo", "arguments": { "size": 64 } }
-        })).unwrap();
+        }))
+        .unwrap();
         let sdk_list_request = serde_json::to_string(&json!({
             "jsonrpc": "2.0", "method": "tools/list", "id": 2
-        })).unwrap();
+        }))
+        .unwrap();
 
         // Cold start: spawn fresh process, do handshake + one tools/call
         let cold_iters = 10;
@@ -1120,7 +1402,9 @@ fn bench_cross_language_tools() {
                 .unwrap();
             {
                 let stdin = child.stdin.as_mut().unwrap();
-                stdin.write_all(format!("{}\n", init_request).as_bytes()).unwrap();
+                stdin
+                    .write_all(format!("{}\n", init_request).as_bytes())
+                    .unwrap();
                 stdin.flush().unwrap();
             }
             let stdout = child.stdout.take().unwrap();
@@ -1130,12 +1414,16 @@ fn bench_cross_language_tools() {
             line.clear();
             {
                 let stdin = child.stdin.as_mut().unwrap();
-                stdin.write_all(format!("{}\n", init_notify).as_bytes()).unwrap();
+                stdin
+                    .write_all(format!("{}\n", init_notify).as_bytes())
+                    .unwrap();
                 stdin.flush().unwrap();
             }
             {
                 let stdin = child.stdin.as_mut().unwrap();
-                stdin.write_all(format!("{}\n", sdk_echo_request).as_bytes()).unwrap();
+                stdin
+                    .write_all(format!("{}\n", sdk_echo_request).as_bytes())
+                    .unwrap();
                 stdin.flush().unwrap();
             }
             line.clear();
@@ -1143,7 +1431,10 @@ fn bench_cross_language_tools() {
             let _ = child.wait();
         }
         let cold_ns = start.elapsed().as_nanos() as f64 / cold_iters as f64;
-        println!("    Cold start (spawn + handshake + 1 call): {:.1} ms", cold_ns / 1_000_000.0);
+        println!(
+            "    Cold start (spawn + handshake + 1 call): {:.1} ms",
+            cold_ns / 1_000_000.0
+        );
 
         // Warm: persistent process — verify correctness
         let mut child = Command::new("node")
@@ -1155,7 +1446,9 @@ fn bench_cross_language_tools() {
             .unwrap();
         {
             let stdin = child.stdin.as_mut().unwrap();
-            stdin.write_all(format!("{}\n", init_request).as_bytes()).unwrap();
+            stdin
+                .write_all(format!("{}\n", init_request).as_bytes())
+                .unwrap();
             stdin.flush().unwrap();
         }
         let stdout = child.stdout.take().unwrap();
@@ -1165,14 +1458,18 @@ fn bench_cross_language_tools() {
         line.clear();
         {
             let stdin = child.stdin.as_mut().unwrap();
-            stdin.write_all(format!("{}\n", init_notify).as_bytes()).unwrap();
+            stdin
+                .write_all(format!("{}\n", init_notify).as_bytes())
+                .unwrap();
             stdin.flush().unwrap();
         }
 
         // Verify tools/list returns 16 tools
         {
             let stdin = child.stdin.as_mut().unwrap();
-            stdin.write_all(format!("{}\n", sdk_list_request).as_bytes()).unwrap();
+            stdin
+                .write_all(format!("{}\n", sdk_list_request).as_bytes())
+                .unwrap();
             stdin.flush().unwrap();
         }
         line.clear();
@@ -1186,7 +1483,9 @@ fn bench_cross_language_tools() {
         // Verify bench_echo correctness
         {
             let stdin = child.stdin.as_mut().unwrap();
-            stdin.write_all(format!("{}\n", sdk_echo_request).as_bytes()).unwrap();
+            stdin
+                .write_all(format!("{}\n", sdk_echo_request).as_bytes())
+                .unwrap();
             stdin.flush().unwrap();
         }
         line.clear();
@@ -1194,9 +1493,11 @@ fn bench_cross_language_tools() {
         if let Ok(v) = serde_json::from_str::<Value>(line.trim()) {
             if let Some(text) = v["result"]["content"][0]["text"].as_str() {
                 if let Ok(inner) = serde_json::from_str::<Value>(text) {
-                    println!("    Verify bench_echo: size={}, payload_len={}",
+                    println!(
+                        "    Verify bench_echo: size={}, payload_len={}",
                         inner["size"],
-                        inner["payload"].as_str().map(|s| s.len()).unwrap_or(0));
+                        inner["payload"].as_str().map(|s| s.len()).unwrap_or(0)
+                    );
                 }
             }
         }
@@ -1215,7 +1516,9 @@ fn bench_cross_language_tools() {
             .unwrap();
         {
             let stdin = child.stdin.as_mut().unwrap();
-            stdin.write_all(format!("{}\n", init_request).as_bytes()).unwrap();
+            stdin
+                .write_all(format!("{}\n", init_request).as_bytes())
+                .unwrap();
             stdin.flush().unwrap();
         }
         let stdout = child.stdout.take().unwrap();
@@ -1225,7 +1528,9 @@ fn bench_cross_language_tools() {
         line.clear();
         {
             let stdin = child.stdin.as_mut().unwrap();
-            stdin.write_all(format!("{}\n", init_notify).as_bytes()).unwrap();
+            stdin
+                .write_all(format!("{}\n", init_notify).as_bytes())
+                .unwrap();
             stdin.flush().unwrap();
         }
 
@@ -1254,8 +1559,12 @@ fn bench_cross_language_tools() {
         sdk_ns = sdk_ns_val;
         sdk_available = true;
         println!("    tools/call (bench_echo):");
-        println!("      {:>10} iterations:  {:.1} μs/call  ({:.0}K calls/s)",
-            iterations, sdk_ns / 1000.0, 1_000_000.0 / sdk_ns);
+        println!(
+            "      {:>10} iterations:  {:.1} μs/call  ({:.0}K calls/s)",
+            iterations,
+            sdk_ns / 1000.0,
+            1_000_000.0 / sdk_ns
+        );
         println!("      Overhead vs native: {:.0}x", sdk_ns / native_ns);
 
         child.kill().ok();
@@ -1271,7 +1580,9 @@ fn bench_cross_language_tools() {
             .unwrap();
         {
             let stdin = child.stdin.as_mut().unwrap();
-            stdin.write_all(format!("{}\n", init_request).as_bytes()).unwrap();
+            stdin
+                .write_all(format!("{}\n", init_request).as_bytes())
+                .unwrap();
             stdin.flush().unwrap();
         }
         let stdout = child.stdout.take().unwrap();
@@ -1281,7 +1592,9 @@ fn bench_cross_language_tools() {
         line.clear();
         {
             let stdin = child.stdin.as_mut().unwrap();
-            stdin.write_all(format!("{}\n", init_notify).as_bytes()).unwrap();
+            stdin
+                .write_all(format!("{}\n", init_notify).as_bytes())
+                .unwrap();
             stdin.flush().unwrap();
         }
 
@@ -1304,8 +1617,12 @@ fn bench_cross_language_tools() {
         let list_ns = start.elapsed().as_nanos() as f64 / list_iters as f64;
         black_box(list_checksum);
         println!("    tools/list (16 tools):");
-        println!("      {:>10} iterations:  {:.1} μs/call  ({:.0}K calls/s)",
-            list_iters, list_ns / 1000.0, 1_000_000.0 / list_ns);
+        println!(
+            "      {:>10} iterations:  {:.1} μs/call  ({:.0}K calls/s)",
+            list_iters,
+            list_ns / 1000.0,
+            1_000_000.0 / list_ns
+        );
 
         child.kill().ok();
         let _ = child.wait();
@@ -1323,8 +1640,12 @@ fn bench_cross_language_tools() {
         println!("    Module size: {} bytes", qjs_bytes.len());
 
         // Cold start: compile + instantiate + init from scratch
-        let cold_start_ms = crate::wasm_runtime::quickjs::QuickJsRuntime::bench_cold_start(&qjs_bytes);
-        println!("    Cold start (compile+instantiate+init): {:.1} ms", cold_start_ms);
+        let cold_start_ms =
+            crate::wasm_runtime::quickjs::QuickJsRuntime::bench_cold_start(&qjs_bytes);
+        println!(
+            "    Cold start (compile+instantiate+init): {:.1} ms",
+            cold_start_ms
+        );
 
         // Warm setup: compile once, instantiate once
         let mut rt = crate::wasm_runtime::quickjs::QuickJsRuntime::new(&qjs_bytes)
@@ -1350,7 +1671,8 @@ fn bench_cross_language_tools() {
                 return {size: 64, payload: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"};
             }
         "#;
-        rt.register_tool("bench_tool", tool_source).expect("register bench_tool");
+        rt.register_tool("bench_tool", tool_source)
+            .expect("register bench_tool");
 
         let bench_args = r#"{"text": "hello"}"#;
         let iterations = 10_000;
@@ -1359,16 +1681,26 @@ fn bench_cross_language_tools() {
         for _ in 0..iterations {
             match rt.call_tool("bench_tool", bench_args) {
                 Ok(result) => qjs_checksum = qjs_checksum.wrapping_add(result.len() as u32),
-                Err(e) => { println!("    CALL ERROR: {}", e); break; }
+                Err(e) => {
+                    println!("    CALL ERROR: {}", e);
+                    break;
+                }
             }
         }
         let qjs_ns_val = start.elapsed().as_nanos() as f64 / iterations as f64;
         black_box(qjs_checksum);
         quickjs_ns = qjs_ns_val;
         quickjs_available = true;
-        println!("    {:>10} iterations (call_tool):  {:.1} ns/call  ({:.2}M calls/s)",
-            iterations, quickjs_ns, 1000.0 / quickjs_ns);
-        println!("    Overhead vs native Rust: {:.1}x", quickjs_ns / native_ns);
+        println!(
+            "    {:>10} iterations (call_tool):  {:.1} ns/call  ({:.2}M calls/s)",
+            iterations,
+            quickjs_ns,
+            1000.0 / quickjs_ns
+        );
+        println!(
+            "    Overhead vs native Rust: {:.1}x",
+            quickjs_ns / native_ns
+        );
         if wasm_available {
             println!("    vs WASM (Rust tool):   {:.1}x", quickjs_ns / wasm_ns);
         }
@@ -1388,8 +1720,12 @@ fn bench_cross_language_tools() {
         let mp_bytes = std::fs::read(mp_wasm_path).expect("read micropython.wasm");
         println!("    Module size: {} bytes", mp_bytes.len());
 
-        let cold_start_ms = crate::wasm_runtime::micropython::MicroPythonRuntime::bench_cold_start(&mp_bytes);
-        println!("    Cold start (compile+instantiate+init): {:.1} ms", cold_start_ms);
+        let cold_start_ms =
+            crate::wasm_runtime::micropython::MicroPythonRuntime::bench_cold_start(&mp_bytes);
+        println!(
+            "    Cold start (compile+instantiate+init): {:.1} ms",
+            cold_start_ms
+        );
 
         let mut mp_rt = crate::wasm_runtime::micropython::MicroPythonRuntime::new(&mp_bytes)
             .expect("MicroPythonRuntime::new");
@@ -1403,7 +1739,9 @@ fn bench_cross_language_tools() {
         }
 
         let tool_source = "def bench_tool(args):\n    return {'size': 64, 'payload': 'hello'}\n";
-        mp_rt.register_tool("bench_tool", tool_source).expect("register bench_tool");
+        mp_rt
+            .register_tool("bench_tool", tool_source)
+            .expect("register bench_tool");
 
         let bench_args = r#"{"text": "hello"}"#;
         let iterations = 1000;
@@ -1412,21 +1750,37 @@ fn bench_cross_language_tools() {
         for _ in 0..iterations {
             match mp_rt.call_tool("bench_tool", bench_args) {
                 Ok(result) => mp_checksum = mp_checksum.wrapping_add(result.len() as u32),
-                Err(e) => { println!("    CALL ERROR: {}", e); break; }
+                Err(e) => {
+                    println!("    CALL ERROR: {}", e);
+                    break;
+                }
             }
         }
         let mp_ns_val = start.elapsed().as_nanos() as f64 / iterations as f64;
         black_box(mp_checksum);
         micropython_ns = mp_ns_val;
         micropython_available = true;
-        println!("    {:>10} iterations (call_tool):  {:.1} ns/call  ({:.0}K calls/s)",
-            iterations, micropython_ns, 1_000_000.0 / micropython_ns);
-        println!("    Overhead vs native Rust: {:.0}x", micropython_ns / native_ns);
+        println!(
+            "    {:>10} iterations (call_tool):  {:.1} ns/call  ({:.0}K calls/s)",
+            iterations,
+            micropython_ns,
+            1_000_000.0 / micropython_ns
+        );
+        println!(
+            "    Overhead vs native Rust: {:.0}x",
+            micropython_ns / native_ns
+        );
         if wasm_available {
-            println!("    vs WASM (Rust tool):   {:.0}x", micropython_ns / wasm_ns);
+            println!(
+                "    vs WASM (Rust tool):   {:.0}x",
+                micropython_ns / wasm_ns
+            );
         }
         if quickjs_available {
-            println!("    vs QuickJS/WASM:       {:.1}x", micropython_ns / quickjs_ns);
+            println!(
+                "    vs QuickJS/WASM:       {:.1}x",
+                micropython_ns / quickjs_ns
+            );
         }
 
         mp_rt.destroy().ok();
@@ -1444,10 +1798,13 @@ fn bench_cross_language_tools() {
         println!("    Module size: {} bytes", lua_bytes.len());
 
         let cold_start_ms = crate::wasm_runtime::lua::LuaRuntime::bench_cold_start(&lua_bytes);
-        println!("    Cold start (compile+instantiate+init): {:.1} ms", cold_start_ms);
+        println!(
+            "    Cold start (compile+instantiate+init): {:.1} ms",
+            cold_start_ms
+        );
 
-        let mut lua_rt = crate::wasm_runtime::lua::LuaRuntime::new(&lua_bytes)
-            .expect("LuaRuntime::new");
+        let mut lua_rt =
+            crate::wasm_runtime::lua::LuaRuntime::new(&lua_bytes).expect("LuaRuntime::new");
         lua_rt.init().expect("LuaRuntime::init");
         println!("    lua_wasi_init() returned: 0");
 
@@ -1457,8 +1814,11 @@ fn bench_cross_language_tools() {
             Err(e) => println!("    LUA ERROR: {}", e),
         }
 
-        let tool_source = "function bench_tool(args)\n    return {size = 64, payload = 'hello'}\nend\n";
-        lua_rt.register_tool("bench_tool", tool_source).expect("register bench_tool");
+        let tool_source =
+            "function bench_tool(args)\n    return {size = 64, payload = 'hello'}\nend\n";
+        lua_rt
+            .register_tool("bench_tool", tool_source)
+            .expect("register bench_tool");
 
         let bench_args = r#"{"text": "hello"}"#;
         let lua_iterations = 1000;
@@ -1467,15 +1827,22 @@ fn bench_cross_language_tools() {
         for _ in 0..lua_iterations {
             match lua_rt.call_tool("bench_tool", bench_args) {
                 Ok(result) => lua_checksum = lua_checksum.wrapping_add(result.len() as u32),
-                Err(e) => { println!("    CALL ERROR: {}", e); break; }
+                Err(e) => {
+                    println!("    CALL ERROR: {}", e);
+                    break;
+                }
             }
         }
         let lua_ns_val = start.elapsed().as_nanos() as f64 / lua_iterations as f64;
         black_box(lua_checksum);
         lua_ns = lua_ns_val;
         lua_available = true;
-        println!("    {:>10} iterations (call_tool):  {:.1} ns/call  ({:.0}K calls/s)",
-            lua_iterations, lua_ns, 1_000_000.0 / lua_ns);
+        println!(
+            "    {:>10} iterations (call_tool):  {:.1} ns/call  ({:.0}K calls/s)",
+            lua_iterations,
+            lua_ns,
+            1_000_000.0 / lua_ns
+        );
         println!("    Overhead vs native Rust: {:.0}x", lua_ns / native_ns);
         if wasm_available {
             println!("    vs WASM (Rust tool):   {:.0}x", lua_ns / wasm_ns);
@@ -1507,17 +1874,25 @@ fn bench_cross_language_tools() {
             let engine = wasmer::Engine::from(wasmer::Cranelift::default());
             let module = wasmer::Module::new(&engine, &tinygo_bytes).unwrap();
             let mut store = wasmer::Store::new(engine);
-            let env = wasmer::FunctionEnv::new(&mut store, crate::wasm_runtime::wasi::WasiEnv::new());
+            let env =
+                wasmer::FunctionEnv::new(&mut store, crate::wasm_runtime::wasi::WasiEnv::new());
             let wasi_imports = crate::wasm_runtime::wasi::build_wasi_imports(&mut store, &env);
             let instance = wasmer::Instance::new(&mut store, &module, &wasi_imports).unwrap();
             let memory = instance.exports.get_memory("memory").unwrap().clone();
             env.as_mut(&mut store).memory = Some(memory);
-            let start_fn = instance.exports.get_function("_start")
-                .unwrap().typed::<(), ()>(&store).unwrap();
+            let start_fn = instance
+                .exports
+                .get_function("_start")
+                .unwrap()
+                .typed::<(), ()>(&store)
+                .unwrap();
             start_fn.call(&mut store).unwrap();
         }
         let cold_start_ms = start.elapsed().as_nanos() as f64 / cold_iters as f64 / 1_000_000.0;
-        println!("    Cold start (compile+instantiate+_start): {:.1} ms", cold_start_ms);
+        println!(
+            "    Cold start (compile+instantiate+_start): {:.1} ms",
+            cold_start_ms
+        );
 
         // Warm setup
         let engine = wasmer::Engine::from(wasmer::Cranelift::default());
@@ -1529,34 +1904,50 @@ fn bench_cross_language_tools() {
         let memory = instance.exports.get_memory("memory").unwrap().clone();
         env.as_mut(&mut store).memory = Some(memory.clone());
 
-        let prepare_fn = instance.exports.get_function("prepare_call")
+        let prepare_fn = instance
+            .exports
+            .get_function("prepare_call")
             .expect("prepare_call export")
             .typed::<(), ()>(&store)
             .expect("prepare_call typed");
-        let execute_fn = instance.exports.get_function("tool_execute")
+        let execute_fn = instance
+            .exports
+            .get_function("tool_execute")
             .expect("tool_execute export")
             .typed::<(i32, i32), i64>(&store)
             .expect("tool_execute typed");
 
         // Initialize TinyGo runtime
-        let start_fn = instance.exports.get_function("_start")
-            .unwrap().typed::<(), ()>(&store).unwrap();
+        let start_fn = instance
+            .exports
+            .get_function("_start")
+            .unwrap()
+            .typed::<(), ()>(&store)
+            .unwrap();
         start_fn.call(&mut store).unwrap();
 
         // Verify correctness
         let input_bytes = wasm_input.as_bytes();
         let input_ptr = 1024i32;
         let input_len = input_bytes.len() as i32;
-        memory.view(&store).write(input_ptr as u64, input_bytes).unwrap();
+        memory
+            .view(&store)
+            .write(input_ptr as u64, input_bytes)
+            .unwrap();
         let result = execute_fn.call(&mut store, input_ptr, input_len).unwrap();
         let result_ptr = (result >> 32) as u32;
         let result_len = (result & 0xFFFF_FFFF) as u32;
         let mut result_buf = vec![0u8; result_len as usize];
-        memory.view(&store).read(result_ptr as u64, &mut result_buf).unwrap();
+        memory
+            .view(&store)
+            .read(result_ptr as u64, &mut result_buf)
+            .unwrap();
         let result_str = String::from_utf8(result_buf).unwrap();
         let result_val: Value = serde_json::from_str(&result_str).unwrap();
-        println!("    Verify: word_count={}, char_count={}, line_count={}",
-            result_val["word_count"], result_val["char_count"], result_val["line_count"]);
+        println!(
+            "    Verify: word_count={}, char_count={}, line_count={}",
+            result_val["word_count"], result_val["char_count"], result_val["line_count"]
+        );
 
         // Benchmark
         let tinygo_iterations = 10_000;
@@ -1564,7 +1955,10 @@ fn bench_cross_language_tools() {
         let mut tinygo_checksum: u32 = 0;
         for _ in 0..tinygo_iterations {
             prepare_fn.call(&mut store).unwrap();
-            memory.view(&store).write(input_ptr as u64, input_bytes).unwrap();
+            memory
+                .view(&store)
+                .write(input_ptr as u64, input_bytes)
+                .unwrap();
             let r = execute_fn.call(&mut store, input_ptr, input_len).unwrap();
             let rp = (r >> 32) as u32;
             let rl = (r & 0xFFFF_FFFF) as u32;
@@ -1580,8 +1974,12 @@ fn bench_cross_language_tools() {
         black_box(tinygo_checksum);
         tinygo_ns = tinygo_ns_val;
         tinygo_available = true;
-        println!("    {:>10} iterations:  {:.1} ns/call  ({:.0}K calls/s)",
-            tinygo_iterations, tinygo_ns, 1_000_000.0 / tinygo_ns);
+        println!(
+            "    {:>10} iterations:  {:.1} ns/call  ({:.0}K calls/s)",
+            tinygo_iterations,
+            tinygo_ns,
+            1_000_000.0 / tinygo_ns
+        );
         println!("    Overhead vs native Rust: {:.0}x", tinygo_ns / native_ns);
         if wasm_available {
             println!("    vs WASM (Rust tool):   {:.1}x", tinygo_ns / wasm_ns);
@@ -1592,27 +1990,58 @@ fn bench_cross_language_tools() {
     println!("\n  ┌──────────────────────────┬──────────────┬───────────┐");
     println!("  │ Flavor                   │ Per-call     │ vs Native │");
     println!("  ├──────────────────────────┼──────────────┼───────────┤");
-    println!("  │ Native Rust              │ {:>6.0} ns    │    1.0x   │", native_ns);
+    println!(
+        "  │ Native Rust              │ {:>6.0} ns    │    1.0x   │",
+        native_ns
+    );
     if wasm_available {
-        println!("  │ WASM (Wasmer, Rust tool) │ {:>6.0} ns    │   {:>5.1}x   │", wasm_ns, wasm_ns / native_ns);
+        println!(
+            "  │ WASM (Wasmer, Rust tool) │ {:>6.0} ns    │   {:>5.1}x   │",
+            wasm_ns,
+            wasm_ns / native_ns
+        );
     }
     if quickjs_available {
-        println!("  │ JS via QuickJS/WASM       │ {:>6.0} ns    │   {:>5.1}x   │", quickjs_ns, quickjs_ns / native_ns);
+        println!(
+            "  │ JS via QuickJS/WASM       │ {:>6.0} ns    │   {:>5.1}x   │",
+            quickjs_ns,
+            quickjs_ns / native_ns
+        );
     }
     if micropython_available {
-        println!("  │ Py via MicroPython/WASM   │ {:>6.0} ns    │   {:>5.0}x   │", micropython_ns, micropython_ns / native_ns);
+        println!(
+            "  │ Py via MicroPython/WASM   │ {:>6.0} ns    │   {:>5.0}x   │",
+            micropython_ns,
+            micropython_ns / native_ns
+        );
     }
     if lua_available {
-        println!("  │ Lua via Lua/WASM          │ {:>6.0} ns    │   {:>5.0}x   │", lua_ns, lua_ns / native_ns);
+        println!(
+            "  │ Lua via Lua/WASM          │ {:>6.0} ns    │   {:>5.0}x   │",
+            lua_ns,
+            lua_ns / native_ns
+        );
     }
     if tinygo_available {
-        println!("  │ Go via TinyGo/WASM        │ {:>6.0} ns    │   {:>5.0}x   │", tinygo_ns, tinygo_ns / native_ns);
+        println!(
+            "  │ Go via TinyGo/WASM        │ {:>6.0} ns    │   {:>5.0}x   │",
+            tinygo_ns,
+            tinygo_ns / native_ns
+        );
     }
     if node_available {
-        println!("  │ Node.js child proc       │ {:>6.0} μs    │  {:>5.0}x   │", node_ns / 1000.0, node_ns / native_ns);
+        println!(
+            "  │ Node.js child proc       │ {:>6.0} μs    │  {:>5.0}x   │",
+            node_ns / 1000.0,
+            node_ns / native_ns
+        );
     }
     if sdk_available {
-        println!("  │ Node.js MCP SDK          │ {:>6.0} μs    │  {:>5.0}x   │", sdk_ns / 1000.0, sdk_ns / native_ns);
+        println!(
+            "  │ Node.js MCP SDK          │ {:>6.0} μs    │  {:>5.0}x   │",
+            sdk_ns / 1000.0,
+            sdk_ns / native_ns
+        );
     }
     println!("  └──────────────────────────┴──────────────┴───────────┘");
 }

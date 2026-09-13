@@ -34,7 +34,7 @@ fn bench_memory(wasm_bytes: &[u8]) -> f64 {
     let engine = wasmer::Engine::from(wasmer::Cranelift::default());
     let module = wasmer::Module::new(&engine, wasm_bytes).unwrap();
     let mut store = wasmer::Store::new(engine);
-    let instance = wasmer::Instance::new(&mut store, &module, &wasmer::imports!{}).unwrap();
+    let instance = wasmer::Instance::new(&mut store, &module, &wasmer::imports! {}).unwrap();
     let memory = instance.exports.get_memory("memory").unwrap();
 
     let input = make_input();
@@ -43,7 +43,10 @@ fn bench_memory(wasm_bytes: &[u8]) -> f64 {
     let start = Instant::now();
     for _ in 0..WARM_ITERS {
         memory.view(&store).write(INPUT_PTR as u64, &input).unwrap();
-        memory.view(&store).read(INPUT_PTR as u64, &mut buf).unwrap();
+        memory
+            .view(&store)
+            .read(INPUT_PTR as u64, &mut buf)
+            .unwrap();
     }
     let ns = start.elapsed().as_nanos() as f64 / WARM_ITERS as f64;
     black_box(buf);
@@ -54,7 +57,7 @@ fn bench_trampoline(wasm_bytes: &[u8]) -> f64 {
     let engine = wasmer::Engine::from(wasmer::Cranelift::default());
     let module = wasmer::Module::new(&engine, wasm_bytes).unwrap();
     let mut store = wasmer::Store::new(engine);
-    let instance = wasmer::Instance::new(&mut store, &module, &wasmer::imports!{}).unwrap();
+    let instance = wasmer::Instance::new(&mut store, &module, &wasmer::imports! {}).unwrap();
     let prepare_fn = instance
         .exports
         .get_function("prepare_call")
@@ -73,7 +76,7 @@ fn bench_execute(wasm_bytes: &[u8]) -> f64 {
     let engine = wasmer::Engine::from(wasmer::Cranelift::default());
     let module = wasmer::Module::new(&engine, wasm_bytes).unwrap();
     let mut store = wasmer::Store::new(engine);
-    let instance = wasmer::Instance::new(&mut store, &module, &wasmer::imports!{}).unwrap();
+    let instance = wasmer::Instance::new(&mut store, &module, &wasmer::imports! {}).unwrap();
     let memory = instance.exports.get_memory("memory").unwrap();
     let prepare_fn = instance
         .exports
@@ -109,7 +112,7 @@ fn bench_combined(wasm_bytes: &[u8]) -> f64 {
     let engine = wasmer::Engine::from(wasmer::Cranelift::default());
     let module = wasmer::Module::new(&engine, wasm_bytes).unwrap();
     let mut store = wasmer::Store::new(engine);
-    let instance = wasmer::Instance::new(&mut store, &module, &wasmer::imports!{}).unwrap();
+    let instance = wasmer::Instance::new(&mut store, &module, &wasmer::imports! {}).unwrap();
     let memory = instance.exports.get_memory("memory").unwrap();
     let prepare_fn = instance
         .exports

@@ -7,20 +7,20 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
-pub mod shmem;
-pub mod nda_codec;
-pub mod shmem_transport;
 pub mod json_shmem_transport;
+pub mod nda_codec;
+pub mod shmem;
+pub mod shmem_transport;
 
-pub use shmem_transport::ShmemTransport;
 pub use json_shmem_transport::JsonShmemTransport;
+pub use shmem_transport::ShmemTransport;
 
 /// Transport trait for MCP communication
 #[async_trait::async_trait]
 pub trait Transport: Send + Sync {
     /// Send a JSON-RPC request and receive a response
     async fn send(&self, request: JsonRpcRequest) -> Result<JsonRpcResponse>;
-    
+
     /// Close the transport connection
     async fn close(&self) -> Result<()>;
 }
@@ -39,7 +39,7 @@ impl StdioTransport {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
-        
+
         Ok(Self {
             child: Mutex::new(child),
         })
@@ -50,35 +50,35 @@ impl StdioTransport {
 impl Transport for StdioTransport {
     async fn send(&self, request: JsonRpcRequest) -> Result<JsonRpcResponse> {
         let mut child = self.child.lock().await;
-        
+
         // Take stdin and stdout to avoid borrow conflicts
         let mut stdin = child.stdin.take().ok_or(Error::ConnectionClosed)?;
         let mut stdout = child.stdout.take().ok_or(Error::ConnectionClosed)?;
-        
+
         // Serialize and send request
         let request_json = serde_json::to_string(&request)?;
         stdin.write_all(request_json.as_bytes()).await?;
         stdin.write_all(b"\n").await?;
         stdin.flush().await?;
-        
+
         // Read response
         let mut reader = BufReader::new(&mut stdout);
         let mut response_line = String::new();
         reader.read_line(&mut response_line).await?;
-        
+
         if response_line.is_empty() {
             return Err(Error::ConnectionClosed);
         }
-        
+
         let response: JsonRpcResponse = serde_json::from_str(&response_line)?;
-        
+
         // Put stdin and stdout back
         child.stdin = Some(stdin);
         child.stdout = Some(stdout);
-        
+
         Ok(response)
     }
-    
+
     async fn close(&self) -> Result<()> {
         let mut child = self.child.lock().await;
         child.kill().await?;
@@ -109,23 +109,23 @@ impl HttpTransport {
 impl Transport for HttpTransport {
     async fn send(&self, request: JsonRpcRequest) -> Result<JsonRpcResponse> {
         let mut req_builder = self.client.post(&self.url).json(&request);
-        
+
         if let Some(api_key) = &self.api_key {
             req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
         }
-        
+
         let response = req_builder.send().await?;
-        
+
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
             return Err(Error::Server(format!("HTTP {}: {}", status, error_text)));
         }
-        
+
         let rpc_response: JsonRpcResponse = response.json().await?;
         Ok(rpc_response)
     }
-    
+
     async fn close(&self) -> Result<()> {
         // HTTP transport doesn't need explicit close
         Ok(())

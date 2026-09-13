@@ -52,7 +52,9 @@ impl Drop for ObservabilityGuard {
 /// let _guard = init_observability("http://localhost:4317").expect("Failed to initialize");
 /// ```
 #[cfg(feature = "observability")]
-pub fn init_observability(otlp_endpoint: &str) -> Result<ObservabilityGuard, Box<dyn std::error::Error>> {
+pub fn init_observability(
+    otlp_endpoint: &str,
+) -> Result<ObservabilityGuard, Box<dyn std::error::Error>> {
     let tracer = opentelemetry_otlp::new_pipeline()
         .tracing()
         .with_exporter(

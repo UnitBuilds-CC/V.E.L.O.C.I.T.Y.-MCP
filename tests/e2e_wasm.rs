@@ -69,8 +69,9 @@ impl ServerProcess {
         self.reader
             .read_line(&mut response_line)
             .expect("failed to read response");
-        serde_json::from_str(&response_line)
-            .unwrap_or_else(|e| panic!("response is not valid JSON: {} — got: {}", e, response_line))
+        serde_json::from_str(&response_line).unwrap_or_else(|e| {
+            panic!("response is not valid JSON: {} — got: {}", e, response_line)
+        })
     }
 
     fn send_raw(&mut self, raw: &str) {
@@ -109,8 +110,9 @@ impl ServerProcess {
     /// Call a tool and return the parsed JSON payload from the first content block.
     fn call_tool(&mut self, name: &str, arguments: Value) -> Value {
         let text = self.call_tool_raw(name, arguments);
-        serde_json::from_str(&text)
-            .unwrap_or_else(|e| panic!("tool '{}' result is not valid JSON ({}): {}", name, e, text))
+        serde_json::from_str(&text).unwrap_or_else(|e| {
+            panic!("tool '{}' result is not valid JSON ({}): {}", name, e, text)
+        })
     }
 }
 
@@ -159,11 +161,17 @@ fn test_e2e_wasm_call_real_engine_runtimes() {
     let mut server = ServerProcess::spawn();
 
     // JavaScript (QuickJS)
-    let result = server.call_tool("js_string_transform", json!({"action": "upper", "input": "hello"}));
+    let result = server.call_tool(
+        "js_string_transform",
+        json!({"action": "upper", "input": "hello"}),
+    );
     assert_eq!(result["result"], "HELLO", "javascript result: {}", result);
 
     // Lua
-    let result = server.call_tool("lua_string_utils", json!({"action": "upper", "input": "hello"}));
+    let result = server.call_tool(
+        "lua_string_utils",
+        json!({"action": "upper", "input": "hello"}),
+    );
     assert_eq!(result["result"], "HELLO", "lua result: {}", result);
 
     // Python (MicroPython)
@@ -175,13 +183,21 @@ fn test_e2e_wasm_call_real_engine_runtimes() {
     let result = server.call_tool("ts_text_stats", json!({"text": SAMPLE_TEXT}));
     assert_eq!(result["chars"], 16, "typescript result: {}", result);
     assert_eq!(result["words"], 3, "typescript result: {}", result);
-    assert_eq!(result["upper"], "HELLO WASM WORLD", "typescript result: {}", result);
+    assert_eq!(
+        result["upper"], "HELLO WASM WORLD",
+        "typescript result: {}",
+        result
+    );
 
     // Ruby (mruby)
     let result = server.call_tool("rb_text_stats", json!({"text": SAMPLE_TEXT}));
     assert_eq!(result["chars"], 16, "ruby result: {}", result);
     assert_eq!(result["words"], 3, "ruby result: {}", result);
-    assert_eq!(result["upper"], "HELLO WASM WORLD", "ruby result: {}", result);
+    assert_eq!(
+        result["upper"], "HELLO WASM WORLD",
+        "ruby result: {}",
+        result
+    );
 }
 
 #[test]
@@ -228,7 +244,7 @@ fn test_e2e_wasm_call_compiled_runtimes() {
 
 /// Test that WASM tools exceeding instruction limits produce user-friendly errors.
 /// This verifies the metering error detection and feedback added in task #346.
-/// 
+///
 /// Note: We can't easily trigger metering in E2E tests since it requires configuring
 /// a very low instruction_limit. Instead, this test verifies the error message format
 /// by checking that normal WASM tools work correctly and return proper error structures.
@@ -252,13 +268,13 @@ fn test_e2e_wasm_error_format() {
         result["isError"].as_bool().unwrap_or(false),
         "Non-existent tool should report error"
     );
-    
+
     let content_text = result["content"][0]["text"].as_str().unwrap_or("");
     assert!(
         !content_text.is_empty(),
         "Error message should not be empty"
     );
-    
+
     // Verify the error mentions the tool name for debugging
     assert!(
         content_text.contains("nonexistent_tool_xyz"),
@@ -267,7 +283,10 @@ fn test_e2e_wasm_error_format() {
     );
 
     // Verify normal WASM tool still works (sanity check)
-    let result = server.call_tool("js_string_transform", json!({"action": "upper", "input": "test"}));
+    let result = server.call_tool(
+        "js_string_transform",
+        json!({"action": "upper", "input": "test"}),
+    );
     assert_eq!(
         result["result"], "TEST",
         "Normal WASM tools should still work: {}",

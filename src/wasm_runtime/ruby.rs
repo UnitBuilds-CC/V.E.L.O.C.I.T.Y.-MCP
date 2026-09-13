@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use wasmer::{Function, FunctionEnv, Instance, Memory, Module, Store, Value};
 
-use super::wasi::{WasiEnv, build_wasi_imports};
+use super::wasi::{build_wasi_imports, WasiEnv};
 use super::WasmRuntime;
 
 pub struct RubyRuntime {
@@ -49,7 +49,7 @@ impl RubyRuntime {
         let memory = instance.exports.get_memory("memory")?.clone();
         env.as_mut(&mut store).memory = Some(memory.clone());
 
-        let needed_pages = ((TOTAL_SLOTS + 65535) / 65536) as u32;
+        let needed_pages = TOTAL_SLOTS.div_ceil(65536) as u32;
         let current_pages = memory.view(&store).size();
         if current_pages.0 < needed_pages {
             memory.grow(&mut store, wasmer::Pages(needed_pages - current_pages.0))?;
@@ -81,10 +81,14 @@ impl RubyRuntime {
     }
 
     fn read_output(&mut self) -> Result<String, Box<dyn Error>> {
-        let get_len_fn = self.mruby_get_output_len_fn.as_ref()
-            .ok_or_else(|| "mruby_get_output_len not cached")?;
-        let get_ptr_fn = self.mruby_get_output_fn.as_ref()
-            .ok_or_else(|| "mruby_get_output not cached")?;
+        let get_len_fn = self
+            .mruby_get_output_len_fn
+            .as_ref()
+            .ok_or("mruby_get_output_len not cached")?;
+        let get_ptr_fn = self
+            .mruby_get_output_fn
+            .as_ref()
+            .ok_or("mruby_get_output not cached")?;
 
         let len_result = get_len_fn.call(&mut self.store, &[])?;
         let len = len_result[0].unwrap_i32() as usize;
@@ -99,7 +103,9 @@ impl RubyRuntime {
         // Reuse output_buf to avoid per-call allocation
         self.output_buf.clear();
         self.output_buf.resize(len, 0u8);
-        self.memory.view(&self.store).read(ptr, &mut self.output_buf)?;
+        self.memory
+            .view(&self.store)
+            .read(ptr, &mut self.output_buf)?;
         Ok(String::from_utf8_lossy(&self.output_buf).to_string())
     }
 
@@ -108,12 +114,11 @@ impl RubyRuntime {
         let bytes = code.as_bytes();
         self.write_to_slot(SLOT_CODE, bytes)?;
 
-        let eval_fn = self.mruby_eval_fn.as_ref()
-            .ok_or_else(|| "mruby_eval not cached")?;
-        let result = eval_fn.call(&mut self.store, &[
-            Value::I32(SLOT_CODE as i32),
-            Value::I32(bytes.len() as i32),
-        ])?;
+        let eval_fn = self.mruby_eval_fn.as_ref().ok_or("mruby_eval not cached")?;
+        let result = eval_fn.call(
+            &mut self.store,
+            &[Value::I32(SLOT_CODE as i32), Value::I32(bytes.len() as i32)],
+        )?;
         let status = result[0].unwrap_i32();
 
         let output = self.read_output()?;
@@ -132,9 +137,24 @@ impl WasmRuntime for RubyRuntime {
 
         // Cache all frequently-used function references
         self.mruby_eval_fn = Some(self.instance.exports.get_function("mruby_eval")?.clone());
-        self.mruby_call_tool_fn = Some(self.instance.exports.get_function("mruby_call_tool")?.clone());
-        self.mruby_get_output_len_fn = Some(self.instance.exports.get_function("mruby_get_output_len")?.clone());
-        self.mruby_get_output_fn = Some(self.instance.exports.get_function("mruby_get_output")?.clone());
+        self.mruby_call_tool_fn = Some(
+            self.instance
+                .exports
+                .get_function("mruby_call_tool")?
+                .clone(),
+        );
+        self.mruby_get_output_len_fn = Some(
+            self.instance
+                .exports
+                .get_function("mruby_get_output_len")?
+                .clone(),
+        );
+        self.mruby_get_output_fn = Some(
+            self.instance
+                .exports
+                .get_function("mruby_get_output")?
+                .clone(),
+        );
 
         Ok(())
     }
@@ -154,16 +174,21 @@ impl WasmRuntime for RubyRuntime {
         self.write_to_slot(SLOT_NAME, name_bytes)?;
 
         let register_fn = self.instance.exports.get_function("mruby_register_tool")?;
-        let result = register_fn.call(&mut self.store, &[
-            Value::I32(SLOT_NAME as i32),
-            Value::I32(name_bytes.len() as i32),
-            Value::I32(SLOT_CODE as i32),
-            Value::I32(source_bytes.len() as i32),
-        ])?;
+        let result = register_fn.call(
+            &mut self.store,
+            &[
+                Value::I32(SLOT_NAME as i32),
+                Value::I32(name_bytes.len() as i32),
+                Value::I32(SLOT_CODE as i32),
+                Value::I32(source_bytes.len() as i32),
+            ],
+        )?;
         let status = result[0].unwrap_i32();
 
         if status != 0 {
-            let err = self.read_output().unwrap_or_else(|_| "unknown error".to_string());
+            let err = self
+                .read_output()
+                .unwrap_or_else(|_| "unknown error".to_string());
             return Err(format!("Failed to register Ruby tool '{}': {}", name, err).into());
         }
 
@@ -182,14 +207,19 @@ impl WasmRuntime for RubyRuntime {
         self.write_to_slot(SLOT_ARGS, args_bytes)?;
         self.write_to_slot(SLOT_NAME, name_bytes)?;
 
-        let call_fn = self.mruby_call_tool_fn.as_ref()
-            .ok_or_else(|| "mruby_call_tool not cached")?;
-        let result = call_fn.call(&mut self.store, &[
-            Value::I32(SLOT_NAME as i32),
-            Value::I32(name_bytes.len() as i32),
-            Value::I32(SLOT_ARGS as i32),
-            Value::I32(args_bytes.len() as i32),
-        ])?;
+        let call_fn = self
+            .mruby_call_tool_fn
+            .as_ref()
+            .ok_or("mruby_call_tool not cached")?;
+        let result = call_fn.call(
+            &mut self.store,
+            &[
+                Value::I32(SLOT_NAME as i32),
+                Value::I32(name_bytes.len() as i32),
+                Value::I32(SLOT_ARGS as i32),
+                Value::I32(args_bytes.len() as i32),
+            ],
+        )?;
         let status = result[0].unwrap_i32();
 
         let output = self.read_output()?;
@@ -235,11 +265,18 @@ mod tests {
         let wasm = std::fs::read(wasm_path()).expect("Ruby WASM not found");
         let mut rt = RubyRuntime::cold_start(&wasm).expect("cold start failed");
 
-        let source = "def greet(args)\n  {\"message\" => \"Hello, \" + args[\"name\"].to_s + \"!\"}\nend\n";
+        let source =
+            "def greet(args)\n  {\"message\" => \"Hello, \" + args[\"name\"].to_s + \"!\"}\nend\n";
         rt.register_tool("greet", source).expect("register failed");
 
-        let result = rt.call_tool("greet", r#"{"name": "mruby"}"#).expect("call failed");
-        assert!(result.contains("Hello, mruby!"), "unexpected result: {}", result);
+        let result = rt
+            .call_tool("greet", r#"{"name": "mruby"}"#)
+            .expect("call failed");
+        assert!(
+            result.contains("Hello, mruby!"),
+            "unexpected result: {}",
+            result
+        );
 
         rt.destroy().unwrap();
     }

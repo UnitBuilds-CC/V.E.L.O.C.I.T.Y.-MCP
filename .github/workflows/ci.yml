@@ -21,9 +21,17 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy lint
+        run: cargo clippy --features http,database,oauth2 -- -D warnings
 
       - name: Build
         run: cargo build --verbose
@@ -36,9 +44,6 @@ jobs:
 
       - name: Run tests with all features
         run: cargo test --features http,database,oauth2 --verbose
-
-      - name: Check for warnings
-        run: cargo build --features http,database,oauth2 2>&1 | grep -c "warning:" || echo "0 warnings"
 
   security-audit:
     name: Dependency Audit

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::path::PathBuf;
 use std::process::Command;
-use wasmer::{Instance, Memory, Module, Store};
+use wasmer::{Instance, Module, Store};
 
 use super::WasmRuntime;
 
@@ -18,7 +18,7 @@ struct CompiledGoTool {
 }
 
 pub struct GoWasmRuntime {
-    wasm_path: String, // Path to base TinyGo WASM (used for config reference)
+    _wasm_path: String,
     tools: HashMap<String, String>, // tool_name -> source_code
     compiled_tools: HashMap<String, CompiledGoTool>,
 }
@@ -26,7 +26,7 @@ pub struct GoWasmRuntime {
 impl GoWasmRuntime {
     pub fn new(wasm_path: &str) -> Self {
         Self {
-            wasm_path: wasm_path.to_string(),
+            _wasm_path: wasm_path.to_string(),
             tools: HashMap::new(),
             compiled_tools: HashMap::new(),
         }
@@ -43,7 +43,8 @@ impl GoWasmRuntime {
         let wasm_file = temp_dir.join("tool.wasm");
 
         // Write Go source to file with proper package and main function wrapper
-        let full_source = format!(r#"
+        let full_source = format!(
+            r#"
 package main
 
 import (
@@ -93,7 +94,12 @@ func encodeResult(v interface{{}}) int64 {{
 }}
 
 func main() {{}}
-"#, source, tool_name, tool_name, get_main_function_name(source));
+"#,
+            source,
+            tool_name,
+            tool_name,
+            get_main_function_name(source)
+        );
 
         std::fs::write(&go_file, full_source)
             .map_err(|e| format!("Failed to write Go source: {}", e))?;
@@ -109,7 +115,12 @@ func main() {{}}
             .arg(&wasm_file)
             .arg(&go_file)
             .output()
-            .map_err(|e| format!("Failed to run TinyGo: {}. Is it installed? Try: scoop install tinygo", e))?;
+            .map_err(|e| {
+                format!(
+                    "Failed to run TinyGo: {}. Is it installed? Try: scoop install tinygo",
+                    e
+                )
+            })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -159,7 +170,8 @@ impl WasmRuntime for GoWasmRuntime {
         }
 
         // Compile Go source to WASM
-        let wasm_bytes = self.compile_go_to_wasm(source, name)
+        let wasm_bytes = self
+            .compile_go_to_wasm(source, name)
             .map_err(|e| format!("Compilation failed: {}", e))?;
 
         // Create WASM module
@@ -168,7 +180,8 @@ impl WasmRuntime for GoWasmRuntime {
             .map_err(|e| format!("Failed to compile WASM module: {}", e))?;
 
         // Cache the compiled module
-        self.compiled_tools.insert(name.to_string(), CompiledGoTool { module });
+        self.compiled_tools
+            .insert(name.to_string(), CompiledGoTool { module });
         self.tools.insert(name.to_string(), source.to_string());
 
         Ok(())
@@ -176,7 +189,9 @@ impl WasmRuntime for GoWasmRuntime {
 
     fn call_tool(&mut self, name: &str, args_json: &str) -> Result<String, Box<dyn Error>> {
         // Get cached module
-        let tool = self.compiled_tools.get(name)
+        let tool = self
+            .compiled_tools
+            .get(name)
             .ok_or_else(|| format!("Tool '{}' not registered or compilation failed", name))?;
 
         // Create a fresh store and instance for each call (isolated execution)
@@ -215,13 +230,16 @@ impl WasmRuntime for GoWasmRuntime {
         }
 
         // Write input to WASM memory
-        memory.view(&mut store).write(memory_offset, input_bytes)?;
+        memory.view(&store).write(memory_offset, input_bytes)?;
 
         // Call tool_execute(ptr, length)
-        let result_value = tool_execute.call(&mut store, &[
-            wasmer::Value::I32(memory_offset as i32),
-            wasmer::Value::I32(input_len),
-        ])?;
+        let result_value = tool_execute.call(
+            &mut store,
+            &[
+                wasmer::Value::I32(memory_offset as i32),
+                wasmer::Value::I32(input_len),
+            ],
+        )?;
 
         // Extract result pointer and length from i64 return value
         let result_i64 = result_value[0].unwrap_i64();
@@ -230,13 +248,19 @@ impl WasmRuntime for GoWasmRuntime {
 
         // Read result from WASM memory
         let mut result_buf = vec![0u8; result_len as usize];
-        memory.view(&store).read(result_ptr as u64, &mut result_buf)?;
+        memory
+            .view(&store)
+            .read(result_ptr as u64, &mut result_buf)?;
         let result_str = String::from_utf8_lossy(&result_buf).to_string();
 
         Ok(result_str)
     }
 
-    fn call_tool_binary(&mut self, _name: &str, _args_tlv: &[u8]) -> Result<String, Box<dyn Error>> {
+    fn call_tool_binary(
+        &mut self,
+        _name: &str,
+        _args_tlv: &[u8],
+    ) -> Result<String, Box<dyn Error>> {
         // Binary protocol not yet implemented for Go runtime
         Err("Binary protocol not supported for Go runtime".into())
     }
@@ -270,10 +294,7 @@ fn find_tinygo() -> Result<PathBuf, String> {
     // Try PATH (using where command on Windows)
     #[cfg(target_os = "windows")]
     {
-        if let Ok(output) = Command::new("where")
-            .arg("tinygo")
-            .output()
-        {
+        if let Ok(output) = Command::new("where").arg("tinygo").output() {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 if let Some(path) = stdout.lines().next() {
@@ -289,10 +310,7 @@ fn find_tinygo() -> Result<PathBuf, String> {
     // Unix-like systems
     #[cfg(not(target_os = "windows"))]
     {
-        if let Ok(output) = Command::new("which")
-            .arg("tinygo")
-            .output()
-        {
+        if let Ok(output) = Command::new("which").arg("tinygo").output() {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 if let Some(path) = stdout.lines().next() {

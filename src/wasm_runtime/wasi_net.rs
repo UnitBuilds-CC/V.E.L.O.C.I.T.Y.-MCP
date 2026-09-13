@@ -99,7 +99,9 @@ impl WasiSocketState {
             _ => ERRNO_CONNABORTED,
         })?;
 
-        stream.set_nonblocking(true).map_err(|_| ERRNO_CONNABORTED)?;
+        stream
+            .set_nonblocking(true)
+            .map_err(|_| ERRNO_CONNABORTED)?;
 
         let fd = self.alloc_fd();
         self.sockets.insert(fd, stream);
@@ -118,7 +120,9 @@ impl WasiSocketState {
             _ => ERRNO_CONNABORTED,
         })?;
 
-        listener.set_nonblocking(true).map_err(|_| ERRNO_CONNABORTED)?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|_| ERRNO_CONNABORTED)?;
 
         let fd = self.alloc_fd();
         self.listeners.insert(fd, listener);
@@ -132,7 +136,9 @@ impl WasiSocketState {
             _ => ERRNO_CONNABORTED,
         })?;
 
-        stream.set_nonblocking(true).map_err(|_| ERRNO_CONNABORTED)?;
+        stream
+            .set_nonblocking(true)
+            .map_err(|_| ERRNO_CONNABORTED)?;
 
         let fd = self.alloc_fd();
         self.sockets.insert(fd, stream);
@@ -218,7 +224,9 @@ mod tests {
             listener.local_addr().unwrap().port()
         };
 
-        let client_fd = state.connect_tcp("127.0.0.1", port).expect("connect failed");
+        let client_fd = state
+            .connect_tcp("127.0.0.1", port)
+            .expect("connect failed");
         assert!(state.is_socket_fd(client_fd));
 
         let server_fd = state.accept_tcp(listener_fd).expect("accept failed");
@@ -284,8 +292,7 @@ mod tests {
 
     #[test]
     fn test_connect_timeout() {
-        let mut state = WasiSocketState::new()
-            .with_connect_timeout(Duration::from_millis(100));
+        let mut state = WasiSocketState::new().with_connect_timeout(Duration::from_millis(100));
 
         let result = state.connect_tcp("192.0.2.1", 80);
         assert!(result.is_err());
@@ -376,7 +383,10 @@ mod tests {
     #[test]
     fn test_default_connect_timeout() {
         let state = WasiSocketState::new();
-        assert_eq!(state.connect_timeout, Duration::from_millis(DEFAULT_CONNECT_TIMEOUT_MS));
+        assert_eq!(
+            state.connect_timeout,
+            Duration::from_millis(DEFAULT_CONNECT_TIMEOUT_MS)
+        );
     }
 
     #[test]

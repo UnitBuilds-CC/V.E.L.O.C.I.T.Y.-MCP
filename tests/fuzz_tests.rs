@@ -4,7 +4,9 @@
 //! and signature verification never panic and always produce correct results.
 
 use proptest::prelude::*;
-use velocity_mcp::nda_document::{NdaCompiler, NdaDocument, NDA_MAGIC, HEADER_SIZE, SIGNATURE_SECTION_SIZE};
+use velocity_mcp::nda_document::{
+    NdaCompiler, NdaDocument, HEADER_SIZE, NDA_MAGIC, SIGNATURE_SECTION_SIZE,
+};
 
 // ─── NDA Compiler/Parser Round-Trip ──────────────────────────────────────────
 
@@ -339,8 +341,7 @@ fn arb_json_value() -> impl Strategy<Value = serde_json::Value> {
     ];
     leaf.prop_recursive(3, 64, 10, |inner| {
         prop_oneof![
-            proptest::collection::vec(inner.clone(), 0..5)
-                .prop_map(serde_json::Value::Array),
+            proptest::collection::vec(inner.clone(), 0..5).prop_map(serde_json::Value::Array),
             proptest::collection::btree_map("[a-z]{1,5}", inner, 0..5)
                 .prop_map(|m| serde_json::Value::Object(m.into_iter().collect())),
         ]

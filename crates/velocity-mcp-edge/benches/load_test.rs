@@ -5,16 +5,16 @@
 //! - HTTP round-trip latency under load
 //! - Concurrent connection handling
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId, Throughput};
-use std::convert::Infallible;
-use std::net::SocketAddr;
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
-use http_body_util::Full;
 use hyper_util::rt::TokioIo;
+use std::convert::Infallible;
+use std::net::SocketAddr;
 use tokio::net::TcpListener;
-use velocity_mcp_edge::{process_mcp_request, error_response};
+use velocity_mcp_edge::{error_response, process_mcp_request};
 
 // ---------------------------------------------------------------------------
 // Direct protocol benchmarks (no HTTP)
@@ -56,9 +56,7 @@ fn bench_process_mcp_request(c: &mut Criterion) {
 fn bench_error_response_bytes(c: &mut Criterion) {
     let mut group = c.benchmark_group("error_formatting");
     group.bench_function("error_response_bytes", |b| {
-        b.iter(|| {
-            velocity_mcp_edge::error_response_bytes(black_box("test error message"))
-        })
+        b.iter(|| velocity_mcp_edge::error_response_bytes(black_box("test error message")))
     });
     group.finish();
 }
@@ -171,11 +169,7 @@ fn bench_http_roundtrip(c: &mut Criterion) {
         b.iter(|| {
             rt.block_on(async {
                 let client = reqwest::Client::new();
-                let resp = client
-                    .get(format!("{}/health", base))
-                    .send()
-                    .await
-                    .unwrap();
+                let resp = client.get(format!("{}/health", base)).send().await.unwrap();
                 let _ = resp.text().await.unwrap();
             });
         })

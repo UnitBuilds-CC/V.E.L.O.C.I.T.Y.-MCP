@@ -1,7 +1,7 @@
 use memmap2::MmapMut;
+use std::error::Error;
 use std::fs::OpenOptions;
 use std::path::Path;
-use std::error::Error;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 const STATE_OFFSET: usize = 0;
@@ -41,7 +41,9 @@ extern "system" {
 /// Improve Windows timer resolution from 15.6ms to 1ms for low-latency event waits.
 #[cfg(target_os = "windows")]
 pub fn enable_high_resolution_timer() {
-    unsafe { timeBeginPeriod(1); }
+    unsafe {
+        timeBeginPeriod(1);
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -50,7 +52,9 @@ pub fn enable_high_resolution_timer() {}
 /// Restore default Windows timer resolution.
 #[cfg(target_os = "windows")]
 pub fn disable_high_resolution_timer() {
-    unsafe { timeEndPeriod(1); }
+    unsafe {
+        timeEndPeriod(1);
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -102,7 +106,9 @@ impl SharedMemoryBuffer {
 
         let mmap = unsafe { MmapMut::map_mut(&file)? };
 
-        let file_name = path.as_ref().file_name()
+        let file_name = path
+            .as_ref()
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("default");
 
@@ -120,11 +126,17 @@ impl SharedMemoryBuffer {
 
         let h_res_event = unsafe { CreateEventW(std::ptr::null_mut(), 0, 0, w_res.as_ptr()) };
         if h_res_event.is_null() {
-            unsafe { CloseHandle(h_req_event); }
+            unsafe {
+                CloseHandle(h_req_event);
+            }
             return Err("Failed to create res event".into());
         }
 
-        let mut buffer = SharedMemoryBuffer { mmap, h_req_event, h_res_event };
+        let mut buffer = SharedMemoryBuffer {
+            mmap,
+            h_req_event,
+            h_res_event,
+        };
 
         // Always reset to clean state on startup. If the previous server
         // crashed mid-request, the buffer may be left in REQ_READY,
@@ -181,7 +193,9 @@ impl SharedMemoryBuffer {
             }
         }
         // SAFETY: h_req_event is a valid event handle from CreateEventW.
-        unsafe { WaitForSingleObject(self.h_req_event, INFINITE); }
+        unsafe {
+            WaitForSingleObject(self.h_req_event, INFINITE);
+        }
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -193,7 +207,9 @@ impl SharedMemoryBuffer {
     #[cfg(target_os = "windows")]
     pub fn signal_response(&self) {
         // SAFETY: h_res_event is a valid event handle from CreateEventW.
-        unsafe { SetEvent(self.h_res_event); }
+        unsafe {
+            SetEvent(self.h_res_event);
+        }
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -203,7 +219,9 @@ impl SharedMemoryBuffer {
     #[cfg(target_os = "windows")]
     pub fn signal_request(&self) {
         // SAFETY: h_req_event is a valid event handle from CreateEventW.
-        unsafe { SetEvent(self.h_req_event); }
+        unsafe {
+            SetEvent(self.h_req_event);
+        }
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -228,7 +246,9 @@ impl SharedMemoryBuffer {
             }
         }
         // SAFETY: h_res_event is a valid event handle from CreateEventW.
-        unsafe { WaitForSingleObject(self.h_res_event, INFINITE); }
+        unsafe {
+            WaitForSingleObject(self.h_res_event, INFINITE);
+        }
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -409,7 +429,13 @@ mod tests {
         cleanup(&path);
         let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
 
-        for state in [STATE_IDLE, STATE_REQ_READY, STATE_PROCESSING, STATE_RES_READY, STATE_ERROR] {
+        for state in [
+            STATE_IDLE,
+            STATE_REQ_READY,
+            STATE_PROCESSING,
+            STATE_RES_READY,
+            STATE_ERROR,
+        ] {
             buffer.set_state(state);
             buffer.flush().unwrap();
             assert_eq!(buffer.get_state(), state);
@@ -457,7 +483,10 @@ mod tests {
         buffer.set_input_len(OUTPUT_BUFFER_OFFSET as u32);
         let result = buffer.read_input();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("exceeds buffer limit"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds buffer limit"));
         cleanup(&path);
     }
 
@@ -471,7 +500,10 @@ mod tests {
         let oversized = "x".repeat(max_output + 1);
         let result = buffer.write_output(&oversized);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("exceeds output buffer limit"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds output buffer limit"));
         cleanup(&path);
     }
 
@@ -511,7 +543,8 @@ mod tests {
         buffer.set_state(STATE_PROCESSING);
         buffer.flush().unwrap();
 
-        let response = r#"{"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"OK"}]},"id":1}"#;
+        let response =
+            r#"{"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"OK"}]},"id":1}"#;
         buffer.write_output(response).unwrap();
         buffer.set_state(STATE_RES_READY);
         buffer.flush().unwrap();
@@ -546,7 +579,10 @@ mod tests {
         buffer.set_input_len(OUTPUT_BUFFER_OFFSET as u32);
         let result = buffer.read_input_raw();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("exceeds buffer limit"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds buffer limit"));
         cleanup(&path);
     }
 
@@ -575,7 +611,10 @@ mod tests {
         let oversized = vec![0u8; max_output + 1];
         let result = buffer.write_output_raw(&oversized);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("exceeds output buffer limit"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds output buffer limit"));
         cleanup(&path);
     }
 
@@ -589,7 +628,10 @@ mod tests {
         let oversized = "x".repeat(max_input + 1);
         let result = buffer.write_input(&oversized);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("exceeds input buffer limit"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds input buffer limit"));
         cleanup(&path);
     }
 

@@ -20,29 +20,50 @@ async fn setup() -> (Client, String) {
 #[tokio::test]
 async fn test_health_endpoint_returns_200() {
     let (client, base) = setup().await;
-    let resp = client.get(&format!("{}/health", base)).send().await.unwrap();
+    let resp = client
+        .get(&format!("{}/health", base))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
 }
 
 #[tokio::test]
 async fn test_healthz_endpoint_returns_200() {
     let (client, base) = setup().await;
-    let resp = client.get(&format!("{}/healthz", base)).send().await.unwrap();
+    let resp = client
+        .get(&format!("{}/healthz", base))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
 }
 
 #[tokio::test]
 async fn test_health_returns_json_content_type() {
     let (client, base) = setup().await;
-    let resp = client.get(&format!("{}/health", base)).send().await.unwrap();
-    let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+    let resp = client
+        .get(&format!("{}/health", base))
+        .send()
+        .await
+        .unwrap();
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert!(ct.contains("application/json"));
 }
 
 #[tokio::test]
 async fn test_health_body_contains_healthy_status() {
     let (client, base) = setup().await;
-    let resp = client.get(&format!("{}/health", base)).send().await.unwrap();
+    let resp = client
+        .get(&format!("{}/health", base))
+        .send()
+        .await
+        .unwrap();
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "healthy");
 }
@@ -50,7 +71,11 @@ async fn test_health_body_contains_healthy_status() {
 #[tokio::test]
 async fn test_health_body_contains_version() {
     let (client, base) = setup().await;
-    let resp = client.get(&format!("{}/health", base)).send().await.unwrap();
+    let resp = client
+        .get(&format!("{}/health", base))
+        .send()
+        .await
+        .unwrap();
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["version"], "3.2.0");
 }
@@ -166,11 +191,7 @@ async fn test_unknown_path_returns_404() {
 #[tokio::test]
 async fn test_unknown_path_body_has_error() {
     let (client, base) = setup().await;
-    let resp = client
-        .get(&format!("{}/nope", base))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(&format!("{}/nope", base)).send().await.unwrap();
     let body: Value = resp.json().await.unwrap();
     assert!(body.get("error").is_some());
 }
@@ -212,7 +233,12 @@ async fn test_mcp_response_has_json_content_type() {
         .send()
         .await
         .unwrap();
-    let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert!(ct.contains("application/json"));
 }
 

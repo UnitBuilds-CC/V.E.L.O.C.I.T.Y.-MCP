@@ -93,7 +93,9 @@ impl RateLimiter {
             // We won the refill race; add tokens
             loop {
                 let current = self.tokens_scaled.load(Ordering::Relaxed);
-                let new_val = current.saturating_add(new_tokens_scaled).min(self.burst_scaled);
+                let new_val = current
+                    .saturating_add(new_tokens_scaled)
+                    .min(self.burst_scaled);
                 match self.tokens_scaled.compare_exchange_weak(
                     current,
                     new_val,
@@ -124,17 +126,22 @@ fn current_time_ms() -> u64 {
 /// Global rate limiter instance.
 /// Limits can be raised via VELOCITY_RATE_LIMIT / VELOCITY_RATE_BURST env vars
 /// (e.g. for benchmark runs); defaults are 20 tokens/sec, burst 100.
-static GLOBAL_RATE_LIMITER: std::sync::LazyLock<RateLimiter> = std::sync::LazyLock::new(|| {
-    match (
-        std::env::var("VELOCITY_RATE_LIMIT").ok().and_then(|v| v.parse::<u32>().ok()),
-        std::env::var("VELOCITY_RATE_BURST").ok().and_then(|v| v.parse::<u32>().ok()),
-    ) {
-        (Some(rate), Some(burst)) => RateLimiter::with_limits(rate, burst),
-        (Some(rate), None) => RateLimiter::with_limits(rate, 100),
-        (None, Some(burst)) => RateLimiter::with_limits(20, burst),
-        (None, None) => RateLimiter::default(),
-    }
-});
+static GLOBAL_RATE_LIMITER: std::sync::LazyLock<RateLimiter> =
+    std::sync::LazyLock::new(|| {
+        match (
+            std::env::var("VELOCITY_RATE_LIMIT")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok()),
+            std::env::var("VELOCITY_RATE_BURST")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok()),
+        ) {
+            (Some(rate), Some(burst)) => RateLimiter::with_limits(rate, burst),
+            (Some(rate), None) => RateLimiter::with_limits(rate, 100),
+            (None, Some(burst)) => RateLimiter::with_limits(20, burst),
+            (None, None) => RateLimiter::default(),
+        }
+    });
 
 /// Check if a tool call is allowed by the global rate limiter.
 pub fn check_rate_limit() -> bool {

@@ -3,9 +3,9 @@
 //! Tests cover: parse_request, serialize_response, handle_mcp_request
 //! from velocity-mcp-core, exercised through the edge crate's process_mcp_request.
 
-use velocity_mcp_core::{parse_request, serialize_response, handle_mcp_request};
-use velocity_mcp_edge::process_mcp_request;
 use proptest::prelude::*;
+use velocity_mcp_core::{handle_mcp_request, parse_request, serialize_response};
+use velocity_mcp_edge::process_mcp_request;
 
 // ---------------------------------------------------------------------------
 // parse_request tests
@@ -114,7 +114,7 @@ fn test_serialize_response_success() {
 
 #[test]
 fn test_serialize_response_error() {
-    use velocity_mcp_core::{McpResponse, McpError};
+    use velocity_mcp_core::{McpError, McpResponse};
     let response = McpResponse {
         jsonrpc: "2.0".to_string(),
         result: None,
@@ -233,7 +233,10 @@ fn test_process_mcp_request_invalid_json() {
     let result = process_mcp_request(bad);
     let parsed: serde_json::Value = serde_json::from_slice(&result).unwrap();
     assert_eq!(parsed["error"]["code"], -32700);
-    assert!(parsed["error"]["message"].as_str().unwrap().contains("Parse error"));
+    assert!(parsed["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("Parse error"));
 }
 
 #[test]

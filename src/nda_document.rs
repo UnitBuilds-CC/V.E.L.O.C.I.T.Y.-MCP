@@ -28,7 +28,7 @@
 //!   Offset 0 = empty string
 //! ```
 
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::Cursor;
 
@@ -90,7 +90,10 @@ impl NdaDocument {
     /// Rejects malicious files with excessive counts or corrupted offsets.
     pub fn read(data: &[u8]) -> Result<Self, String> {
         if data.len() < HEADER_SIZE {
-            return Err(format!("Buffer too small for NDA header: {} bytes", data.len()));
+            return Err(format!(
+                "Buffer too small for NDA header: {} bytes",
+                data.len()
+            ));
         }
 
         let mut cur = Cursor::new(data);
@@ -98,44 +101,71 @@ impl NdaDocument {
 
         let magic = read_u32_le(&mut cur)?;
         if magic != NDA_MAGIC {
-            return Err(format!("Invalid NDA magic: 0x{:08X} (expected 0x{:08X})", magic, NDA_MAGIC));
+            return Err(format!(
+                "Invalid NDA magic: 0x{:08X} (expected 0x{:08X})",
+                magic, NDA_MAGIC
+            ));
         }
 
         let flags = read_u32_le(&mut cur)?;
         let mut merkle_root = [0u8; 32];
-        cur.read_exact(&mut merkle_root).map_err(|e| format!("Failed to read merkle root: {}", e))?;
+        cur.read_exact(&mut merkle_root)
+            .map_err(|e| format!("Failed to read merkle root: {}", e))?;
         let triple_count = read_u32_le(&mut cur)? as usize;
         let command_count = read_u32_le(&mut cur)? as usize;
         let string_pool_offset = read_u32_le(&mut cur)? as usize;
 
         // ── Bounds validation (overflow-safe) ──────────────────────────
         if triple_count > MAX_TRIPLES {
-            return Err(format!("Triple count {} exceeds maximum {}", triple_count, MAX_TRIPLES));
+            return Err(format!(
+                "Triple count {} exceeds maximum {}",
+                triple_count, MAX_TRIPLES
+            ));
         }
         if command_count > MAX_COMMANDS {
-            return Err(format!("Command count {} exceeds maximum {}", command_count, MAX_COMMANDS));
+            return Err(format!(
+                "Command count {} exceeds maximum {}",
+                command_count, MAX_COMMANDS
+            ));
         }
 
-        let triples_size = triple_count.checked_mul(TRIPLE_SIZE)
+        let triples_size = triple_count
+            .checked_mul(TRIPLE_SIZE)
             .ok_or("Integer overflow computing triples size")?;
-        let commands_size = command_count.checked_mul(COMMAND_SIZE)
+        let commands_size = command_count
+            .checked_mul(COMMAND_SIZE)
             .ok_or("Integer overflow computing commands size")?;
-        let expected_min = HEADER_SIZE.checked_add(triples_size)
+        let expected_min = HEADER_SIZE
+            .checked_add(triples_size)
             .and_then(|v| v.checked_add(commands_size))
             .ok_or("Integer overflow computing expected size")?;
 
         if data.len() < expected_min {
-            return Err(format!("NDA buffer corrupted: need {} bytes, have {}", expected_min, data.len()));
+            return Err(format!(
+                "NDA buffer corrupted: need {} bytes, have {}",
+                expected_min,
+                data.len()
+            ));
         }
         if string_pool_offset > data.len() {
-            return Err(format!("String pool offset {} exceeds buffer size {}", string_pool_offset, data.len()));
+            return Err(format!(
+                "String pool offset {} exceeds buffer size {}",
+                string_pool_offset,
+                data.len()
+            ));
         }
         if string_pool_offset < expected_min {
-            return Err(format!("String pool offset {} overlaps with triples/commands (min {})", string_pool_offset, expected_min));
+            return Err(format!(
+                "String pool offset {} overlaps with triples/commands (min {})",
+                string_pool_offset, expected_min
+            ));
         }
         let string_pool_size = data.len() - string_pool_offset;
         if string_pool_size > MAX_STRING_POOL_SIZE {
-            return Err(format!("String pool size {} exceeds maximum {}", string_pool_size, MAX_STRING_POOL_SIZE));
+            return Err(format!(
+                "String pool size {} exceeds maximum {}",
+                string_pool_size, MAX_STRING_POOL_SIZE
+            ));
         }
 
         // Read triples
@@ -144,9 +174,24 @@ impl NdaDocument {
         for i in 0..triple_count {
             let offset = triples_start + i * TRIPLE_SIZE;
             triples.push(SemanticTriple {
-                subject_offset: u32::from_le_bytes([data[offset], data[offset+1], data[offset+2], data[offset+3]]),
-                predicate_offset: u32::from_le_bytes([data[offset+4], data[offset+5], data[offset+6], data[offset+7]]),
-                object_offset: u32::from_le_bytes([data[offset+8], data[offset+9], data[offset+10], data[offset+11]]),
+                subject_offset: u32::from_le_bytes([
+                    data[offset],
+                    data[offset + 1],
+                    data[offset + 2],
+                    data[offset + 3],
+                ]),
+                predicate_offset: u32::from_le_bytes([
+                    data[offset + 4],
+                    data[offset + 5],
+                    data[offset + 6],
+                    data[offset + 7],
+                ]),
+                object_offset: u32::from_le_bytes([
+                    data[offset + 8],
+                    data[offset + 9],
+                    data[offset + 10],
+                    data[offset + 11],
+                ]),
             });
         }
 
@@ -157,12 +202,22 @@ impl NdaDocument {
             let offset = commands_start + i * COMMAND_SIZE;
             commands.push(DisplayCommand {
                 command_type: data[offset],
-                color: u32::from_le_bytes([data[offset+1], data[offset+2], data[offset+3], data[offset+4]]),
-                x: u16::from_le_bytes([data[offset+5], data[offset+6]]),
-                y: u16::from_le_bytes([data[offset+7], data[offset+8]]),
-                width: u16::from_le_bytes([data[offset+9], data[offset+10]]),
-                height: u16::from_le_bytes([data[offset+11], data[offset+12]]),
-                content_offset: u32::from_le_bytes([data[offset+13], data[offset+14], data[offset+15], data[offset+16]]),
+                color: u32::from_le_bytes([
+                    data[offset + 1],
+                    data[offset + 2],
+                    data[offset + 3],
+                    data[offset + 4],
+                ]),
+                x: u16::from_le_bytes([data[offset + 5], data[offset + 6]]),
+                y: u16::from_le_bytes([data[offset + 7], data[offset + 8]]),
+                width: u16::from_le_bytes([data[offset + 9], data[offset + 10]]),
+                height: u16::from_le_bytes([data[offset + 11], data[offset + 12]]),
+                content_offset: u32::from_le_bytes([
+                    data[offset + 13],
+                    data[offset + 14],
+                    data[offset + 15],
+                    data[offset + 16],
+                ]),
             });
         }
 
@@ -171,15 +226,28 @@ impl NdaDocument {
 
         // ── Validate string pool offsets for all triples ───────────────
         for (i, t) in triples.iter().enumerate() {
-            for (name, off) in [("subject", t.subject_offset), ("predicate", t.predicate_offset), ("object", t.object_offset)] {
+            for (name, off) in [
+                ("subject", t.subject_offset),
+                ("predicate", t.predicate_offset),
+                ("object", t.object_offset),
+            ] {
                 if off != 0 {
                     let o = off as usize;
                     if o.saturating_add(2) > string_pool.len() {
-                        return Err(format!("Triple {} {} offset {} exceeds string pool size {}", i, name, o, string_pool.len()));
+                        return Err(format!(
+                            "Triple {} {} offset {} exceeds string pool size {}",
+                            i,
+                            name,
+                            o,
+                            string_pool.len()
+                        ));
                     }
                     let slen = u16::from_le_bytes([string_pool[o], string_pool[o + 1]]) as usize;
                     if o.saturating_add(2).saturating_add(slen) > string_pool.len() {
-                        return Err(format!("Triple {} {} string at offset {} extends beyond pool", i, name, o));
+                        return Err(format!(
+                            "Triple {} {} string at offset {} extends beyond pool",
+                            i, name, o
+                        ));
                     }
                 }
             }
@@ -188,16 +256,27 @@ impl NdaDocument {
         // ── Validate display command types and content offsets ──────────
         for (i, c) in commands.iter().enumerate() {
             if c.command_type < 1 || c.command_type > 4 {
-                return Err(format!("Command {} has invalid type {} (expected 1-4)", i, c.command_type));
+                return Err(format!(
+                    "Command {} has invalid type {} (expected 1-4)",
+                    i, c.command_type
+                ));
             }
             if c.content_offset != 0 {
                 let o = c.content_offset as usize;
                 if o.saturating_add(2) > string_pool.len() {
-                    return Err(format!("Command {} content offset {} exceeds string pool size {}", i, o, string_pool.len()));
+                    return Err(format!(
+                        "Command {} content offset {} exceeds string pool size {}",
+                        i,
+                        o,
+                        string_pool.len()
+                    ));
                 }
                 let slen = u16::from_le_bytes([string_pool[o], string_pool[o + 1]]) as usize;
                 if o.saturating_add(2).saturating_add(slen) > string_pool.len() {
-                    return Err(format!("Command {} content string at offset {} extends beyond pool", i, o));
+                    return Err(format!(
+                        "Command {} content string at offset {} extends beyond pool",
+                        i, o
+                    ));
                 }
             }
         }
@@ -219,11 +298,18 @@ impl NdaDocument {
         }
         let off = offset as usize;
         if off.saturating_add(2) > self.string_pool.len() {
-            return Err(format!("String offset {} exceeds string pool size {}", off, self.string_pool.len()));
+            return Err(format!(
+                "String offset {} exceeds string pool size {}",
+                off,
+                self.string_pool.len()
+            ));
         }
         let len = u16::from_le_bytes([self.string_pool[off], self.string_pool[off + 1]]) as usize;
         if off.saturating_add(2).saturating_add(len) > self.string_pool.len() {
-            return Err(format!("String at offset {} extends beyond string pool", off));
+            return Err(format!(
+                "String at offset {} extends beyond string pool",
+                off
+            ));
         }
         String::from_utf8(self.string_pool[off + 2..off + 2 + len].to_vec())
             .map_err(|e| format!("Invalid UTF-8 in string pool at offset {}: {}", off, e))
@@ -234,9 +320,15 @@ impl NdaDocument {
     pub fn format_inspection(&self, filename: &str) -> Result<String, String> {
         let mut out = String::new();
         out.push_str(&format!("=== NDA Document Inspection: {} ===\n", filename));
-        out.push_str(&format!("Merkle Root Signature: {}\n", hex_encode(&self.merkle_root)));
+        out.push_str(&format!(
+            "Merkle Root Signature: {}\n",
+            hex_encode(&self.merkle_root)
+        ));
         out.push_str(&format!("Triples Count: {}\n", self.triples.len()));
-        out.push_str(&format!("Display Commands Count: {}\n", self.commands.len()));
+        out.push_str(&format!(
+            "Display Commands Count: {}\n",
+            self.commands.len()
+        ));
         out.push_str("\n--- Semantic Triples ---\n");
 
         for t in &self.triples {
@@ -279,7 +371,7 @@ impl NdaDocument {
     /// Recompute the Merkle root from the parsed triples.
     /// Each leaf = SHA-256("S|P|O"). Pair-wise hash up; odd leaves promoted.
     fn recompute_merkle_root(&self) -> Result<[u8; 32], String> {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
 
         if self.triples.is_empty() {
             return Ok([0u8; 32]);
@@ -375,16 +467,30 @@ impl NdaCompiler {
 
     /// Add a semantic triple (subject, predicate, object).
     pub fn add_triple(&mut self, subject: &str, predicate: &str, object: &str) {
-        self.triples.push((subject.to_string(), predicate.to_string(), object.to_string()));
+        self.triples.push((
+            subject.to_string(),
+            predicate.to_string(),
+            object.to_string(),
+        ));
     }
 
     /// Add a visual display command.
     #[allow(clippy::too_many_arguments)]
-    pub fn add_command(&mut self, command_type: u8, color: u32, x: u16, y: u16, w: u16, h: u16, content: &str) {
+    pub fn add_command(
+        &mut self,
+        command_type: u8,
+        color: u32,
+        x: u16,
+        y: u16,
+        w: u16,
+        h: u16,
+        content: &str,
+    ) {
         self.commands.push(CommandInfo {
             command_type,
             color,
-            x, y,
+            x,
+            y,
             width: w,
             height: h,
             content: content.to_string(),
@@ -398,20 +504,34 @@ impl NdaCompiler {
         // Register all strings and build compiled triples
         // (collect into temp vecs first to avoid borrow checker conflicts)
         let triple_strings: Vec<(String, String, String)> = self.triples.clone();
-        let compiled_triples: Vec<SemanticTriple> = triple_strings.iter().map(|(s, p, o)| {
-            SemanticTriple {
+        let compiled_triples: Vec<SemanticTriple> = triple_strings
+            .iter()
+            .map(|(s, p, o)| SemanticTriple {
                 subject_offset: self.get_or_add_string(s),
                 predicate_offset: self.get_or_add_string(p),
                 object_offset: self.get_or_add_string(o),
-            }
-        }).collect();
+            })
+            .collect();
 
         // Register command strings and build compiled commands
-        let cmd_infos: Vec<(u8, u32, u16, u16, u16, u16, String)> = self.commands.iter().map(|c| {
-            (c.command_type, c.color, c.x, c.y, c.width, c.height, c.content.clone())
-        }).collect();
-        let compiled_commands: Vec<DisplayCommand> = cmd_infos.iter().map(|(ct, color, x, y, w, h, content)| {
-            DisplayCommand {
+        let cmd_infos: Vec<(u8, u32, u16, u16, u16, u16, String)> = self
+            .commands
+            .iter()
+            .map(|c| {
+                (
+                    c.command_type,
+                    c.color,
+                    c.x,
+                    c.y,
+                    c.width,
+                    c.height,
+                    c.content.clone(),
+                )
+            })
+            .collect();
+        let compiled_commands: Vec<DisplayCommand> = cmd_infos
+            .iter()
+            .map(|(ct, color, x, y, w, h, content)| DisplayCommand {
                 command_type: *ct,
                 color: *color,
                 x: *x,
@@ -419,8 +539,8 @@ impl NdaCompiler {
                 width: *w,
                 height: *h,
                 content_offset: self.get_or_add_string(content),
-            }
-        }).collect();
+            })
+            .collect();
 
         let string_pool_offset = HEADER_SIZE
             + compiled_triples.len() * TRIPLE_SIZE
@@ -468,7 +588,8 @@ impl NdaCompiler {
         }
         let offset = self.string_pool_data.len() as u32;
         let bytes = s.as_bytes();
-        self.string_pool_data.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
+        self.string_pool_data
+            .extend_from_slice(&(bytes.len() as u16).to_le_bytes());
         self.string_pool_data.extend_from_slice(bytes);
         self.string_pool.insert(s.to_string(), offset);
         offset
@@ -481,15 +602,19 @@ impl NdaCompiler {
             return [0u8; 32];
         }
 
-        let leaves: Vec<[u8; 32]> = self.triples.iter().map(|(s, p, o)| {
-            let repr = format!("{}|{}|{}", s, p, o);
-            let mut h = Sha256::new();
-            h.update(repr.as_bytes());
-            let result = h.finalize();
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(&result);
-            arr
-        }).collect();
+        let leaves: Vec<[u8; 32]> = self
+            .triples
+            .iter()
+            .map(|(s, p, o)| {
+                let repr = format!("{}|{}|{}", s, p, o);
+                let mut h = Sha256::new();
+                h.update(repr.as_bytes());
+                let result = h.finalize();
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&result);
+                arr
+            })
+            .collect();
 
         let mut current_level = leaves;
         while current_level.len() > 1 {
@@ -550,7 +675,10 @@ impl NdaDocument {
             // For simplicity, check if the last SIGNATURE_SECTION_SIZE bytes look like a signature
             let sig_start = data.len().saturating_sub(SIGNATURE_SECTION_SIZE);
             let sig_len = u32::from_le_bytes([
-                data[sig_start], data[sig_start+1], data[sig_start+2], data[sig_start+3]
+                data[sig_start],
+                data[sig_start + 1],
+                data[sig_start + 2],
+                data[sig_start + 3],
             ]);
             sig_len == 64
         } else {
@@ -565,7 +693,10 @@ impl NdaDocument {
         }
         let sig_start = data.len() - SIGNATURE_SECTION_SIZE;
         let sig_len = u32::from_le_bytes([
-            data[sig_start], data[sig_start+1], data[sig_start+2], data[sig_start+3]
+            data[sig_start],
+            data[sig_start + 1],
+            data[sig_start + 2],
+            data[sig_start + 3],
         ]);
         if sig_len != 64 {
             return Err("Invalid signature section length".to_string());
@@ -577,7 +708,10 @@ impl NdaDocument {
         let mut public_key = [0u8; 32];
         public_key.copy_from_slice(&data[sig_start + 68..sig_start + 100]);
 
-        Ok(Some(NdaSignature { signature, public_key }))
+        Ok(Some(NdaSignature {
+            signature,
+            public_key,
+        }))
     }
 
     /// Verify the Ed25519 signature of this document.
@@ -585,10 +719,9 @@ impl NdaDocument {
     /// The signature covers all bytes from the start of the NDA up to (but not
     /// including) the signature section. Returns Ok(()) if the signature is valid.
     pub fn verify_signature(data: &[u8]) -> Result<(), String> {
-        use ed25519_dalek::{Verifier, VerifyingKey, Signature};
+        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
-        let nda_sig = Self::read_signature(data)?
-            .ok_or("Document is not signed")?;
+        let nda_sig = Self::read_signature(data)?.ok_or("Document is not signed")?;
 
         let signed_data_len = data.len() - SIGNATURE_SECTION_SIZE;
         let signed_data = &data[..signed_data_len];
@@ -598,7 +731,8 @@ impl NdaDocument {
 
         let signature = Signature::from_bytes(&nda_sig.signature);
 
-        verifying_key.verify(signed_data, &signature)
+        verifying_key
+            .verify(signed_data, &signature)
             .map_err(|e| format!("Signature verification failed: {}", e))
     }
 }
@@ -608,10 +742,7 @@ impl NdaCompiler {
     ///
     /// Appends a signature section after the string pool. The signature covers
     /// the entire unsigned NDA binary.
-    pub fn compile_signed(
-        self,
-        signing_key: &ed25519_dalek::SigningKey,
-    ) -> Vec<u8> {
+    pub fn compile_signed(self, signing_key: &ed25519_dalek::SigningKey) -> Vec<u8> {
         use ed25519_dalek::Signer;
 
         let mut data = self.compile();
@@ -634,7 +765,8 @@ impl NdaCompiler {
 fn read_u32_le(cur: &mut Cursor<&[u8]>) -> Result<u32, String> {
     use std::io::Read;
     let mut buf = [0u8; 4];
-    cur.read_exact(&mut buf).map_err(|e| format!("Failed to read u32: {}", e))?;
+    cur.read_exact(&mut buf)
+        .map_err(|e| format!("Failed to read u32: {}", e))?;
     Ok(u32::from_le_bytes(buf))
 }
 
@@ -675,19 +807,40 @@ mod tests {
         assert_eq!(doc.commands.len(), 2);
 
         // Verify triples via string resolution
-        assert_eq!(doc.get_string(doc.triples[0].subject_offset).unwrap(), "subject1");
-        assert_eq!(doc.get_string(doc.triples[0].predicate_offset).unwrap(), "PREDICATE");
-        assert_eq!(doc.get_string(doc.triples[0].object_offset).unwrap(), "object1");
-        assert_eq!(doc.get_string(doc.triples[1].subject_offset).unwrap(), "subject2");
-        assert_eq!(doc.get_string(doc.triples[1].predicate_offset).unwrap(), "TYPE");
-        assert_eq!(doc.get_string(doc.triples[1].object_offset).unwrap(), "TestDoc");
+        assert_eq!(
+            doc.get_string(doc.triples[0].subject_offset).unwrap(),
+            "subject1"
+        );
+        assert_eq!(
+            doc.get_string(doc.triples[0].predicate_offset).unwrap(),
+            "PREDICATE"
+        );
+        assert_eq!(
+            doc.get_string(doc.triples[0].object_offset).unwrap(),
+            "object1"
+        );
+        assert_eq!(
+            doc.get_string(doc.triples[1].subject_offset).unwrap(),
+            "subject2"
+        );
+        assert_eq!(
+            doc.get_string(doc.triples[1].predicate_offset).unwrap(),
+            "TYPE"
+        );
+        assert_eq!(
+            doc.get_string(doc.triples[1].object_offset).unwrap(),
+            "TestDoc"
+        );
 
         // Verify commands
         assert_eq!(doc.commands[0].command_type, 1);
         assert_eq!(doc.commands[0].color, 0xFFFFFFFF);
         assert_eq!(doc.commands[0].x, 10);
         assert_eq!(doc.commands[0].y, 20);
-        assert_eq!(doc.get_string(doc.commands[0].content_offset).unwrap(), "Hello World");
+        assert_eq!(
+            doc.get_string(doc.commands[0].content_offset).unwrap(),
+            "Hello World"
+        );
 
         assert_eq!(doc.commands[1].command_type, 3);
         assert_eq!(doc.get_string(doc.commands[1].content_offset).unwrap(), "");
@@ -703,10 +856,22 @@ mod tests {
         let doc = NdaDocument::read(&data).unwrap();
 
         // Both triples should resolve to the same strings
-        assert_eq!(doc.get_string(doc.triples[0].subject_offset).unwrap(), "shared");
-        assert_eq!(doc.get_string(doc.triples[1].subject_offset).unwrap(), "shared");
-        assert_eq!(doc.get_string(doc.triples[0].object_offset).unwrap(), "value");
-        assert_eq!(doc.get_string(doc.triples[1].object_offset).unwrap(), "value");
+        assert_eq!(
+            doc.get_string(doc.triples[0].subject_offset).unwrap(),
+            "shared"
+        );
+        assert_eq!(
+            doc.get_string(doc.triples[1].subject_offset).unwrap(),
+            "shared"
+        );
+        assert_eq!(
+            doc.get_string(doc.triples[0].object_offset).unwrap(),
+            "value"
+        );
+        assert_eq!(
+            doc.get_string(doc.triples[1].object_offset).unwrap(),
+            "value"
+        );
 
         // Subject offsets should be identical (deduplicated)
         assert_eq!(doc.triples[0].subject_offset, doc.triples[1].subject_offset);
@@ -840,7 +1005,7 @@ mod tests {
         // Corrupt the first triple's subject_offset to point beyond the string pool
         let triple_start = HEADER_SIZE;
         let bad_offset = 0xFFFF_FFFFu32;
-        data[triple_start..triple_start+4].copy_from_slice(&bad_offset.to_le_bytes());
+        data[triple_start..triple_start + 4].copy_from_slice(&bad_offset.to_le_bytes());
         let result = NdaDocument::read(&data);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("exceeds string pool"));
@@ -874,7 +1039,10 @@ mod tests {
         let signed_data = compiler.compile_signed(&signing_key);
 
         // Signed should be exactly SIGNATURE_SECTION_SIZE bytes larger
-        assert_eq!(signed_data.len() - unsigned_data.len(), SIGNATURE_SECTION_SIZE);
+        assert_eq!(
+            signed_data.len() - unsigned_data.len(),
+            SIGNATURE_SECTION_SIZE
+        );
 
         // Verify signature
         assert!(NdaDocument::has_signature(&signed_data));
@@ -924,7 +1092,8 @@ mod tests {
         let mut tampered = signed_data.clone();
         let sig_start = tampered.len() - SIGNATURE_SECTION_SIZE;
         // Replace public key with the wrong key's public key
-        tampered[sig_start + 68..sig_start + 100].copy_from_slice(wrong_key.verifying_key().as_bytes());
+        tampered[sig_start + 68..sig_start + 100]
+            .copy_from_slice(wrong_key.verifying_key().as_bytes());
 
         let result = NdaDocument::verify_signature(&tampered);
         assert!(result.is_err());
@@ -944,7 +1113,10 @@ mod tests {
         let doc = NdaDocument::read(&signed_data).unwrap();
         assert_eq!(doc.triples.len(), 1);
         assert_eq!(doc.commands.len(), 1);
-        assert_eq!(doc.get_string(doc.triples[0].subject_offset).unwrap(), "DOC_1");
+        assert_eq!(
+            doc.get_string(doc.triples[0].subject_offset).unwrap(),
+            "DOC_1"
+        );
     }
 
     // ── Comprehensive Fuzz / Adversarial Tests ───────────────────────────
@@ -961,7 +1133,9 @@ mod tests {
 
         // Truncate at various points
         for truncate_at in [10, 52, 100, signed_data.len() - 10] {
-            if truncate_at >= signed_data.len() { continue; }
+            if truncate_at >= signed_data.len() {
+                continue;
+            }
             let truncated = &signed_data[..truncate_at];
             // Should either fail to parse or fail signature verification
             if let Ok(_) = NdaDocument::read(truncated) {

@@ -91,7 +91,8 @@ pub fn encode_tlv_value(value: &Value, buf: &mut Vec<u8>) -> Result<()> {
                 let key_bytes = key.as_bytes();
                 if key_bytes.len() > u16::MAX as usize {
                     return Err(Error::NdaProtocol(format!(
-                        "TLV object key length {} exceeds u16 max", key_bytes.len()
+                        "TLV object key length {} exceeds u16 max",
+                        key_bytes.len()
                     )));
                 }
                 buf.extend_from_slice(&(key_bytes.len() as u16).to_be_bytes());
@@ -112,7 +113,11 @@ pub fn decode_tlv_value(bytes: &[u8]) -> Result<(Value, usize)> {
             if bytes.len() < 5 {
                 return Err(Error::NdaProtocol("TLV string: truncated length".into()));
             }
-            let len = u32::from_be_bytes(bytes[1..5].try_into().map_err(|_| Error::NdaProtocol("TLV string: bad length".into()))?) as usize;
+            let len = u32::from_be_bytes(
+                bytes[1..5]
+                    .try_into()
+                    .map_err(|_| Error::NdaProtocol("TLV string: bad length".into()))?,
+            ) as usize;
             if bytes.len() < 5 + len {
                 return Err(Error::NdaProtocol("TLV string: truncated body".into()));
             }
@@ -124,7 +129,11 @@ pub fn decode_tlv_value(bytes: &[u8]) -> Result<(Value, usize)> {
             if bytes.len() < 9 {
                 return Err(Error::NdaProtocol("TLV i64: truncated".into()));
             }
-            let v = i64::from_be_bytes(bytes[1..9].try_into().map_err(|_| Error::NdaProtocol("TLV i64: bad length".into()))?);
+            let v = i64::from_be_bytes(
+                bytes[1..9]
+                    .try_into()
+                    .map_err(|_| Error::NdaProtocol("TLV i64: bad length".into()))?,
+            );
             Ok((json!(v), 9))
         }
         0x03 => {
@@ -138,7 +147,11 @@ pub fn decode_tlv_value(bytes: &[u8]) -> Result<(Value, usize)> {
             if bytes.len() < 5 {
                 return Err(Error::NdaProtocol("TLV array: truncated count".into()));
             }
-            let count = u32::from_be_bytes(bytes[1..5].try_into().map_err(|_| Error::NdaProtocol("TLV array: bad count".into()))?) as usize;
+            let count = u32::from_be_bytes(
+                bytes[1..5]
+                    .try_into()
+                    .map_err(|_| Error::NdaProtocol("TLV array: bad count".into()))?,
+            ) as usize;
             let mut arr = Vec::with_capacity(count.min(1024));
             let mut off = 5usize;
             for _ in 0..count {
@@ -152,20 +165,32 @@ pub fn decode_tlv_value(bytes: &[u8]) -> Result<(Value, usize)> {
             if bytes.len() < 5 {
                 return Err(Error::NdaProtocol("TLV object: truncated count".into()));
             }
-            let count = u32::from_be_bytes(bytes[1..5].try_into().map_err(|_| Error::NdaProtocol("TLV object: bad count".into()))?) as usize;
+            let count = u32::from_be_bytes(
+                bytes[1..5]
+                    .try_into()
+                    .map_err(|_| Error::NdaProtocol("TLV object: bad count".into()))?,
+            ) as usize;
             let mut obj = serde_json::Map::with_capacity(count.min(1024));
             let mut off = 5usize;
             for _ in 0..count {
                 if bytes.len() < off + 2 {
-                    return Err(Error::NdaProtocol("TLV object: truncated key length".into()));
+                    return Err(Error::NdaProtocol(
+                        "TLV object: truncated key length".into(),
+                    ));
                 }
-                let klen = u16::from_be_bytes(bytes[off..off + 2].try_into().map_err(|_| Error::NdaProtocol("TLV object: bad key length".into()))?) as usize;
+                let klen = u16::from_be_bytes(
+                    bytes[off..off + 2]
+                        .try_into()
+                        .map_err(|_| Error::NdaProtocol("TLV object: bad key length".into()))?,
+                ) as usize;
                 off += 2;
                 if bytes.len() < off + klen {
                     return Err(Error::NdaProtocol("TLV object: truncated key".into()));
                 }
                 let key = std::str::from_utf8(&bytes[off..off + klen])
-                    .map_err(|e| Error::NdaProtocol(format!("TLV object key: invalid UTF-8: {}", e)))?
+                    .map_err(|e| {
+                        Error::NdaProtocol(format!("TLV object key: invalid UTF-8: {}", e))
+                    })?
                     .to_string();
                 off += klen;
                 let (v, n) = decode_tlv_value(&bytes[off..])?;
@@ -178,10 +203,17 @@ pub fn decode_tlv_value(bytes: &[u8]) -> Result<(Value, usize)> {
             if bytes.len() < 9 {
                 return Err(Error::NdaProtocol("TLV f64: truncated".into()));
             }
-            let v = f64::from_be_bytes(bytes[1..9].try_into().map_err(|_| Error::NdaProtocol("TLV f64: bad length".into()))?);
+            let v = f64::from_be_bytes(
+                bytes[1..9]
+                    .try_into()
+                    .map_err(|_| Error::NdaProtocol("TLV f64: bad length".into()))?,
+            );
             Ok((json!(v), 9))
         }
-        other => Err(Error::NdaProtocol(format!("TLV: unknown tag 0x{:02x}", other))),
+        other => Err(Error::NdaProtocol(format!(
+            "TLV: unknown tag 0x{:02x}",
+            other
+        ))),
     }
 }
 
@@ -335,7 +367,10 @@ mod tests {
         let mut data = vec![0u8; FRAME_HEADER_SIZE + 10];
         data[0..4].copy_from_slice(b"BAAD");
         assert!(parse_nda_response(&data).is_err());
-        assert!(parse_nda_response(&data).unwrap_err().to_string().contains("magic"));
+        assert!(parse_nda_response(&data)
+            .unwrap_err()
+            .to_string()
+            .contains("magic"));
     }
 
     #[test]
@@ -374,7 +409,10 @@ mod tests {
         assert_eq!(method_to_code("tools/list"), Some(METHOD_TOOLS_LIST));
         assert_eq!(method_to_code("tools/call"), Some(METHOD_TOOLS_CALL));
         assert_eq!(method_to_code("ping"), Some(METHOD_PING));
-        assert_eq!(method_to_code("notifications/initialized"), Some(NOTIF_INITIALIZED));
+        assert_eq!(
+            method_to_code("notifications/initialized"),
+            Some(NOTIF_INITIALIZED)
+        );
     }
 
     #[test]

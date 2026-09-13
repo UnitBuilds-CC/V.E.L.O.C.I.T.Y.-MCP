@@ -70,15 +70,16 @@ pub struct StreamingState {
 
 /// Extract progress token from request metadata.
 pub fn extract_progress_token(params: &Value) -> Option<ProgressToken> {
-    params.get("_meta")
+    params
+        .get("_meta")
         .and_then(|m| m.get("progressToken"))
         .map(|t| ProgressToken::from(t.clone()))
 }
 
 /// Create a progress notification JSON-RPC message.
 pub fn create_progress_notification(
-    token: &ProgressToken, 
-    progress: u64, 
+    token: &ProgressToken,
+    progress: u64,
     total: Option<u64>,
     message: Option<String>,
 ) -> Value {
@@ -100,10 +101,7 @@ pub fn create_progress_notification(
 }
 
 /// Create a streaming chunk notification.
-pub fn create_streaming_chunk_notification(
-    token: &ProgressToken,
-    chunk: &StreamingChunk,
-) -> Value {
+pub fn create_streaming_chunk_notification(token: &ProgressToken, chunk: &StreamingChunk) -> Value {
     json!({
         "jsonrpc": "2.0",
         "method": "notifications/streaming",
@@ -115,9 +113,12 @@ pub fn create_streaming_chunk_notification(
 }
 
 /// Progress callback registry for tools that support streaming.
-static PROGRESS_CALLBACKS: OnceLock<Mutex<HashMap<String, Box<dyn Fn(u64, Option<u64>) + Send + Sync>>>> = OnceLock::new();
+static PROGRESS_CALLBACKS: OnceLock<
+    Mutex<HashMap<String, Box<dyn Fn(u64, Option<u64>) + Send + Sync>>>,
+> = OnceLock::new();
 
-fn get_progress_callbacks() -> &'static Mutex<HashMap<String, Box<dyn Fn(u64, Option<u64>) + Send + Sync>>> {
+fn get_progress_callbacks(
+) -> &'static Mutex<HashMap<String, Box<dyn Fn(u64, Option<u64>) + Send + Sync>>> {
     PROGRESS_CALLBACKS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -136,7 +137,11 @@ where
     if let Ok(mut callbacks) = get_progress_callbacks().lock() {
         const MAX_CALLBACKS: usize = 1024;
         if callbacks.len() >= MAX_CALLBACKS && !callbacks.contains_key(tool_name) {
-            tracing::warn!(tool = tool_name, "Progress callback registry full ({}), rejecting", MAX_CALLBACKS);
+            tracing::warn!(
+                tool = tool_name,
+                "Progress callback registry full ({}), rejecting",
+                MAX_CALLBACKS
+            );
             return;
         }
         callbacks.insert(tool_name.to_string(), Box::new(callback));
@@ -158,20 +163,23 @@ pub fn init_streaming_state(token: &ProgressToken, total: Option<u64>) {
         ProgressToken::String(s) => s.clone(),
         ProgressToken::Number(n) => n.to_string(),
     };
-    
+
     if let Ok(mut states) = get_streaming_states().lock() {
         const MAX_STATES: usize = 1024;
         if states.len() >= MAX_STATES && !states.contains_key(&token_str) {
             tracing::warn!(token = %token_str, "Streaming state registry full ({}), rejecting", MAX_STATES);
             return;
         }
-        states.insert(token_str, StreamingState {
-            token: token.clone(),
-            progress: 0,
-            total,
-            chunks_sent: 0,
-            is_complete: false,
-        });
+        states.insert(
+            token_str,
+            StreamingState {
+                token: token.clone(),
+                progress: 0,
+                total,
+                chunks_sent: 0,
+                is_complete: false,
+            },
+        );
     }
 }
 
@@ -181,7 +189,7 @@ pub fn update_streaming_progress(token: &ProgressToken, progress: u64, total: Op
         ProgressToken::String(s) => s.clone(),
         ProgressToken::Number(n) => n.to_string(),
     };
-    
+
     if let Ok(mut states) = get_streaming_states().lock() {
         if let Some(state) = states.get_mut(&token_str) {
             state.progress = progress;
@@ -198,7 +206,7 @@ pub fn record_streaming_chunk(token: &ProgressToken) {
         ProgressToken::String(s) => s.clone(),
         ProgressToken::Number(n) => n.to_string(),
     };
-    
+
     if let Ok(mut states) = get_streaming_states().lock() {
         if let Some(state) = states.get_mut(&token_str) {
             state.chunks_sent += 1;
@@ -212,7 +220,7 @@ pub fn complete_streaming(token: &ProgressToken) {
         ProgressToken::String(s) => s.clone(),
         ProgressToken::Number(n) => n.to_string(),
     };
-    
+
     if let Ok(mut states) = get_streaming_states().lock() {
         states.remove(&token_str);
     }
@@ -224,7 +232,7 @@ pub fn get_streaming_state(token: &ProgressToken) -> Option<StreamingState> {
         ProgressToken::String(s) => s.clone(),
         ProgressToken::Number(n) => n.to_string(),
     };
-    
+
     if let Ok(states) = get_streaming_states().lock() {
         states.get(&token_str).cloned()
     } else {
@@ -252,7 +260,7 @@ pub fn tool_supports_progress(tool_name: &str) -> bool {
 /// Split a large result into chunks for streaming.
 pub fn chunk_result(data: &Value, chunk_size: usize) -> Vec<StreamingChunk> {
     let mut chunks = Vec::new();
-    
+
     match data {
         Value::String(s) => {
             let chars: Vec<char> = s.chars().collect();
@@ -282,7 +290,7 @@ pub fn chunk_result(data: &Value, chunk_size: usize) -> Vec<StreamingChunk> {
             });
         }
     }
-    
+
     chunks
 }
 
@@ -301,7 +309,7 @@ pub fn stream_chunks_to_sse(
     chunks: Vec<StreamingChunk>,
 ) -> mpsc::Receiver<String> {
     let (tx, rx) = mpsc::channel(64);
-    
+
     tokio::spawn(async move {
         for chunk in chunks {
             let event_data = chunk_to_sse_event(&token, &chunk);
@@ -311,7 +319,7 @@ pub fn stream_chunks_to_sse(
             record_streaming_chunk(&token);
         }
     });
-    
+
     rx
 }
 
@@ -324,7 +332,7 @@ pub fn stream_chunks_with_backpressure(
     delay_ms: u64,
 ) -> mpsc::Receiver<String> {
     let (tx, rx) = mpsc::channel(64);
-    
+
     tokio::spawn(async move {
         for chunk in chunks {
             let event_data = chunk_to_sse_event(&token, &chunk);
@@ -332,14 +340,14 @@ pub fn stream_chunks_with_backpressure(
                 break; // Client disconnected (backpressure)
             }
             record_streaming_chunk(&token);
-            
+
             // Add delay between chunks for backpressure
             if delay_ms > 0 {
                 tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
             }
         }
     });
-    
+
     rx
 }
 
@@ -429,28 +437,28 @@ mod tests {
     #[test]
     fn test_streaming_state_management() {
         let token = ProgressToken::String("stream1".to_string());
-        
+
         // Initialize state
         init_streaming_state(&token, Some(100));
-        
+
         // Check initial state
         let state = get_streaming_state(&token).unwrap();
         assert_eq!(state.progress, 0);
         assert_eq!(state.total, Some(100));
         assert_eq!(state.chunks_sent, 0);
         assert!(!state.is_complete);
-        
+
         // Update progress
         update_streaming_progress(&token, 50, None);
         let state = get_streaming_state(&token).unwrap();
         assert_eq!(state.progress, 50);
-        
+
         // Record chunks
         record_streaming_chunk(&token);
         record_streaming_chunk(&token);
         let state = get_streaming_state(&token).unwrap();
         assert_eq!(state.chunks_sent, 2);
-        
+
         // Complete streaming (removes entry to prevent memory leak)
         complete_streaming(&token);
         assert!(get_streaming_state(&token).is_none());
@@ -460,7 +468,7 @@ mod tests {
     fn test_chunk_result_string() {
         let data = json!("Hello, World! This is a test string.");
         let chunks = chunk_result(&data, 10);
-        
+
         assert_eq!(chunks.len(), 4);
         assert_eq!(chunks[0].chunk_id, 0);
         assert_eq!(chunks[0].data, "Hello, Wor");
@@ -472,7 +480,7 @@ mod tests {
     fn test_chunk_result_array() {
         let data = json!([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
         let chunks = chunk_result(&data, 3);
-        
+
         assert_eq!(chunks.len(), 4);
         assert_eq!(chunks[0].data, json!([1, 2, 3]));
         assert_eq!(chunks[3].data, json!([10]));
@@ -483,7 +491,7 @@ mod tests {
     fn test_chunk_result_non_chunkable() {
         let data = json!({"key": "value"});
         let chunks = chunk_result(&data, 10);
-        
+
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].data, data);
         assert_eq!(chunks[0].is_final, Some(true));
@@ -497,7 +505,7 @@ mod tests {
             data: json!("chunk data"),
             is_final: Some(false),
         };
-        
+
         let msg = create_streaming_chunk_notification(&token, &chunk);
         assert_eq!(msg["method"], "notifications/streaming");
         assert_eq!(msg["params"]["progressToken"], "stream1");
@@ -514,10 +522,10 @@ mod tests {
             data: json!("test data"),
             is_final: Some(false),
         };
-        
+
         let event_data = chunk_to_sse_event(&token, &chunk);
         assert!(!event_data.is_empty());
-        
+
         // Verify it's valid JSON
         let parsed: Value = serde_json::from_str(&event_data).unwrap();
         assert_eq!(parsed["method"], "notifications/streaming");
@@ -539,17 +547,17 @@ mod tests {
                 is_final: Some(true),
             },
         ];
-        
+
         let mut rx = stream_chunks_to_sse(token, chunks);
-        
+
         // Receive first chunk
         let event1 = rx.recv().await.unwrap();
         assert!(!event1.is_empty());
-        
+
         // Receive second chunk
         let event2 = rx.recv().await.unwrap();
         assert!(!event2.is_empty());
-        
+
         // Channel should be closed
         assert!(rx.recv().await.is_none());
     }
@@ -579,8 +587,15 @@ mod tests {
         // Verify the new callback was NOT added (capacity limit enforced)
         {
             let callbacks = get_progress_callbacks().lock().unwrap();
-            assert_eq!(callbacks.len(), 1024, "Should still have 1024 after rejection");
-            assert!(!callbacks.contains_key("cap_test_tool_new"), "New callback should be rejected");
+            assert_eq!(
+                callbacks.len(),
+                1024,
+                "Should still have 1024 after rejection"
+            );
+            assert!(
+                !callbacks.contains_key("cap_test_tool_new"),
+                "New callback should be rejected"
+            );
         }
 
         // Clean up
@@ -618,7 +633,10 @@ mod tests {
         {
             let states = get_streaming_states().lock().unwrap();
             assert_eq!(states.len(), 1024, "Should still have 1024 after rejection");
-            assert!(!states.contains_key("cap_stream_new"), "New state should be rejected");
+            assert!(
+                !states.contains_key("cap_stream_new"),
+                "New state should be rejected"
+            );
         }
 
         // Clean up

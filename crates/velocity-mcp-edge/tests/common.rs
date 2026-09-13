@@ -3,15 +3,15 @@
 //! Provides a function to start the velocity-mcp-edge HTTP server on a random
 //! available port and return a reqwest client + base URL.
 
-use std::convert::Infallible;
-use std::net::SocketAddr;
+use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
-use http_body_util::{BodyExt, Full};
 use hyper_util::rt::TokioIo;
+use std::convert::Infallible;
+use std::net::SocketAddr;
 use tokio::net::TcpListener;
-use velocity_mcp_edge::{process_mcp_request, error_response};
+use velocity_mcp_edge::{error_response, process_mcp_request};
 
 /// The same request handler as main.rs, extracted for testing.
 async fn handle_request(
@@ -24,7 +24,9 @@ async fn handle_request(
         return Ok(Response::builder()
             .status(StatusCode::OK)
             .header("content-type", "application/json")
-            .body(Full::new(Bytes::from(r#"{"status":"healthy","version":"3.2.0"}"#)))
+            .body(Full::new(Bytes::from(
+                r#"{"status":"healthy","version":"3.2.0"}"#,
+            )))
             .unwrap());
     }
 

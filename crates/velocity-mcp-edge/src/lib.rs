@@ -7,13 +7,15 @@
 pub mod tools;
 
 #[cfg(not(target_arch = "wasm32"))]
+use http_body_util::Full;
+#[cfg(not(target_arch = "wasm32"))]
 use hyper::body::Bytes;
 #[cfg(not(target_arch = "wasm32"))]
 use hyper::{Response, StatusCode};
-#[cfg(not(target_arch = "wasm32"))]
-use http_body_util::Full;
-use velocity_mcp_core::{handle_mcp_request, handle_mcp_request_with_executor, parse_request, serialize_response};
 use tools::EdgeToolExecutor;
+use velocity_mcp_core::{
+    handle_mcp_request, handle_mcp_request_with_executor, parse_request, serialize_response,
+};
 
 /// Process MCP JSON-RPC request using the edge tool executor for real tool execution.
 ///
@@ -71,11 +73,11 @@ pub fn error_response(status: StatusCode, message: &str) -> Response<Full<Bytes>
     // Map HTTP status to JSON-RPC error code
     let jsonrpc_code = match status.as_u16() {
         400 | 401 | 403 | 429 => -32600, // Invalid Request
-        404 | 405 => -32601,              // Method Not Found
-        413 => -32602,                    // Invalid Params
-        _ => -32603,                      // Internal Error (default for 5xx)
+        404 | 405 => -32601,             // Method Not Found
+        413 => -32602,                   // Invalid Params
+        _ => -32603,                     // Internal Error (default for 5xx)
     };
-    
+
     let error_json = serde_json::json!({
         "jsonrpc": "2.0",
         "error": {
@@ -84,9 +86,9 @@ pub fn error_response(status: StatusCode, message: &str) -> Response<Full<Bytes>
         },
         "id": null
     });
-    
+
     let body_bytes = serde_json::to_vec(&error_json).unwrap_or_default();
-    
+
     Response::builder()
         .status(status)
         .header("content-type", "application/json")

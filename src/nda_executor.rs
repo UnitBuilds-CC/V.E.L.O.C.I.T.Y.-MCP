@@ -38,10 +38,12 @@ pub fn execute_nda(nda_bytes: &[u8], args: &[String]) -> Result<String, String> 
     }
 
     let asset_id = asset_id.ok_or_else(|| {
-        "NDA file does not contain a runnable payload type (BinaryPayload or SourceCode).".to_string()
+        "NDA file does not contain a runnable payload type (BinaryPayload or SourceCode)."
+            .to_string()
     })?;
     let payload_type = payload_type.ok_or_else(|| {
-        "NDA file does not contain a runnable payload type (BinaryPayload or SourceCode).".to_string()
+        "NDA file does not contain a runnable payload type (BinaryPayload or SourceCode)."
+            .to_string()
     })?;
 
     // Second pass: extract payload metadata
@@ -51,7 +53,9 @@ pub fn execute_nda(nda_bytes: &[u8], args: &[String]) -> Result<String, String> 
 
     for triple in &doc.triples {
         let s = doc.get_string(triple.subject_offset)?;
-        if s != asset_id { continue; }
+        if s != asset_id {
+            continue;
+        }
         let p = doc.get_string(triple.predicate_offset)?;
         let o = doc.get_string(triple.object_offset)?;
 
@@ -66,17 +70,22 @@ pub fn execute_nda(nda_bytes: &[u8], args: &[String]) -> Result<String, String> 
     match payload_type.as_str() {
         "BinaryPayload" => execute_binary_payload(&base64_data, args),
         "SourceCode" => execute_source_code(&doc, &filename, &language, args),
-        _ => Err(format!("Unsupported execution payload type: {}", payload_type)),
+        _ => Err(format!(
+            "Unsupported execution payload type: {}",
+            payload_type
+        )),
     }
 }
 
 /// Execute a BinaryPayload by decoding base64 and running via .NET runtime.
 fn execute_binary_payload(base64_data: &Option<String>, args: &[String]) -> Result<String, String> {
-    let b64 = base64_data.as_ref()
+    let b64 = base64_data
+        .as_ref()
         .ok_or("BinaryPayload is missing BASE64_DATA.")?;
 
-    use base64::{Engine as _, engine::general_purpose};
-    let assembly_bytes = general_purpose::STANDARD.decode(b64)
+    use base64::{engine::general_purpose, Engine as _};
+    let assembly_bytes = general_purpose::STANDARD
+        .decode(b64)
         .map_err(|e| format!("Failed to decode BASE64_DATA: {}", e))?;
 
     if assembly_bytes.len() > 30 * 1024 * 1024 {
@@ -99,7 +108,11 @@ fn execute_binary_payload(base64_data: &Option<String>, args: &[String]) -> Resu
     }
 
     if !result.stderr.is_empty() {
-        Ok(format!("{}\nError Output:\n{}", result.stdout, sandbox::sanitize_error(&result.stderr)))
+        Ok(format!(
+            "{}\nError Output:\n{}",
+            result.stdout,
+            sandbox::sanitize_error(&result.stderr)
+        ))
     } else {
         Ok(result.stdout)
     }
@@ -127,7 +140,8 @@ fn execute_source_code(
     }
 
     // Determine file extension from filename
-    let ext = filename.as_deref()
+    let ext = filename
+        .as_deref()
         .and_then(|f| std::path::Path::new(f).extension())
         .and_then(|e| e.to_str())
         .unwrap_or("py");
@@ -148,7 +162,11 @@ fn execute_source_code(
     }
 
     if !result.stderr.is_empty() {
-        Ok(format!("{}\nError Output:\n{}", result.stdout, sandbox::sanitize_error(&result.stderr)))
+        Ok(format!(
+            "{}\nError Output:\n{}",
+            result.stdout,
+            sandbox::sanitize_error(&result.stderr)
+        ))
     } else {
         Ok(result.stdout)
     }
@@ -159,19 +177,28 @@ fn interpreter_command(ext: &str, script_path: &std::path::Path) -> (&'static st
     match ext.to_lowercase().as_str() {
         "py" => ("python", vec![script_path.to_string_lossy().to_string()]),
         "js" => ("node", vec![script_path.to_string_lossy().to_string()]),
-        "ps1" => ("powershell", vec![
-            "-NoProfile".to_string(),
-            "-ExecutionPolicy".to_string(),
-            "Bypass".to_string(),
-            "-File".to_string(),
-            script_path.to_string_lossy().to_string(),
-        ]),
+        "ps1" => (
+            "powershell",
+            vec![
+                "-NoProfile".to_string(),
+                "-ExecutionPolicy".to_string(),
+                "Bypass".to_string(),
+                "-File".to_string(),
+                script_path.to_string_lossy().to_string(),
+            ],
+        ),
         "sh" => ("bash", vec![script_path.to_string_lossy().to_string()]),
-        "cmd" | "bat" => ("cmd.exe", vec![
-            "/c".to_string(),
-            script_path.to_string_lossy().to_string(),
-        ]),
-        other => ("echo", vec![format!("Script execution for extension '{}' is not supported.", other)]),
+        "cmd" | "bat" => (
+            "cmd.exe",
+            vec!["/c".to_string(), script_path.to_string_lossy().to_string()],
+        ),
+        other => (
+            "echo",
+            vec![format!(
+                "Script execution for extension '{}' is not supported.",
+                other
+            )],
+        ),
     }
 }
 
@@ -255,7 +282,16 @@ mod tests {
         let path = std::path::Path::new("/tmp/test.ps1");
         let (prog, args) = interpreter_command("ps1", path);
         assert_eq!(prog, "powershell");
-        assert_eq!(args, vec!["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "/tmp/test.ps1"]);
+        assert_eq!(
+            args,
+            vec![
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "/tmp/test.ps1"
+            ]
+        );
     }
 
     #[test]
@@ -326,7 +362,7 @@ mod tests {
         // Verify the binary payload path decodes base64 and attempts execution
         // without panicking. The NDA format limits strings to u16::MAX (65535)
         // bytes, so payloads are self-limiting to ~48KB decoded.
-        use base64::{Engine as _, engine::general_purpose};
+        use base64::{engine::general_purpose, Engine as _};
         let data_bytes = vec![0xABu8; 1024];
         let b64 = general_purpose::STANDARD.encode(&data_bytes);
 

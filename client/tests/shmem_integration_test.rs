@@ -7,9 +7,11 @@
 
 #[cfg(target_os = "windows")]
 mod shmem_tests {
-    use velocity_mcp_client::{JsonShmemTransport, JsonRpcRequest, McpClient, ShmemTransport, Transport};
     use std::process::{Child, Command, Stdio};
     use std::time::Duration;
+    use velocity_mcp_client::{
+        JsonRpcRequest, JsonShmemTransport, McpClient, ShmemTransport, Transport,
+    };
 
     struct ServerGuard {
         child: Option<Child>,
@@ -35,16 +37,21 @@ mod shmem_tests {
     }
 
     fn spawn_server(buffer_path: &str) -> ServerGuard {
-        let server_exe = std::env::var("VELOCITY_MCP_SERVER")
-            .unwrap_or_else(|_| {
-                let manifest_dir = env!("CARGO_MANIFEST_DIR");
-                let workspace = std::path::Path::new(manifest_dir).parent().unwrap();
-                if cfg!(windows) {
-                    workspace.join("target\\release\\velocity_mcp.exe").to_string_lossy().into_owned()
-                } else {
-                    workspace.join("target/release/velocity_mcp").to_string_lossy().into_owned()
-                }
-            });
+        let server_exe = std::env::var("VELOCITY_MCP_SERVER").unwrap_or_else(|_| {
+            let manifest_dir = env!("CARGO_MANIFEST_DIR");
+            let workspace = std::path::Path::new(manifest_dir).parent().unwrap();
+            if cfg!(windows) {
+                workspace
+                    .join("target\\release\\velocity_mcp.exe")
+                    .to_string_lossy()
+                    .into_owned()
+            } else {
+                workspace
+                    .join("target/release/velocity_mcp")
+                    .to_string_lossy()
+                    .into_owned()
+            }
+        });
 
         let _ = std::fs::remove_file(buffer_path);
 
@@ -189,17 +196,25 @@ mod shmem_tests {
         let _server = spawn_server(&buffer_path);
         wait_for_buffer(&buffer_path);
 
-        let nda_transport = ShmemTransport::new(&buffer_path).expect("Failed to create NDA transport");
+        let nda_transport =
+            ShmemTransport::new(&buffer_path).expect("Failed to create NDA transport");
         let mut nda_client = McpClient::new(nda_transport);
         nda_client.initialize().await.expect("NDA init failed");
-        let nda_tools = nda_client.list_tools().await.expect("NDA list_tools failed");
+        let nda_tools = nda_client
+            .list_tools()
+            .await
+            .expect("NDA list_tools failed");
         let nda_names: Vec<String> = nda_tools.iter().map(|t| t.name.clone()).collect();
         drop(nda_client);
 
-        let json_transport = JsonShmemTransport::new(&buffer_path).expect("Failed to create JSON transport");
+        let json_transport =
+            JsonShmemTransport::new(&buffer_path).expect("Failed to create JSON transport");
         let mut json_client = McpClient::new(json_transport);
         json_client.initialize().await.expect("JSON init failed");
-        let json_tools = json_client.list_tools().await.expect("JSON list_tools failed");
+        let json_tools = json_client
+            .list_tools()
+            .await
+            .expect("JSON list_tools failed");
         let json_names: Vec<String> = json_tools.iter().map(|t| t.name.clone()).collect();
 
         assert_eq!(
@@ -218,7 +233,8 @@ mod shmem_tests {
         };
         assert!(
             err.contains("Failed to open buffer") || err.contains("cannot find"),
-            "Error should mention file open failure: {}", err
+            "Error should mention file open failure: {}",
+            err
         );
     }
 
@@ -239,7 +255,8 @@ mod shmem_tests {
         };
         assert!(
             err.contains("expected at least") || err.contains("bytes"),
-            "Error should mention size mismatch: {}", err
+            "Error should mention size mismatch: {}",
+            err
         );
 
         let _ = std::fs::remove_file(&path);
@@ -290,7 +307,10 @@ mod shmem_tests {
 
         let transport = JsonShmemTransport::new(&buffer_path).expect("Failed to create transport");
         transport.close().await.expect("first close failed");
-        transport.close().await.expect("second close should succeed");
+        transport
+            .close()
+            .await
+            .expect("second close should succeed");
     }
 }
 

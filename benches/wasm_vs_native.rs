@@ -10,9 +10,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
-use velocity_mcp::wasm_runtime::quickjs::QuickJsRuntime;
-use velocity_mcp::wasm_runtime::micropython::MicroPythonRuntime;
 use velocity_mcp::wasm_runtime::lua::LuaRuntime;
+use velocity_mcp::wasm_runtime::micropython::MicroPythonRuntime;
+use velocity_mcp::wasm_runtime::quickjs::QuickJsRuntime;
 use velocity_mcp::wasm_runtime::WasmRuntime;
 
 const BENCH_INPUT: &str = "The quick brown fox jumps over the lazy dog. \
@@ -261,8 +261,8 @@ fn native_hot_call(command: &str, args: &[&str]) -> Option<f64> {
 // ── Go WASM (standalone, per-call instantiation — production path) ──
 
 fn go_wasm_per_call(wasm_bytes: &[u8]) -> Option<f64> {
+    use velocity_mcp::wasm_runtime::wasi::{build_wasi_imports, WasiEnv};
     use wasmer::{FunctionEnv, Instance, Module, Store, Value as WasmValue};
-    use velocity_mcp::wasm_runtime::wasi::{WasiEnv, build_wasi_imports};
 
     let iters = 10;
 
@@ -283,14 +283,24 @@ fn go_wasm_per_call(wasm_bytes: &[u8]) -> Option<f64> {
         prepare.call(&mut store, &[]).ok()?;
         let malloc = instance.exports.get_function("malloc").ok()?;
         let args_bytes = BENCH_INPUT_JSON.as_bytes();
-        let ptr_val = malloc.call(&mut store, &[WasmValue::I32(args_bytes.len() as i32)]).ok()?;
+        let ptr_val = malloc
+            .call(&mut store, &[WasmValue::I32(args_bytes.len() as i32)])
+            .ok()?;
         let input_ptr = ptr_val[0].unwrap_i32();
-        memory.view(&store).write(input_ptr as u64, args_bytes).ok()?;
+        memory
+            .view(&store)
+            .write(input_ptr as u64, args_bytes)
+            .ok()?;
         let execute = instance.exports.get_function("tool_execute").ok()?;
-        let _ = execute.call(&mut store, &[
-            WasmValue::I32(input_ptr),
-            WasmValue::I32(args_bytes.len() as i32),
-        ]).ok()?;
+        let _ = execute
+            .call(
+                &mut store,
+                &[
+                    WasmValue::I32(input_ptr),
+                    WasmValue::I32(args_bytes.len() as i32),
+                ],
+            )
+            .ok()?;
     }
 
     // measurement
@@ -312,14 +322,22 @@ fn go_wasm_per_call(wasm_bytes: &[u8]) -> Option<f64> {
         prepare.call(&mut store, &[]).ok()?;
         let malloc = instance.exports.get_function("malloc").ok()?;
         let args_bytes = BENCH_INPUT_JSON.as_bytes();
-        let ptr_val = malloc.call(&mut store, &[WasmValue::I32(args_bytes.len() as i32)]).ok()?;
+        let ptr_val = malloc
+            .call(&mut store, &[WasmValue::I32(args_bytes.len() as i32)])
+            .ok()?;
         let input_ptr = ptr_val[0].unwrap_i32();
-        memory.view(&store).write(input_ptr as u64, args_bytes).ok()?;
+        memory
+            .view(&store)
+            .write(input_ptr as u64, args_bytes)
+            .ok()?;
         let execute = instance.exports.get_function("tool_execute").ok()?;
-        if let Ok(result) = execute.call(&mut store, &[
-            WasmValue::I32(input_ptr),
-            WasmValue::I32(args_bytes.len() as i32),
-        ]) {
+        if let Ok(result) = execute.call(
+            &mut store,
+            &[
+                WasmValue::I32(input_ptr),
+                WasmValue::I32(args_bytes.len() as i32),
+            ],
+        ) {
             let encoded = result[0].unwrap_i64();
             let _result_ptr = (encoded >> 32) as u32;
             let result_len = (encoded & 0xFFFF_FFFF) as u32;
@@ -334,8 +352,8 @@ fn go_wasm_per_call(wasm_bytes: &[u8]) -> Option<f64> {
 // ── Go WASM (cached module — compile once, reuse for each call) ──
 
 fn go_wasm_cached(wasm_bytes: &[u8]) -> Option<f64> {
+    use velocity_mcp::wasm_runtime::wasi::{build_wasi_imports, WasiEnv};
     use wasmer::{FunctionEnv, Instance, Module, Store, Value as WasmValue};
-    use velocity_mcp::wasm_runtime::wasi::{WasiEnv, build_wasi_imports};
 
     let iters = 1000;
 
@@ -357,14 +375,24 @@ fn go_wasm_cached(wasm_bytes: &[u8]) -> Option<f64> {
         prepare.call(&mut store, &[]).ok()?;
         let malloc = instance.exports.get_function("malloc").ok()?;
         let args_bytes = BENCH_INPUT_JSON.as_bytes();
-        let ptr_val = malloc.call(&mut store, &[WasmValue::I32(args_bytes.len() as i32)]).ok()?;
+        let ptr_val = malloc
+            .call(&mut store, &[WasmValue::I32(args_bytes.len() as i32)])
+            .ok()?;
         let input_ptr = ptr_val[0].unwrap_i32();
-        memory.view(&store).write(input_ptr as u64, args_bytes).ok()?;
+        memory
+            .view(&store)
+            .write(input_ptr as u64, args_bytes)
+            .ok()?;
         let execute = instance.exports.get_function("tool_execute").ok()?;
-        let _ = execute.call(&mut store, &[
-            WasmValue::I32(input_ptr),
-            WasmValue::I32(args_bytes.len() as i32),
-        ]).ok()?;
+        let _ = execute
+            .call(
+                &mut store,
+                &[
+                    WasmValue::I32(input_ptr),
+                    WasmValue::I32(args_bytes.len() as i32),
+                ],
+            )
+            .ok()?;
     }
 
     // measurement
@@ -384,14 +412,22 @@ fn go_wasm_cached(wasm_bytes: &[u8]) -> Option<f64> {
         prepare.call(&mut store, &[]).ok()?;
         let malloc = instance.exports.get_function("malloc").ok()?;
         let args_bytes = BENCH_INPUT_JSON.as_bytes();
-        let ptr_val = malloc.call(&mut store, &[WasmValue::I32(args_bytes.len() as i32)]).ok()?;
+        let ptr_val = malloc
+            .call(&mut store, &[WasmValue::I32(args_bytes.len() as i32)])
+            .ok()?;
         let input_ptr = ptr_val[0].unwrap_i32();
-        memory.view(&store).write(input_ptr as u64, args_bytes).ok()?;
+        memory
+            .view(&store)
+            .write(input_ptr as u64, args_bytes)
+            .ok()?;
         let execute = instance.exports.get_function("tool_execute").ok()?;
-        if let Ok(result) = execute.call(&mut store, &[
-            WasmValue::I32(input_ptr),
-            WasmValue::I32(args_bytes.len() as i32),
-        ]) {
+        if let Ok(result) = execute.call(
+            &mut store,
+            &[
+                WasmValue::I32(input_ptr),
+                WasmValue::I32(args_bytes.len() as i32),
+            ],
+        ) {
             let encoded = result[0].unwrap_i64();
             let _result_ptr = (encoded >> 32) as u32;
             let result_len = (encoded & 0xFFFF_FFFF) as u32;
@@ -412,9 +448,16 @@ fn verify_wasm_result(result: &str, lang: &str) -> bool {
         if wc == 29 && cc == 159 {
             return true;
         }
-        eprintln!("  WARNING: {} WASM returned unexpected result: wc={} cc={}", lang, wc, cc);
+        eprintln!(
+            "  WARNING: {} WASM returned unexpected result: wc={} cc={}",
+            lang, wc, cc
+        );
     } else {
-        eprintln!("  WARNING: {} WASM result not valid JSON: {}", lang, &result[..result.len().min(80)]);
+        eprintln!(
+            "  WARNING: {} WASM result not valid JSON: {}",
+            lang,
+            &result[..result.len().min(80)]
+        );
     }
     false
 }
@@ -426,9 +469,16 @@ fn verify_native_result(line: &str, lang: &str) -> bool {
         if wc == 29 && cc == 159 {
             return true;
         }
-        eprintln!("  WARNING: {} native returned unexpected result: wc={} cc={}", lang, wc, cc);
+        eprintln!(
+            "  WARNING: {} native returned unexpected result: wc={} cc={}",
+            lang, wc, cc
+        );
     } else {
-        eprintln!("  WARNING: {} native result not valid JSON: {}", lang, &line[..line.len().min(80)]);
+        eprintln!(
+            "  WARNING: {} native result not valid JSON: {}",
+            lang,
+            &line[..line.len().min(80)]
+        );
     }
     false
 }
@@ -447,7 +497,10 @@ struct LangResult {
 }
 
 fn print_language_block(r: &LangResult) {
-    println!("\n─── {} ─────────────────────────────────────────────────", r.name);
+    println!(
+        "\n─── {} ─────────────────────────────────────────────────",
+        r.name
+    );
 
     println!("  Cold start (compile/instantiate + first tool call):");
     match (r.wasm_cold_ms, r.native_cold_ms) {
@@ -478,8 +531,18 @@ fn print_language_block(r: &LangResult) {
         (Some(w), Some(n)) => {
             let w_us = w / 1000.0;
             let n_us = n / 1000.0;
-            println!("    {:20} {:>6.1} µs/call  ({:.1}K calls/s)", r.wasm_label, w_us, 1_000_000.0 / w);
-            println!("    {:20} {:>6.1} µs/call  ({:.1}K calls/s)", r.native_label, n_us, 1_000_000.0 / n);
+            println!(
+                "    {:20} {:>6.1} µs/call  ({:.1}K calls/s)",
+                r.wasm_label,
+                w_us,
+                1_000_000.0 / w
+            );
+            println!(
+                "    {:20} {:>6.1} µs/call  ({:.1}K calls/s)",
+                r.native_label,
+                n_us,
+                1_000_000.0 / n
+            );
             if w < n {
                 println!("    WASM faster by {:.1}x", n / w);
             } else {
@@ -487,12 +550,22 @@ fn print_language_block(r: &LangResult) {
             }
         }
         (Some(w), None) => {
-            println!("    {:20} {:>6.1} µs/call  ({:.1}K calls/s)", r.wasm_label, w / 1000.0, 1_000_000.0 / w);
+            println!(
+                "    {:20} {:>6.1} µs/call  ({:.1}K calls/s)",
+                r.wasm_label,
+                w / 1000.0,
+                1_000_000.0 / w
+            );
             println!("    {:20}  SKIP", r.native_label);
         }
         (None, Some(n)) => {
             println!("    {:20}  SKIP", r.wasm_label);
-            println!("    {:20} {:>6.1} µs/call  ({:.1}K calls/s)", r.native_label, n / 1000.0, 1_000_000.0 / n);
+            println!(
+                "    {:20} {:>6.1} µs/call  ({:.1}K calls/s)",
+                r.native_label,
+                n / 1000.0,
+                1_000_000.0 / n
+            );
         }
         (None, None) => {
             println!("    SKIP — neither runtime available");
@@ -502,7 +575,12 @@ fn print_language_block(r: &LangResult) {
     if let Some(cached_ns) = r.wasm_cached_ns {
         let cached_us = cached_ns / 1000.0;
         println!("\n  Cached module (compile once, reuse):");
-        println!("    {:20} {:>6.1} µs/call  ({:.1}K calls/s)", r.wasm_label, cached_us, 1_000_000.0 / cached_ns);
+        println!(
+            "    {:20} {:>6.1} µs/call  ({:.1}K calls/s)",
+            r.wasm_label,
+            cached_us,
+            1_000_000.0 / cached_ns
+        );
         if let Some(uncached) = r.wasm_hot_ns {
             let speedup = uncached / cached_ns;
             println!("    Speedup vs uncached:  {:.1}x", speedup);
@@ -512,20 +590,41 @@ fn print_language_block(r: &LangResult) {
 
 fn print_summary_table(results: &[LangResult]) {
     println!("\n═══ Summary ═══════════════════════════════════════════════════════");
-    println!("{:<14} {:>12} {:>12} {:>12} {:>10} {:>10}", "Language", "WASM hot", "WASM cached", "Native hot", "WASM cold", "Ratio");
-    println!("{:<14} {:>12} {:>12} {:>12} {:>10} {:>10}", "", "(µs/call)", "(µs/call)", "(µs/call)", "(ms)", "(W/N)");
+    println!(
+        "{:<14} {:>12} {:>12} {:>12} {:>10} {:>10}",
+        "Language", "WASM hot", "WASM cached", "Native hot", "WASM cold", "Ratio"
+    );
+    println!(
+        "{:<14} {:>12} {:>12} {:>12} {:>10} {:>10}",
+        "", "(µs/call)", "(µs/call)", "(µs/call)", "(ms)", "(W/N)"
+    );
     println!("──────────────────────────────────────────────────────────────────");
     for r in results {
-        let wasm_hot = r.wasm_hot_ns.map(|v| format!("{:.1}", v / 1000.0)).unwrap_or_else(|| "SKIP".into());
-        let wasm_cached = r.wasm_cached_ns.map(|v| format!("{:.1}", v / 1000.0)).unwrap_or_else(|| "—".into());
-        let native_hot = r.native_hot_ns.map(|v| format!("{:.1}", v / 1000.0)).unwrap_or_else(|| "SKIP".into());
-        let wasm_cold = r.wasm_cold_ms.map(|v| format!("{:.1}", v)).unwrap_or_else(|| "SKIP".into());
+        let wasm_hot = r
+            .wasm_hot_ns
+            .map(|v| format!("{:.1}", v / 1000.0))
+            .unwrap_or_else(|| "SKIP".into());
+        let wasm_cached = r
+            .wasm_cached_ns
+            .map(|v| format!("{:.1}", v / 1000.0))
+            .unwrap_or_else(|| "—".into());
+        let native_hot = r
+            .native_hot_ns
+            .map(|v| format!("{:.1}", v / 1000.0))
+            .unwrap_or_else(|| "SKIP".into());
+        let wasm_cold = r
+            .wasm_cold_ms
+            .map(|v| format!("{:.1}", v))
+            .unwrap_or_else(|| "SKIP".into());
         let best_wasm = r.wasm_cached_ns.or(r.wasm_hot_ns);
         let ratio = match (best_wasm, r.native_hot_ns) {
             (Some(w), Some(n)) => format!("{:.2}x", n / w),
             _ => "—".into(),
         };
-        println!("{:<14} {:>12} {:>12} {:>12} {:>10} {:>10}", r.name, wasm_hot, wasm_cached, native_hot, wasm_cold, ratio);
+        println!(
+            "{:<14} {:>12} {:>12} {:>12} {:>10} {:>10}",
+            r.name, wasm_hot, wasm_cached, native_hot, wasm_cold, ratio
+        );
     }
     println!("──────────────────────────────────────────────────────────────────");
     println!("  Ratio = native_latency / wasm_latency (>1 means WASM is faster)");
@@ -541,15 +640,44 @@ fn main() {
 
     // Check WASM files
     let quickjs_wasm = std::path::Path::new("bench_tools/quickjs_wasm/quickjs.wasm");
-    let micropython_wasm = std::path::Path::new("bench_tools/micropython_wasm/wasi-reactor/build/micropython.wasm");
+    let micropython_wasm =
+        std::path::Path::new("bench_tools/micropython_wasm/wasi-reactor/build/micropython.wasm");
     let lua_wasm = std::path::Path::new("bench_tools/lua_wasm/lua.wasm");
     let tinygo_wasm = std::path::Path::new("bench_tools/tinygo_wasm/tool.wasm");
 
     println!("\nWASM modules:");
-    println!("  QuickJS:     {}", if quickjs_wasm.exists() { "found" } else { "MISSING" });
-    println!("  MicroPython: {}", if micropython_wasm.exists() { "found" } else { "MISSING" });
-    println!("  Lua:         {}", if lua_wasm.exists() { "found" } else { "MISSING" });
-    println!("  TinyGo:      {}", if tinygo_wasm.exists() { "found" } else { "MISSING" });
+    println!(
+        "  QuickJS:     {}",
+        if quickjs_wasm.exists() {
+            "found"
+        } else {
+            "MISSING"
+        }
+    );
+    println!(
+        "  MicroPython: {}",
+        if micropython_wasm.exists() {
+            "found"
+        } else {
+            "MISSING"
+        }
+    );
+    println!(
+        "  Lua:         {}",
+        if lua_wasm.exists() {
+            "found"
+        } else {
+            "MISSING"
+        }
+    );
+    println!(
+        "  TinyGo:      {}",
+        if tinygo_wasm.exists() {
+            "found"
+        } else {
+            "MISSING"
+        }
+    );
 
     // Check native runtimes
     let python_cmd = find_command(&["python3", "python"]);
@@ -559,10 +687,20 @@ fn main() {
     let go_available = go_binary.exists();
 
     println!("\nNative runtimes:");
-    println!("  Python:  {}", python_cmd.as_deref().unwrap_or("NOT FOUND"));
+    println!(
+        "  Python:  {}",
+        python_cmd.as_deref().unwrap_or("NOT FOUND")
+    );
     println!("  Node.js: {}", node_cmd.as_deref().unwrap_or("NOT FOUND"));
     println!("  Lua:     {}", lua_cmd.as_deref().unwrap_or("NOT FOUND"));
-    println!("  Go:      {}", if go_available { "found (bench_tools/go_tool)" } else { "NOT FOUND (run bench_tools/go_tool_build.sh)" });
+    println!(
+        "  Go:      {}",
+        if go_available {
+            "found (bench_tools/go_tool)"
+        } else {
+            "NOT FOUND (run bench_tools/go_tool_build.sh)"
+        }
+    );
 
     let request = make_request(1);
     let mut results: Vec<LangResult> = Vec::new();
@@ -585,8 +723,11 @@ fn main() {
 
         // Correctness check
         let mut rt = QuickJsRuntime::cold_start(&wasm_bytes).expect("QuickJS cold start failed");
-        rt.register_tool("text_analyze", JS_TOOL_SOURCE).expect("register failed");
-        let result = rt.call_tool("text_analyze", BENCH_INPUT_JSON).expect("call failed");
+        rt.register_tool("text_analyze", JS_TOOL_SOURCE)
+            .expect("register failed");
+        let result = rt
+            .call_tool("text_analyze", BENCH_INPUT_JSON)
+            .expect("call failed");
         if verify_wasm_result(&result, "JS") {
             println!("  JS WASM correctness: OK");
         }
@@ -626,7 +767,9 @@ fn main() {
             stdin.flush().unwrap();
         }
         let mut line = String::new();
-        BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
         let _ = child.kill();
         let _ = child.wait();
         if verify_native_result(line.trim(), "JS") {
@@ -675,9 +818,13 @@ fn main() {
     if micropython_wasm.exists() {
         let wasm_bytes = std::fs::read(micropython_wasm).unwrap();
 
-        let mut rt = MicroPythonRuntime::cold_start(&wasm_bytes).expect("MicroPython cold start failed");
-        rt.register_tool("text_analyze", PY_TOOL_SOURCE).expect("register failed");
-        let result = rt.call_tool("text_analyze", BENCH_INPUT_JSON).expect("call failed");
+        let mut rt =
+            MicroPythonRuntime::cold_start(&wasm_bytes).expect("MicroPython cold start failed");
+        rt.register_tool("text_analyze", PY_TOOL_SOURCE)
+            .expect("register failed");
+        let result = rt
+            .call_tool("text_analyze", BENCH_INPUT_JSON)
+            .expect("call failed");
         if verify_wasm_result(&result, "Python") {
             println!("  Python WASM correctness: OK");
         }
@@ -714,7 +861,9 @@ fn main() {
             stdin.flush().unwrap();
         }
         let mut line = String::new();
-        BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
         let _ = child.kill();
         let _ = child.wait();
         if verify_native_result(line.trim(), "Python") {
@@ -762,8 +911,11 @@ fn main() {
         let wasm_bytes = std::fs::read(lua_wasm).unwrap();
 
         let mut rt = LuaRuntime::cold_start(&wasm_bytes).expect("Lua cold start failed");
-        rt.register_tool("text_analyze", LUA_TOOL_SOURCE).expect("register failed");
-        let result = rt.call_tool("text_analyze", BENCH_INPUT_JSON).expect("call failed");
+        rt.register_tool("text_analyze", LUA_TOOL_SOURCE)
+            .expect("register failed");
+        let result = rt
+            .call_tool("text_analyze", BENCH_INPUT_JSON)
+            .expect("call failed");
         if verify_wasm_result(&result, "Lua") {
             println!("  Lua WASM correctness: OK");
         }
@@ -800,7 +952,9 @@ fn main() {
             stdin.flush().unwrap();
         }
         let mut line = String::new();
-        BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
         let _ = child.kill();
         let _ = child.wait();
         if verify_native_result(line.trim(), "Lua") {
@@ -862,7 +1016,10 @@ fn main() {
         }
         if !cached_times.is_empty() {
             go_r.wasm_cached_ns = Some(median_of(&mut cached_times));
-            println!("  Go WASM cached module:   {:.1} µs/call", go_r.wasm_cached_ns.unwrap() / 1000.0);
+            println!(
+                "  Go WASM cached module:   {:.1} µs/call",
+                go_r.wasm_cached_ns.unwrap() / 1000.0
+            );
         }
 
         // Go WASM cold start (per-call instantiation)
@@ -870,8 +1027,8 @@ fn main() {
         for _ in 0..RUNS {
             let start = Instant::now();
             for _ in 0..COLD_ITERS {
+                use velocity_mcp::wasm_runtime::wasi::{build_wasi_imports, WasiEnv};
                 use wasmer::{FunctionEnv, Instance, Module, Store};
-                use velocity_mcp::wasm_runtime::wasi::{WasiEnv, build_wasi_imports};
                 let engine = wasmer::Engine::from(wasmer::Cranelift::default());
                 let module = Module::new(&engine, &wasm_bytes).unwrap();
                 let mut store = Store::new(engine);
@@ -902,7 +1059,9 @@ fn main() {
             stdin.flush().unwrap();
         }
         let mut line = String::new();
-        BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
         let _ = child.kill();
         let _ = child.wait();
         if verify_native_result(line.trim(), "Go") {

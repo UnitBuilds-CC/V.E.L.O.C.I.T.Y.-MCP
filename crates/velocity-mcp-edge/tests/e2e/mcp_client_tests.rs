@@ -260,7 +260,13 @@ async fn test_e2e_response_ids_match_request() {
 #[tokio::test]
 async fn test_e2e_all_responses_have_jsonrpc_version() {
     let mut client = setup().await;
-    let methods = vec!["initialize", "ping", "tools/list", "resources/list", "prompts/list"];
+    let methods = vec![
+        "initialize",
+        "ping",
+        "tools/list",
+        "resources/list",
+        "prompts/list",
+    ];
     for method in methods {
         let resp = client.send_request(method, None).await;
         assert_eq!(

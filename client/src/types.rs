@@ -130,7 +130,11 @@ pub struct Tool {
 #[derive(Debug, Deserialize)]
 pub struct ToolsListResult {
     pub tools: Vec<Tool>,
-    #[serde(skip_serializing_if = "Option::is_none", rename = "nextCursor", alias = "next_cursor")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "nextCursor",
+        alias = "next_cursor"
+    )]
     pub next_cursor: Option<String>,
 }
 
@@ -149,7 +153,11 @@ pub enum Content {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "image")]
-    Image { data: String, #[serde(rename = "mimeType", alias = "mime_type")] mime_type: String },
+    Image {
+        data: String,
+        #[serde(rename = "mimeType", alias = "mime_type")]
+        mime_type: String,
+    },
     #[serde(rename = "resource")]
     Resource { resource: ResourceContent },
 }
@@ -158,7 +166,11 @@ pub enum Content {
 #[derive(Debug, Deserialize, Clone)]
 pub struct ResourceContent {
     pub uri: String,
-    #[serde(skip_serializing_if = "Option::is_none", rename = "mimeType", alias = "mime_type")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "mimeType",
+        alias = "mime_type"
+    )]
     pub mime_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
@@ -171,7 +183,11 @@ pub struct Resource {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", rename = "mimeType", alias = "mime_type")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "mimeType",
+        alias = "mime_type"
+    )]
     pub mime_type: Option<String>,
 }
 
@@ -179,7 +195,11 @@ pub struct Resource {
 #[derive(Debug, Deserialize)]
 pub struct ResourcesListResult {
     pub resources: Vec<Resource>,
-    #[serde(skip_serializing_if = "Option::is_none", rename = "nextCursor", alias = "next_cursor")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "nextCursor",
+        alias = "next_cursor"
+    )]
     pub next_cursor: Option<String>,
 }
 
@@ -213,7 +233,11 @@ pub struct PromptArgument {
 #[derive(Debug, Deserialize)]
 pub struct PromptsListResult {
     pub prompts: Vec<Prompt>,
-    #[serde(skip_serializing_if = "Option::is_none", rename = "nextCursor", alias = "next_cursor")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "nextCursor",
+        alias = "next_cursor"
+    )]
     pub next_cursor: Option<String>,
 }
 

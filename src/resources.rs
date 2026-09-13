@@ -100,7 +100,9 @@ fn get_resource_registry() -> &'static Mutex<ResourceStore> {
 /// Must be called before any database resource is read.
 pub fn set_database_path(path: &str) {
     if DATABASE_PATH.set(path.to_string()).is_err() {
-        tracing::warn!("DATABASE_PATH already initialized; ignoring duplicate set_database_path call");
+        tracing::warn!(
+            "DATABASE_PATH already initialized; ignoring duplicate set_database_path call"
+        );
     }
 }
 
@@ -139,9 +141,18 @@ struct ApiResourceConfig {
 impl ResourceStore {
     const MAX_RESOURCES: usize = 10_000;
 
-    fn register_file_resource(&mut self, uri: &str, name: &str, description: &str, path: PathBuf) -> Result<(), String> {
+    fn register_file_resource(
+        &mut self,
+        uri: &str,
+        name: &str,
+        description: &str,
+        path: PathBuf,
+    ) -> Result<(), String> {
         if self.resources.len() >= Self::MAX_RESOURCES {
-            return Err(format!("Resource limit reached ({}), cannot register more resources", Self::MAX_RESOURCES));
+            return Err(format!(
+                "Resource limit reached ({}), cannot register more resources",
+                Self::MAX_RESOURCES
+            ));
         }
         let mime_type = guess_mime(path.extension().and_then(|e| e.to_str()).unwrap_or(""));
         self.resources.push(Resource {
@@ -154,9 +165,19 @@ impl ResourceStore {
         Ok(())
     }
 
-    fn register_db_resource(&mut self, uri: &str, name: &str, description: &str, query: &str, params: Vec<String>) -> Result<(), String> {
+    fn register_db_resource(
+        &mut self,
+        uri: &str,
+        name: &str,
+        description: &str,
+        query: &str,
+        params: Vec<String>,
+    ) -> Result<(), String> {
         if self.resources.len() >= Self::MAX_RESOURCES {
-            return Err(format!("Resource limit reached ({}), cannot register more resources", Self::MAX_RESOURCES));
+            return Err(format!(
+                "Resource limit reached ({}), cannot register more resources",
+                Self::MAX_RESOURCES
+            ));
         }
         self.resources.push(Resource {
             uri: uri.to_string(),
@@ -164,16 +185,30 @@ impl ResourceStore {
             description: description.to_string(),
             mime_type: Some("application/json".to_string()),
         });
-        self.db_resources.insert(uri.to_string(), DbResourceConfig {
-            query: query.to_string(),
-            params,
-        });
+        self.db_resources.insert(
+            uri.to_string(),
+            DbResourceConfig {
+                query: query.to_string(),
+                params,
+            },
+        );
         Ok(())
     }
 
-    fn register_api_resource(&mut self, uri: &str, name: &str, description: &str, endpoint: &str, method: &str, headers: HashMap<String, String>) -> Result<(), String> {
+    fn register_api_resource(
+        &mut self,
+        uri: &str,
+        name: &str,
+        description: &str,
+        endpoint: &str,
+        method: &str,
+        headers: HashMap<String, String>,
+    ) -> Result<(), String> {
         if self.resources.len() >= Self::MAX_RESOURCES {
-            return Err(format!("Resource limit reached ({}), cannot register more resources", Self::MAX_RESOURCES));
+            return Err(format!(
+                "Resource limit reached ({}), cannot register more resources",
+                Self::MAX_RESOURCES
+            ));
         }
         self.resources.push(Resource {
             uri: uri.to_string(),
@@ -181,11 +216,14 @@ impl ResourceStore {
             description: description.to_string(),
             mime_type: Some("application/json".to_string()),
         });
-        self.api_resources.insert(uri.to_string(), ApiResourceConfig {
-            endpoint: endpoint.to_string(),
-            method: method.to_string(),
-            headers,
-        });
+        self.api_resources.insert(
+            uri.to_string(),
+            ApiResourceConfig {
+                endpoint: endpoint.to_string(),
+                method: method.to_string(),
+                headers,
+            },
+        );
         Ok(())
     }
 
@@ -201,20 +239,25 @@ impl ResourceStore {
             return Err(format!("Resource not found: {}", uri));
         }
 
-        if self.subscriptions.len() >= MAX_SUBSCRIBED_URIS && !self.subscriptions.contains_key(uri) {
-            return Err(format!("Too many subscribed resources (max {})", MAX_SUBSCRIBED_URIS));
+        if self.subscriptions.len() >= MAX_SUBSCRIBED_URIS && !self.subscriptions.contains_key(uri)
+        {
+            return Err(format!(
+                "Too many subscribed resources (max {})",
+                MAX_SUBSCRIBED_URIS
+            ));
         }
 
-        let subscribers = self.subscriptions
-            .entry(uri.to_string())
-            .or_default();
+        let subscribers = self.subscriptions.entry(uri.to_string()).or_default();
 
         if subscribers.len() >= MAX_SUBSCRIBERS_PER_URI {
-            return Err(format!("Too many subscribers for resource (max {})", MAX_SUBSCRIBERS_PER_URI));
+            return Err(format!(
+                "Too many subscribers for resource (max {})",
+                MAX_SUBSCRIBERS_PER_URI
+            ));
         }
 
         subscribers.insert(subscriber_id.to_string());
-        
+
         Ok(())
     }
 
@@ -241,7 +284,7 @@ impl ResourceStore {
             self.pending_updates.push(update);
         }
     }
-    
+
     fn drain_updates(&mut self) -> Vec<ResourceUpdate> {
         std::mem::take(&mut self.pending_updates)
     }
@@ -251,14 +294,16 @@ impl ResourceStore {
         if let Some(path) = self.file_resources.get(uri) {
             use std::io::Read;
             const MAX_RESOURCE_SIZE: u64 = 10 * 1024 * 1024;
-            let mut file = std::fs::File::open(path)
-                .map_err(|e| format!("Failed to open file: {}", e))?;
-            let metadata = file.metadata()
+            let mut file =
+                std::fs::File::open(path).map_err(|e| format!("Failed to open file: {}", e))?;
+            let metadata = file
+                .metadata()
                 .map_err(|e| format!("Failed to stat file: {}", e))?;
             if metadata.len() > MAX_RESOURCE_SIZE {
                 return Err(format!(
                     "File too large: {} bytes (max {} bytes)",
-                    metadata.len(), MAX_RESOURCE_SIZE
+                    metadata.len(),
+                    MAX_RESOURCE_SIZE
                 ));
             }
             let mut content = String::new();
@@ -271,7 +316,7 @@ impl ResourceStore {
                 text: Some(content),
             });
         }
-        
+
         // Try database resource
         if let Some(db_config) = self.db_resources.get(uri) {
             #[cfg(feature = "database")]
@@ -292,7 +337,7 @@ impl ResourceStore {
                 });
             }
         }
-        
+
         // Try API resource
         if let Some(api_config) = self.api_resources.get(uri) {
             // Placeholder for actual HTTP request
@@ -309,7 +354,7 @@ impl ResourceStore {
                 text: Some(serde_json::to_string_pretty(&mock_result).unwrap_or_default()),
             });
         }
-        
+
         Err(format!("Resource not found: {}", uri))
     }
 }
@@ -326,9 +371,12 @@ struct ResourceReadResult {
 static CACHED_DB: OnceLock<Mutex<Option<rusqlite::Connection>>> = OnceLock::new();
 
 #[cfg(feature = "database")]
-fn get_db_connection() -> Result<std::sync::MutexGuard<'static, Option<rusqlite::Connection>>, String> {
+fn get_db_connection(
+) -> Result<std::sync::MutexGuard<'static, Option<rusqlite::Connection>>, String> {
     let cache = CACHED_DB.get_or_init(|| Mutex::new(None));
-    let mut guard = cache.lock().map_err(|e| format!("DB cache lock poisoned: {}", e))?;
+    let mut guard = cache
+        .lock()
+        .map_err(|e| format!("DB cache lock poisoned: {}", e))?;
     if guard.is_none() {
         let conn = match DATABASE_PATH.get() {
             Some(path) => rusqlite::Connection::open(path)
@@ -343,41 +391,52 @@ fn get_db_connection() -> Result<std::sync::MutexGuard<'static, Option<rusqlite:
 
 /// Execute a database query and return results as JSON.
 #[cfg(feature = "database")]
-fn execute_database_query(uri: &str, config: &DbResourceConfig) -> Result<ResourceReadResult, String> {
+fn execute_database_query(
+    uri: &str,
+    config: &DbResourceConfig,
+) -> Result<ResourceReadResult, String> {
     let guard = get_db_connection()?;
-    let conn = guard.as_ref().ok_or("Database connection not initialized")?;
-    
+    let conn = guard
+        .as_ref()
+        .ok_or("Database connection not initialized")?;
+
     // Execute the query with parameters
-    let mut stmt = conn.prepare(&config.query)
+    let mut stmt = conn
+        .prepare(&config.query)
         .map_err(|e| format!("Failed to prepare query: {}", e))?;
-    
+
     // Get column names
     let column_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
-    
+
     // Execute query and collect results
     let params: Vec<&str> = config.params.iter().map(|s| s.as_str()).collect();
-    let rows_result = stmt.query_map(rusqlite::params_from_iter(params), |row| {
-        let mut row_data = serde_json::Map::new();
-        for (i, col_name) in column_names.iter().enumerate() {
-            let value: rusqlite::types::Value = row.get(i)?;
-            let json_value = match value {
-                rusqlite::types::Value::Null => Value::Null,
-                rusqlite::types::Value::Integer(i) => json!(i),
-                rusqlite::types::Value::Real(f) => json!(f),
-                rusqlite::types::Value::Text(s) => json!(s),
-                rusqlite::types::Value::Blob(b) => json!(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &b)),
-            };
-            row_data.insert(col_name.clone(), json_value);
-        }
-        Ok(Value::Object(row_data))
-    }).map_err(|e| format!("Failed to execute query: {}", e))?;
-    
+    let rows_result = stmt
+        .query_map(rusqlite::params_from_iter(params), |row| {
+            let mut row_data = serde_json::Map::new();
+            for (i, col_name) in column_names.iter().enumerate() {
+                let value: rusqlite::types::Value = row.get(i)?;
+                let json_value = match value {
+                    rusqlite::types::Value::Null => Value::Null,
+                    rusqlite::types::Value::Integer(i) => json!(i),
+                    rusqlite::types::Value::Real(f) => json!(f),
+                    rusqlite::types::Value::Text(s) => json!(s),
+                    rusqlite::types::Value::Blob(b) => json!(base64::Engine::encode(
+                        &base64::engine::general_purpose::STANDARD,
+                        &b
+                    )),
+                };
+                row_data.insert(col_name.clone(), json_value);
+            }
+            Ok(Value::Object(row_data))
+        })
+        .map_err(|e| format!("Failed to execute query: {}", e))?;
+
     let mut results = Vec::new();
     for row in rows_result {
         let row_value = row.map_err(|e| format!("Failed to read row: {}", e))?;
         results.push(row_value);
     }
-    
+
     let result_json = json!({
         "query": config.query,
         "params": config.params,
@@ -385,7 +444,7 @@ fn execute_database_query(uri: &str, config: &DbResourceConfig) -> Result<Resour
         "rows": results,
         "row_count": results.len()
     });
-    
+
     Ok(ResourceReadResult {
         uri: uri.to_string(),
         mime_type: "application/json".to_string(),
@@ -421,7 +480,12 @@ pub fn register_file_resource(uri: &str, name: &str, description: &str, path: &s
 }
 
 /// Register a resource template with a URI template pattern.
-pub fn register_resource_template(uri_template: &str, name: &str, description: &str, mime_type: Option<&str>) {
+pub fn register_resource_template(
+    uri_template: &str,
+    name: &str,
+    description: &str,
+    mime_type: Option<&str>,
+) {
     let store = get_resource_registry();
     if let Ok(mut s) = store.lock() {
         s.register_template(ResourceTemplate {
@@ -434,7 +498,13 @@ pub fn register_resource_template(uri_template: &str, name: &str, description: &
 }
 
 /// Register a database query as an MCP resource.
-pub fn register_db_resource(uri: &str, name: &str, description: &str, query: &str, params: Vec<String>) {
+pub fn register_db_resource(
+    uri: &str,
+    name: &str,
+    description: &str,
+    query: &str,
+    params: Vec<String>,
+) {
     let store = get_resource_registry();
     if let Ok(mut s) = store.lock() {
         if let Err(e) = s.register_db_resource(uri, name, description, query, params) {
@@ -444,7 +514,14 @@ pub fn register_db_resource(uri: &str, name: &str, description: &str, query: &st
 }
 
 /// Register an API endpoint as an MCP resource.
-pub fn register_api_resource(uri: &str, name: &str, description: &str, endpoint: &str, method: &str, headers: HashMap<String, String>) {
+pub fn register_api_resource(
+    uri: &str,
+    name: &str,
+    description: &str,
+    endpoint: &str,
+    method: &str,
+    headers: HashMap<String, String>,
+) {
     let store = get_resource_registry();
     if let Ok(mut s) = store.lock() {
         if let Err(e) = s.register_api_resource(uri, name, description, endpoint, method, headers) {
@@ -573,25 +650,33 @@ pub fn register_structured_prompt(
         prompts.push(StructuredPrompt {
             name: name.to_string(),
             description: description.to_string(),
-            arguments: args.iter().map(|(n, d, r)| PromptArgument {
-                name: n.to_string(),
-                description: d.to_string(),
-                required: *r,
-            }).collect(),
-            messages: messages.into_iter().map(|(role, content)| PromptMessageTemplate {
-                role,
-                content,
-            }).collect(),
+            arguments: args
+                .iter()
+                .map(|(n, d, r)| PromptArgument {
+                    name: n.to_string(),
+                    description: d.to_string(),
+                    required: *r,
+                })
+                .collect(),
+            messages: messages
+                .into_iter()
+                .map(|(role, content)| PromptMessageTemplate { role, content })
+                .collect(),
         });
     }
 }
 
 /// Get a structured prompt with variable substitution and resource embedding.
-pub fn get_structured_prompt(name: &str, arguments: &HashMap<String, String>) -> Result<Value, String> {
+pub fn get_structured_prompt(
+    name: &str,
+    arguments: &HashMap<String, String>,
+) -> Result<Value, String> {
     let registry = get_structured_prompt_registry();
     match registry.lock() {
         Ok(prompts) => {
-            let prompt = prompts.iter().find(|p| p.name == name)
+            let prompt = prompts
+                .iter()
+                .find(|p| p.name == name)
                 .ok_or_else(|| format!("Structured prompt not found: {}", name))?;
 
             // Validate required arguments
@@ -605,14 +690,15 @@ pub fn get_structured_prompt(name: &str, arguments: &HashMap<String, String>) ->
             let mut processed_messages = Vec::new();
             for msg_template in &prompt.messages {
                 let mut processed_content = Vec::new();
-                
+
                 for block in &msg_template.content {
                     match block {
                         PromptContentBlock::Text { text } => {
                             // Substitute variables in text
                             let mut processed_text = text.clone();
                             for (key, value) in arguments {
-                                processed_text = processed_text.replace(&format!("{{{}}}", key), value);
+                                processed_text =
+                                    processed_text.replace(&format!("{{{}}}", key), value);
                             }
                             processed_content.push(json!({
                                 "type": "text",
@@ -622,11 +708,13 @@ pub fn get_structured_prompt(name: &str, arguments: &HashMap<String, String>) ->
                         PromptContentBlock::Resource { uri } => {
                             // Expand URI template if it contains parameters
                             let expanded_uri = expand_uri_template(uri, arguments);
-                            
+
                             // Try to read the resource
                             match read_resource(&expanded_uri) {
                                 Ok(resource_data) => {
-                                    if let Some(contents) = resource_data.get("contents").and_then(|c| c.as_array()) {
+                                    if let Some(contents) =
+                                        resource_data.get("contents").and_then(|c| c.as_array())
+                                    {
                                         for content in contents {
                                             processed_content.push(json!({
                                                 "type": "resource",
@@ -650,7 +738,7 @@ pub fn get_structured_prompt(name: &str, arguments: &HashMap<String, String>) ->
                         }
                     }
                 }
-                
+
                 processed_messages.push(json!({
                     "role": msg_template.role,
                     "content": processed_content
@@ -686,11 +774,14 @@ pub fn register_prompt(name: &str, description: &str, args: Vec<(&str, &str, boo
         prompts.push(Prompt {
             name: name.to_string(),
             description: description.to_string(),
-            arguments: args.iter().map(|(n, d, r)| PromptArgument {
-                name: n.to_string(),
-                description: d.to_string(),
-                required: *r,
-            }).collect(),
+            arguments: args
+                .iter()
+                .map(|(n, d, r)| PromptArgument {
+                    name: n.to_string(),
+                    description: d.to_string(),
+                    required: *r,
+                })
+                .collect(),
         });
     }
 }
@@ -709,7 +800,9 @@ pub fn get_prompt(name: &str, arguments: &HashMap<String, String>) -> Result<Val
     let registry = get_prompt_registry();
     match registry.lock() {
         Ok(prompts) => {
-            let prompt = prompts.iter().find(|p| p.name == name)
+            let prompt = prompts
+                .iter()
+                .find(|p| p.name == name)
                 .ok_or_else(|| format!("Prompt not found: {}", name))?;
 
             // Validate required arguments
@@ -749,8 +842,16 @@ pub fn handle_resources_list(cursor: Option<&str>) -> Value {
     };
     let page_size = 100;
     let end = (start + page_size).min(resources.len());
-    let page = if start < resources.len() { &resources[start..end] } else { &[] };
-    let next_cursor = if end < resources.len() { Some(json!(end.to_string())) } else { None };
+    let page = if start < resources.len() {
+        &resources[start..end]
+    } else {
+        &[]
+    };
+    let next_cursor = if end < resources.len() {
+        Some(json!(end.to_string()))
+    } else {
+        None
+    };
 
     let mut result = json!({"resources": page});
     if let Some(nc) = next_cursor {
@@ -773,8 +874,16 @@ pub fn handle_resource_templates_list(cursor: Option<&str>) -> Value {
     };
     let page_size = 100;
     let end = (start + page_size).min(templates.len());
-    let page = if start < templates.len() { &templates[start..end] } else { &[] };
-    let next_cursor = if end < templates.len() { Some(json!(end.to_string())) } else { None };
+    let page = if start < templates.len() {
+        &templates[start..end]
+    } else {
+        &[]
+    };
+    let next_cursor = if end < templates.len() {
+        Some(json!(end.to_string()))
+    } else {
+        None
+    };
 
     let mut result = json!({"resourceTemplates": page});
     if let Some(nc) = next_cursor {
@@ -814,8 +923,16 @@ pub fn handle_prompts_list(cursor: Option<&str>) -> Value {
     };
     let page_size = 100;
     let end = (start + page_size).min(prompts.len());
-    let page = if start < prompts.len() { &prompts[start..end] } else { &[] };
-    let next_cursor = if end < prompts.len() { Some(json!(end.to_string())) } else { None };
+    let page = if start < prompts.len() {
+        &prompts[start..end]
+    } else {
+        &[]
+    };
+    let next_cursor = if end < prompts.len() {
+        Some(json!(end.to_string()))
+    } else {
+        None
+    };
 
     let mut result = json!({"prompts": page});
     if let Some(nc) = next_cursor {
@@ -843,20 +960,41 @@ mod tests {
 
     fn test_timer(name: &str) -> impl Drop {
         let start = std::time::Instant::now();
-        struct Timer { name: String, start: std::time::Instant }
-        impl Drop for Timer { fn drop(&mut self) {
-            eprintln!("[TEST] {} completed in {:.3}ms", self.name, self.start.elapsed().as_secs_f64() * 1000.0);
-        }}
-        Timer { name: name.to_string(), start }
+        struct Timer {
+            name: String,
+            start: std::time::Instant,
+        }
+        impl Drop for Timer {
+            fn drop(&mut self) {
+                eprintln!(
+                    "[TEST] {} completed in {:.3}ms",
+                    self.name,
+                    self.start.elapsed().as_secs_f64() * 1000.0
+                );
+            }
+        }
+        Timer {
+            name: name.to_string(),
+            start,
+        }
     }
 
     #[test]
     fn test_register_and_list_resources() {
         let _t = test_timer("test_register_and_list_resources");
         let t0 = std::time::Instant::now();
-        register_file_resource("file:///test.txt", "Test File", "A test file", "/tmp/test.txt");
+        register_file_resource(
+            "file:///test.txt",
+            "Test File",
+            "A test file",
+            "/tmp/test.txt",
+        );
         let resources = list_resources();
-        eprintln!("[METRIC] register+list_resources: {:.3}us ({} resources)", t0.elapsed().as_secs_f64() * 1e6, resources.len());
+        eprintln!(
+            "[METRIC] register+list_resources: {:.3}us ({} resources)",
+            t0.elapsed().as_secs_f64() * 1e6,
+            resources.len()
+        );
         assert!(!resources.is_empty());
         let found = resources.iter().any(|r| r.uri == "file:///test.txt");
         assert!(found, "Should find 'file:///test.txt' in resources");
@@ -864,7 +1002,11 @@ mod tests {
 
     #[test]
     fn test_register_and_list_prompts() {
-        register_prompt("greet", "Greet someone", vec![("name", "Person's name", true)]);
+        register_prompt(
+            "greet",
+            "Greet someone",
+            vec![("name", "Person's name", true)],
+        );
         let prompts = list_prompts();
         assert!(!prompts.is_empty());
         let found = prompts.iter().any(|p| p.name == "greet");
@@ -877,7 +1019,10 @@ mod tests {
         let mut args = HashMap::new();
         args.insert("name".to_string(), "World".to_string());
         let result = get_prompt("hello", &args).unwrap();
-        assert!(result["messages"][0]["content"]["text"].as_str().unwrap().contains("World"));
+        assert!(result["messages"][0]["content"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("World"));
     }
 
     #[test]
@@ -906,7 +1051,7 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("path".to_string(), "documents".to_string());
         params.insert("name".to_string(), "test".to_string());
-        
+
         let expanded = expand_uri_template(template, &params);
         assert_eq!(expanded, "file://documents/test.txt");
     }
@@ -915,11 +1060,11 @@ mod tests {
     fn test_resource_subscription() {
         let _t = test_timer("test_resource_subscription");
         register_file_resource("test://sub", "Test", "Test resource", "/tmp/test.txt");
-        
+
         // Subscribe to the resource
         let result = subscribe_resource("test://sub", "client1");
         assert!(result.is_ok());
-        
+
         // Unsubscribe
         let result = unsubscribe_resource("test://sub", "client1");
         assert!(result.is_ok());
@@ -938,9 +1083,9 @@ mod tests {
             "Users",
             "Database users",
             "SELECT * FROM users WHERE id = ?",
-            vec!["user_id".to_string()]
+            vec!["user_id".to_string()],
         );
-        
+
         let resources = list_resources();
         assert!(resources.iter().any(|r| r.uri == "db://users"));
     }
@@ -949,16 +1094,16 @@ mod tests {
     fn test_api_resource_registration() {
         let mut headers = HashMap::new();
         headers.insert("Authorization".to_string(), "Bearer token".to_string());
-        
+
         register_api_resource(
             "api://data",
             "API Data",
             "External API data",
             "https://api.example.com/data",
             "GET",
-            headers
+            headers,
         );
-        
+
         let resources = list_resources();
         assert!(resources.iter().any(|r| r.uri == "api://data"));
     }
@@ -966,35 +1111,39 @@ mod tests {
     #[test]
     fn test_structured_prompt_registration() {
         use crate::resources::PromptContentBlock;
-        
+
         register_structured_prompt(
             "code_review",
             "Review code with context",
             vec![("language", "Programming language", true)],
             vec![
-                ("system".to_string(), vec![
-                    PromptContentBlock::Text { 
-                        text: "You are a {language} expert.".to_string() 
-                    }
-                ]),
-                ("user".to_string(), vec![
-                    PromptContentBlock::Text { 
-                        text: "Review this code:".to_string() 
-                    },
-                    PromptContentBlock::Resource { 
-                        uri: "file://{path}".to_string() 
-                    }
-                ])
-            ]
+                (
+                    "system".to_string(),
+                    vec![PromptContentBlock::Text {
+                        text: "You are a {language} expert.".to_string(),
+                    }],
+                ),
+                (
+                    "user".to_string(),
+                    vec![
+                        PromptContentBlock::Text {
+                            text: "Review this code:".to_string(),
+                        },
+                        PromptContentBlock::Resource {
+                            uri: "file://{path}".to_string(),
+                        },
+                    ],
+                ),
+            ],
         );
-        
+
         let mut args = HashMap::new();
         args.insert("language".to_string(), "Rust".to_string());
         args.insert("path".to_string(), "src/main.rs".to_string());
-        
+
         let result = get_structured_prompt("code_review", &args);
         assert!(result.is_ok());
-        
+
         let prompt = result.unwrap();
         assert_eq!(prompt["messages"].as_array().unwrap().len(), 2);
     }
@@ -1002,7 +1151,7 @@ mod tests {
     #[test]
     fn test_handle_resources_subscribe() {
         register_file_resource("test://handler", "Test", "Test", "/tmp/test.txt");
-        
+
         let result = handle_resources_subscribe("test://handler", "client1");
         assert!(result.is_ok());
         assert_eq!(result.unwrap()["status"], "subscribed");
@@ -1012,7 +1161,7 @@ mod tests {
     fn test_handle_resources_unsubscribe() {
         register_file_resource("test://unsub", "Test", "Test", "/tmp/test.txt");
         let _ = subscribe_resource("test://unsub", "client1");
-        
+
         let result = handle_resources_unsubscribe("test://unsub", "client1");
         assert!(result.is_ok());
         assert_eq!(result.unwrap()["status"], "unsubscribed");
@@ -1029,24 +1178,28 @@ mod tests {
             "SELECT 1 as id, 'Alice' as name, 30 as age",
             vec![],
         );
-        
+
         // Read the resource
         let result = read_resource("db://users");
-        assert!(result.is_ok(), "Database query should succeed: {:?}", result.err());
-        
+        assert!(
+            result.is_ok(),
+            "Database query should succeed: {:?}",
+            result.err()
+        );
+
         let resource_data = result.unwrap();
-        
+
         // The result should have a "contents" array
         let contents = resource_data["contents"].as_array().unwrap();
         assert!(!contents.is_empty());
-        
+
         let first_content = &contents[0];
         assert_eq!(first_content["mimeType"], "application/json");
-        
+
         // Parse the JSON result
         let json_str = first_content["text"].as_str().unwrap();
         let json_data: Value = serde_json::from_str(json_str).unwrap();
-        
+
         // Verify the query results
         assert_eq!(json_data["columns"].as_array().unwrap().len(), 3);
         assert_eq!(json_data["row_count"].as_u64().unwrap(), 1);
@@ -1056,22 +1209,16 @@ mod tests {
     #[test]
     fn test_database_resource_without_feature() {
         // This test runs without the database feature
-        register_db_resource(
-            "db://test",
-            "Test DB",
-            "Test database",
-            "SELECT 1",
-            vec![],
-        );
-        
+        register_db_resource("db://test", "Test DB", "Test database", "SELECT 1", vec![]);
+
         let result = read_resource("db://test");
         assert!(result.is_ok());
-        
+
         // Should return mock data when database feature is not enabled
         let resource_data = result.unwrap();
         let contents = resource_data["contents"].as_array().unwrap();
         assert!(!contents.is_empty());
-        
+
         let first_content = &contents[0];
         assert_eq!(first_content["mimeType"], "application/json");
     }
@@ -1100,7 +1247,12 @@ mod tests {
 
     #[test]
     fn test_notify_and_poll_resource_updates() {
-        register_file_resource("test://notify_poll", "Notify", "Test notify", "/tmp/notify.txt");
+        register_file_resource(
+            "test://notify_poll",
+            "Notify",
+            "Test notify",
+            "/tmp/notify.txt",
+        );
         subscribe_resource("test://notify_poll", "client_poll").ok();
 
         notify_resource_update("test://notify_poll");
@@ -1123,9 +1275,18 @@ mod tests {
         let file_path = dir.join("hello.txt");
         std::fs::write(&file_path, "hello world").unwrap();
 
-        register_file_resource("test://read_file", "ReadFile", "Read test", file_path.to_str().unwrap());
+        register_file_resource(
+            "test://read_file",
+            "ReadFile",
+            "Read test",
+            file_path.to_str().unwrap(),
+        );
         let result = read_resource("test://read_file");
-        assert!(result.is_ok(), "read_resource should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "read_resource should succeed: {:?}",
+            result.err()
+        );
         let data = result.unwrap();
         let text = data["contents"][0]["text"].as_str().unwrap();
         assert_eq!(text, "hello world");
@@ -1136,7 +1297,12 @@ mod tests {
 
     #[test]
     fn test_read_file_resource_missing_file() {
-        register_file_resource("test://read_missing", "Missing", "Missing file", "/tmp/nonexistent_mcp_file_xyz.txt");
+        register_file_resource(
+            "test://read_missing",
+            "Missing",
+            "Missing file",
+            "/tmp/nonexistent_mcp_file_xyz.txt",
+        );
         let result = read_resource("test://read_missing");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Failed to open file"));
@@ -1146,7 +1312,14 @@ mod tests {
     fn test_read_api_resource() {
         let mut headers = HashMap::new();
         headers.insert("X-Test".to_string(), "yes".to_string());
-        register_api_resource("test://api_read", "ApiRead", "API read test", "https://api.example.com/test", "POST", headers);
+        register_api_resource(
+            "test://api_read",
+            "ApiRead",
+            "API read test",
+            "https://api.example.com/test",
+            "POST",
+            headers,
+        );
 
         let result = read_resource("test://api_read");
         assert!(result.is_ok());
@@ -1166,7 +1339,12 @@ mod tests {
 
     #[test]
     fn test_register_and_list_resource_templates() {
-        register_resource_template("file://{path}", "File Template", "A file template", Some("text/plain"));
+        register_resource_template(
+            "file://{path}",
+            "File Template",
+            "A file template",
+            Some("text/plain"),
+        );
         let templates = list_resource_templates();
         assert!(templates.iter().any(|t| t.uri_template == "file://{path}"));
     }
@@ -1186,7 +1364,12 @@ mod tests {
 
     #[test]
     fn test_handle_resources_read() {
-        register_file_resource("test://handler_read", "HandlerRead", "Handler test", "/tmp/handler_read.txt");
+        register_file_resource(
+            "test://handler_read",
+            "HandlerRead",
+            "Handler test",
+            "/tmp/handler_read.txt",
+        );
         let result = handle_resources_read("test://handler_read");
         assert!(result.is_err());
     }
@@ -1241,7 +1424,10 @@ mod tests {
             }
             assert!(s.pending_updates.len() > 10_000);
             s.notify_update("test://cap_resource");
-            assert!(s.pending_updates.len() <= 5002, "notify_update should cap at ~5002 after draining 5000");
+            assert!(
+                s.pending_updates.len() <= 5002,
+                "notify_update should cap at ~5002 after draining 5000"
+            );
             s.pending_updates.clear();
             s.resources.retain(|r| r.uri != "test://cap_resource");
         }
@@ -1253,7 +1439,12 @@ mod tests {
             "cov_req_prompt",
             "Test required args",
             vec![("name", "Name", true), ("opt", "Optional", false)],
-            vec![("user".to_string(), vec![PromptContentBlock::Text { text: "Hello {name}".to_string() }])],
+            vec![(
+                "user".to_string(),
+                vec![PromptContentBlock::Text {
+                    text: "Hello {name}".to_string(),
+                }],
+            )],
         );
         let mut args = HashMap::new();
         args.insert("opt".to_string(), "val".to_string());
@@ -1264,17 +1455,27 @@ mod tests {
 
     #[test]
     fn test_structured_prompt_with_resource_block() {
-        register_file_resource("test://cov_prompt_res", "PromptRes", "For prompt", "/nonexistent/cov_prompt_res.txt");
+        register_file_resource(
+            "test://cov_prompt_res",
+            "PromptRes",
+            "For prompt",
+            "/nonexistent/cov_prompt_res.txt",
+        );
         register_structured_prompt(
             "cov_res_prompt",
             "Test resource block",
             vec![],
-            vec![
-                ("user".to_string(), vec![
-                    PromptContentBlock::Text { text: "See resource:".to_string() },
-                    PromptContentBlock::Resource { uri: "test://cov_prompt_res".to_string() },
-                ]),
-            ],
+            vec![(
+                "user".to_string(),
+                vec![
+                    PromptContentBlock::Text {
+                        text: "See resource:".to_string(),
+                    },
+                    PromptContentBlock::Resource {
+                        uri: "test://cov_prompt_res".to_string(),
+                    },
+                ],
+            )],
         );
         let args = HashMap::new();
         let result = get_structured_prompt("cov_res_prompt", &args);
@@ -1286,7 +1487,10 @@ mod tests {
         assert!(content.len() >= 2);
         assert_eq!(content[0]["type"], "text");
         assert_eq!(content[1]["type"], "text");
-        assert!(content[1]["text"].as_str().unwrap().contains("not available"));
+        assert!(content[1]["text"]
+            .as_str()
+            .unwrap()
+            .contains("not available"));
     }
 
     #[test]
@@ -1295,17 +1499,27 @@ mod tests {
         std::fs::write(&tmp, "hello from resource").unwrap();
         let path_str = tmp.to_str().unwrap().to_string();
 
-        register_file_resource("test://cov_prompt_res_ok", "PromptResOk", "For prompt success", &path_str);
+        register_file_resource(
+            "test://cov_prompt_res_ok",
+            "PromptResOk",
+            "For prompt success",
+            &path_str,
+        );
         register_structured_prompt(
             "cov_res_ok_prompt",
             "Test successful resource read",
             vec![],
-            vec![
-                ("user".to_string(), vec![
-                    PromptContentBlock::Text { text: "See:".to_string() },
-                    PromptContentBlock::Resource { uri: "test://cov_prompt_res_ok".to_string() },
-                ]),
-            ],
+            vec![(
+                "user".to_string(),
+                vec![
+                    PromptContentBlock::Text {
+                        text: "See:".to_string(),
+                    },
+                    PromptContentBlock::Resource {
+                        uri: "test://cov_prompt_res_ok".to_string(),
+                    },
+                ],
+            )],
         );
         let args = HashMap::new();
         let result = get_structured_prompt("cov_res_ok_prompt", &args);
@@ -1345,10 +1559,13 @@ mod tests {
                 mime_type: Some("text/plain".to_string()),
             });
             let result = s.subscribe("test://sub_limit_257", "subscriber_0");
-            s.resources.retain(|r| !r.uri.starts_with("test://sub_limit_"));
+            s.resources
+                .retain(|r| !r.uri.starts_with("test://sub_limit_"));
             s.subscriptions.clear();
             assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Too many subscribed resources"));
+            assert!(result
+                .unwrap_err()
+                .contains("Too many subscribed resources"));
         }
     }
 
@@ -1386,7 +1603,11 @@ mod tests {
         let result = read_resource("test://cov_large_res");
         assert!(result.is_err());
         let err_msg = result.unwrap_err();
-        assert!(err_msg.contains("too large") || err_msg.contains("Too large") || err_msg.contains("Failed"));
+        assert!(
+            err_msg.contains("too large")
+                || err_msg.contains("Too large")
+                || err_msg.contains("Failed")
+        );
 
         let _ = std::fs::remove_file(&tmp);
         let store = get_resource_registry();

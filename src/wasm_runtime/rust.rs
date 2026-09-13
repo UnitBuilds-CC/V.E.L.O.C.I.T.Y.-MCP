@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use wasmer::{FunctionEnv, Instance, Module, Store, Value as WasmValue};
 
-use super::wasi::{WasiEnv, build_wasi_imports};
+use super::wasi::{build_wasi_imports, WasiEnv};
 use super::WasmRuntime;
 
 pub struct RustRuntime {
@@ -48,7 +48,9 @@ impl RustRuntime {
             return Ok(());
         }
 
-        let module = self.modules.get(name)
+        let module = self
+            .modules
+            .get(name)
             .ok_or_else(|| format!("Tool not loaded: {}", name))?
             .clone();
 
@@ -78,14 +80,14 @@ impl WasmRuntime for RustRuntime {
         // For Rust, "source" can be either:
         // 1. A file path to a pre-compiled .wasm file
         // 2. Raw WASM bytes (for direct loading)
-        
+
         let wasm_bytes = if std::path::Path::new(source).exists() {
             std::fs::read(source)?
         } else {
             // Treat source as raw WASM bytes (shouldn't happen in normal use)
             source.as_bytes().to_vec()
         };
-        
+
         self.load_tool(name, &wasm_bytes)?;
         self.ensure_instantiated(name)?;
         Ok(())
@@ -102,7 +104,9 @@ impl WasmRuntime for RustRuntime {
 
         let args_bytes = args_json.as_bytes();
         let memory = instance.exports.get_memory("memory")?;
-        memory.view(&self.store).write(input_ptr as u64, args_bytes)?;
+        memory
+            .view(&self.store)
+            .write(input_ptr as u64, args_bytes)?;
 
         let execute = instance.exports.get_function("tool_execute")?;
         let result = execute.call(&mut self.store, &[WasmValue::I32(args_bytes.len() as i32)])?;
@@ -112,7 +116,9 @@ impl WasmRuntime for RustRuntime {
         let result_len = (encoded & 0xFFFF_FFFF) as u32;
 
         let mut result_buf = vec![0u8; result_len as usize];
-        memory.view(&self.store).read(result_ptr as u64, &mut result_buf)?;
+        memory
+            .view(&self.store)
+            .read(result_ptr as u64, &mut result_buf)?;
 
         Ok(String::from_utf8_lossy(&result_buf).to_string())
     }
@@ -145,9 +151,12 @@ mod tests {
 
         let wasm_bytes = std::fs::read(wasm_path).expect("failed to read WASM");
         let mut rt = RustRuntime::new(&wasm_bytes).expect("failed to create runtime");
-        rt.register_tool("example_tool", wasm_path).expect("failed to register tool");
+        rt.register_tool("example_tool", wasm_path)
+            .expect("failed to register tool");
 
-        let result = rt.call_tool("example_tool", r#"{"input": "test"}"#).expect("call failed");
+        let result = rt
+            .call_tool("example_tool", r#"{"input": "test"}"#)
+            .expect("call failed");
         assert!(!result.is_empty(), "tool returned empty result");
 
         rt.destroy().unwrap();

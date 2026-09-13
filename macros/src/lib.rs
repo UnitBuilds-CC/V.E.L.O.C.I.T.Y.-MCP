@@ -11,8 +11,8 @@
 //! - Auto-registration into global tool registry
 
 use proc_macro::TokenStream;
-use quote::{quote, format_ident};
-use syn::{parse_macro_input, ItemFn, FnArg, Pat, Type, LitStr, LitInt, LitFloat};
+use quote::{format_ident, quote};
+use syn::{parse_macro_input, FnArg, ItemFn, LitFloat, LitInt, LitStr, Pat, Type};
 
 /// Attribute macro for type-safe MCP tool registration.
 ///
@@ -38,11 +38,13 @@ use syn::{parse_macro_input, ItemFn, FnArg, Pat, Type, LitStr, LitInt, LitFloat}
 pub fn mcp_tool(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attrs = parse_macro_input!(attr as McpToolAttrs);
     let func = parse_macro_input!(item as ItemFn);
-    
+
     let func_name = &func.sig.ident;
     let tool_name = attrs.name.unwrap_or_else(|| func_name.to_string());
-    let description = attrs.description.unwrap_or_else(|| format!("Tool: {}", tool_name));
-    
+    let description = attrs
+        .description
+        .unwrap_or_else(|| format!("Tool: {}", tool_name));
+
     // Extract function components for reconstruction
     let func_params: Vec<_> = func.sig.inputs.iter().collect();
     let return_type = match &func.sig.output {
@@ -50,22 +52,22 @@ pub fn mcp_tool(attr: TokenStream, item: TokenStream) -> TokenStream {
         syn::ReturnType::Type(_, ty) => quote! { -> #ty },
     };
     let func_body = &func.block;
-    
+
     // Extract parameters and generate JSON schema
     let mut schema_props = Vec::new();
     let mut required_params = Vec::new();
     let mut param_extractions = Vec::new();
     let mut param_names = Vec::new();
-    
+
     for arg in &func.sig.inputs {
         if let FnArg::Typed(pat_type) = arg {
             if let Pat::Ident(pat_ident) = &*pat_type.pat {
                 let param_name = pat_ident.ident.to_string();
                 let param_type = &*pat_type.ty;
                 let param_ident = &pat_ident.ident;
-                
+
                 param_names.push(param_ident.clone());
-                
+
                 // Check if it's Option<T>
                 let is_optional = is_option_type(param_type);
                 let base_type = if is_optional {
@@ -73,51 +75,51 @@ pub fn mcp_tool(attr: TokenStream, item: TokenStream) -> TokenStream {
                 } else {
                     param_type
                 };
-                
+
                 // Get constraints for this parameter
                 let constraints = attrs.param_constraints.get(&param_name);
-                
+
                 // Generate JSON schema property with constraints
                 let schema_type = type_to_json_schema(base_type, constraints);
                 schema_props.push(quote! {
                     props.insert(#param_name.to_string(), #schema_type);
                 });
-                
+
                 if !is_optional {
                     required_params.push(param_name.clone());
                 }
-                
+
                 // Generate parameter extraction code
                 let extract = generate_param_extraction(&param_name, base_type, is_optional);
                 param_extractions.push(extract);
             }
         }
     }
-    
+
     let required_json = if required_params.is_empty() {
         quote! { serde_json::json!([]) }
     } else {
         quote! { serde_json::json!([#(#required_params),*]) }
     };
-    
+
     // Generate the tool struct
     let tool_struct_name = format_ident!("{}", func_name.to_string().to_uppercase());
     let original_func_name = format_ident!("__{}_original", func_name);
     let register_fn_name = format_ident!("__register_{}", func_name);
     let auto_register_fn_name = format_ident!("__auto_register_{}", func_name);
-    
+
     let expanded = quote! {
         // Original function with renamed identifier
         #[allow(non_snake_case)]
         fn #original_func_name(#(#func_params),*) #return_type {
             #func_body
         }
-        
+
         // Generated tool registration
         pub static #tool_struct_name: std::sync::LazyLock<::velocity_mcp::registry::Tool> = std::sync::LazyLock::new(|| {
             let mut props = std::collections::HashMap::new();
             #(#schema_props)*
-            
+
             ::velocity_mcp::registry::Tool {
                 name: #tool_name.to_string(),
                 description: #description.to_string(),
@@ -128,25 +130,25 @@ pub fn mcp_tool(attr: TokenStream, item: TokenStream) -> TokenStream {
                 }),
             }
         });
-        
+
         // Auto-registration function
         pub fn #register_fn_name() {
             ::velocity_mcp::registry::register_tool_lazy(&#tool_struct_name);
         }
-        
+
         // Auto-registration constructor - runs at program startup
         #[::ctor::ctor]
         fn #auto_register_fn_name() {
             ::velocity_mcp::registry::register_tool_lazy(&#tool_struct_name);
         }
-        
+
         // Generated dispatch function with original name
         pub fn #func_name(args: &serde_json::Value) -> Result<String, String> {
             #(#param_extractions)*
             #original_func_name(#(#param_names),*)
         }
     };
-    
+
     expanded.into()
 }
 
@@ -170,11 +172,11 @@ impl syn::parse::Parse for McpToolAttrs {
         let mut name = None;
         let mut description = None;
         let mut param_constraints = std::collections::HashMap::new();
-        
+
         while !input.is_empty() {
             let ident: syn::Ident = input.parse()?;
             let _eq: syn::Token![=] = input.parse()?;
-            
+
             match ident.to_string().as_str() {
                 "name" => {
                     let value: LitStr = input.parse()?;
@@ -187,14 +189,14 @@ impl syn::parse::Parse for McpToolAttrs {
                 "param_constraints" => {
                     let content;
                     syn::braced!(content in input);
-                    
+
                     while !content.is_empty() {
                         let param_name: LitStr = content.parse()?;
                         let _colon: syn::Token![:] = content.parse()?;
-                        
+
                         let constraints_content;
                         syn::braced!(constraints_content in content);
-                        
+
                         let mut constraints = ParamConstraints {
                             min_length: None,
                             max_length: None,
@@ -203,11 +205,11 @@ impl syn::parse::Parse for McpToolAttrs {
                             pattern: None,
                             default: None,
                         };
-                        
+
                         while !constraints_content.is_empty() {
                             let constraint_name: syn::Ident = constraints_content.parse()?;
                             let _colon: syn::Token![:] = constraints_content.parse()?;
-                            
+
                             match constraint_name.to_string().as_str() {
                                 "min_length" => {
                                     let value: LitInt = constraints_content.parse()?;
@@ -233,16 +235,21 @@ impl syn::parse::Parse for McpToolAttrs {
                                     let value: LitStr = constraints_content.parse()?;
                                     constraints.default = Some(value.value());
                                 }
-                                _ => return Err(syn::Error::new(constraint_name.span(), "Unknown constraint")),
+                                _ => {
+                                    return Err(syn::Error::new(
+                                        constraint_name.span(),
+                                        "Unknown constraint",
+                                    ))
+                                }
                             }
-                            
+
                             if !constraints_content.is_empty() {
                                 let _comma: syn::Token![,] = constraints_content.parse()?;
                             }
                         }
-                        
+
                         param_constraints.insert(param_name.value(), constraints);
-                        
+
                         if !content.is_empty() {
                             let _comma: syn::Token![,] = content.parse()?;
                         }
@@ -250,13 +257,17 @@ impl syn::parse::Parse for McpToolAttrs {
                 }
                 _ => return Err(syn::Error::new(ident.span(), "Unknown attribute")),
             }
-            
+
             if !input.is_empty() {
                 let _comma: syn::Token![,] = input.parse()?;
             }
         }
-        
-        Ok(McpToolAttrs { name, description, param_constraints })
+
+        Ok(McpToolAttrs {
+            name,
+            description,
+            param_constraints,
+        })
     }
 }
 
@@ -299,7 +310,10 @@ fn extract_vec_inner(ty: &Type) -> Option<&Type> {
     None
 }
 
-fn type_to_json_schema(ty: &Type, constraints: Option<&ParamConstraints>) -> proc_macro2::TokenStream {
+fn type_to_json_schema(
+    ty: &Type,
+    constraints: Option<&ParamConstraints>,
+) -> proc_macro2::TokenStream {
     let mut schema = if let Type::Path(type_path) = ty {
         if let Some(segment) = type_path.path.segments.last() {
             let type_name = segment.ident.to_string();
@@ -307,8 +321,8 @@ fn type_to_json_schema(ty: &Type, constraints: Option<&ParamConstraints>) -> pro
                 "String" | "str" => {
                     quote! { serde_json::json!({"type": "string"}) }
                 }
-                "i8" | "i16" | "i32" | "i64" | "i128" | "isize" |
-                "u8" | "u16" | "u32" | "u64" | "u128" | "usize" => {
+                "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64"
+                | "u128" | "usize" => {
                     quote! { serde_json::json!({"type": "integer"}) }
                 }
                 "f32" | "f64" => {
@@ -343,7 +357,7 @@ fn type_to_json_schema(ty: &Type, constraints: Option<&ParamConstraints>) -> pro
     } else {
         quote! { serde_json::json!({"type": "string"}) }
     };
-    
+
     // Apply constraints if provided
     if let Some(constraints) = constraints {
         if let Some(min_length) = constraints.min_length {
@@ -401,17 +415,21 @@ fn type_to_json_schema(ty: &Type, constraints: Option<&ParamConstraints>) -> pro
             };
         }
     }
-    
+
     schema
 }
 
-fn generate_param_extraction(param_name: &str, ty: &Type, is_optional: bool) -> proc_macro2::TokenStream {
+fn generate_param_extraction(
+    param_name: &str,
+    ty: &Type,
+    is_optional: bool,
+) -> proc_macro2::TokenStream {
     let param_ident = format_ident!("{}", param_name);
-    
+
     if let Type::Path(type_path) = ty {
         if let Some(segment) = type_path.path.segments.last() {
             let type_name = segment.ident.to_string();
-            
+
             let extract_expr = match type_name.as_str() {
                 "String" => quote! {
                     args[#param_name].as_str().ok_or_else(|| format!("Missing required parameter: {}", #param_name))?.to_string()
@@ -448,7 +466,7 @@ fn generate_param_extraction(param_name: &str, ty: &Type, is_optional: bool) -> 
                     args[#param_name].as_str().ok_or_else(|| format!("Missing required parameter: {}", #param_name))?.to_string()
                 },
             };
-            
+
             if is_optional {
                 return quote! {
                     let #param_ident: Option<#ty> = if args[#param_name].is_null() {
@@ -464,7 +482,7 @@ fn generate_param_extraction(param_name: &str, ty: &Type, is_optional: bool) -> 
             }
         }
     }
-    
+
     // Default extraction
     if is_optional {
         quote! {

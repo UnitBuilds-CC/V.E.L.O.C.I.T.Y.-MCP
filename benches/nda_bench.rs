@@ -25,11 +25,9 @@ fn benchmark_nda_compile_with_triples(c: &mut Criterion) {
 fn benchmark_nda_read(c: &mut Criterion) {
     let compiler = NdaCompiler::new();
     let compiled = compiler.compile();
-    
+
     c.bench_function("nda_read", |b| {
-        b.iter(|| {
-            black_box(NdaDocument::read(&compiled))
-        })
+        b.iter(|| black_box(NdaDocument::read(&compiled)))
     });
 }
 
@@ -40,9 +38,7 @@ fn benchmark_nda_verify_merkle(c: &mut Criterion) {
     let parsed = NdaDocument::read(&compiled).unwrap();
 
     c.bench_function("nda_verify_merkle", |b| {
-        b.iter(|| {
-            black_box(parsed.verify_merkle())
-        })
+        b.iter(|| black_box(parsed.verify_merkle()))
     });
 }
 
@@ -64,8 +60,8 @@ fn benchmark_nda_compile_large(c: &mut Criterion) {
 
 #[cfg(feature = "http")]
 fn benchmark_middleware_cache_lookup(c: &mut Criterion) {
-    use velocity_mcp::middleware::ResponseCache;
     use std::time::Duration;
+    use velocity_mcp::middleware::ResponseCache;
 
     let cache = ResponseCache::new(Duration::from_secs(60));
 

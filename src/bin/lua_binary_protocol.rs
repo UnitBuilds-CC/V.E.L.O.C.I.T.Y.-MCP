@@ -9,8 +9,8 @@
 
 use std::hint::black_box;
 use std::time::Instant;
-use velocity_mcp::wasm_runtime::{lua::LuaRuntime, WasmRuntime};
 use velocity_mcp::protocol::nda_native::encode_json_value;
+use velocity_mcp::wasm_runtime::{lua::LuaRuntime, WasmRuntime};
 
 const WARM_ITERS: usize = 1000; // Used for warmup phase to stabilize measurements
 const BENCH_ITERS: usize = 5000;
@@ -29,13 +29,15 @@ const TEST_INPUT: &str = r#"{"text":"The quick brown fox jumps over the lazy dog
 
 fn load_lua_wasm() -> Vec<u8> {
     let path = "bench_tools/lua_wasm/lua.wasm";
-    std::fs::read(path).expect("Lua WASM not found — build with: cd bench_tools/lua_wasm && ./build.sh")
+    std::fs::read(path)
+        .expect("Lua WASM not found — build with: cd bench_tools/lua_wasm && ./build.sh")
 }
 
 /// Baseline: current JSON path (serde_json → string → WASM memory → JSON parser)
 fn bench_json_path(wasm_bytes: &[u8]) -> f64 {
     let mut rt = LuaRuntime::cold_start(wasm_bytes).expect("Lua cold start failed");
-    rt.register_tool("text_analyze", LUA_TOOL_SOURCE).expect("register tool failed");
+    rt.register_tool("text_analyze", LUA_TOOL_SOURCE)
+        .expect("register tool failed");
 
     // Warmup
     for _ in 0..10 {
@@ -56,7 +58,8 @@ fn bench_json_path(wasm_bytes: &[u8]) -> f64 {
 /// Optimized: TLV binary path (NDA TLV → WASM memory → zero-alloc decoder)
 fn bench_tlv_path(wasm_bytes: &[u8]) -> f64 {
     let mut rt = LuaRuntime::cold_start(wasm_bytes).expect("Lua cold start failed");
-    rt.register_tool("text_analyze", LUA_TOOL_SOURCE).expect("register tool failed");
+    rt.register_tool("text_analyze", LUA_TOOL_SOURCE)
+        .expect("register tool failed");
 
     // Encode test input as TLV once
     let input_value: serde_json::Value = serde_json::from_str(TEST_INPUT).unwrap();
@@ -115,7 +118,11 @@ fn main() {
         0.0
     };
 
-    println!("\nImprovement: {:.1}% faster ({:.1}ns saved per call)", improvement, json_median - tlv_median);
+    println!(
+        "\nImprovement: {:.1}% faster ({:.1}ns saved per call)",
+        improvement,
+        json_median - tlv_median
+    );
 
     if improvement > 0.0 {
         println!("✓ Binary protocol eliminates JSON overhead");

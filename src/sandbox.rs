@@ -128,7 +128,8 @@ impl ProcessCapabilities {
         // Try canonicalized comparison first (prevents symlink bypass)
         if let Ok(canon) = std::fs::canonicalize(path) {
             for allowed in &self.allowed_paths {
-                let allowed_canon = std::fs::canonicalize(allowed).unwrap_or_else(|_| allowed.clone());
+                let allowed_canon =
+                    std::fs::canonicalize(allowed).unwrap_or_else(|_| allowed.clone());
                 if canon.starts_with(&allowed_canon) {
                     return true;
                 }
@@ -278,7 +279,10 @@ impl Sandbox {
     /// Path traversal is blocked — the resolved path must stay within work_dir.
     pub fn write_file(&self, name: &str, contents: &[u8]) -> Result<PathBuf, String> {
         let name_path = Path::new(name);
-        if name_path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        if name_path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
             return Err("Path traversal detected in sandbox file write".to_string());
         }
         let path = self.work_dir.join(name);
@@ -361,7 +365,11 @@ impl Sandbox {
         crate::audit::record_tool_call(
             "sandbox_violation",
             Instant::now(),
-            crate::audit::AuditOutcome::Rejected(format!("{}: {}", category_label(&category), detail)),
+            crate::audit::AuditOutcome::Rejected(format!(
+                "{}: {}",
+                category_label(&category),
+                detail
+            )),
         );
         format!("Security Violation: {} blocked by sandbox", detail)
     }
@@ -556,8 +564,14 @@ fn apply_job_object_limits(child: &mut std::process::Child, max_memory: usize) {
     // to avoid adding windows-sys as a dependency.
     // Job Objects provide process-level resource limits.
     extern "system" {
-        fn CreateJobObjectW(lpJobAttributes: *mut std::ffi::c_void, lpName: *const u16) -> *mut std::ffi::c_void;
-        fn AssignProcessToJobObject(hJob: *mut std::ffi::c_void, hProcess: *mut std::ffi::c_void) -> i32;
+        fn CreateJobObjectW(
+            lpJobAttributes: *mut std::ffi::c_void,
+            lpName: *const u16,
+        ) -> *mut std::ffi::c_void;
+        fn AssignProcessToJobObject(
+            hJob: *mut std::ffi::c_void,
+            hProcess: *mut std::ffi::c_void,
+        ) -> i32;
         fn SetInformationJobObject(
             hJob: *mut std::ffi::c_void,
             info_class: u32,
@@ -573,13 +587,19 @@ fn apply_job_object_limits(child: &mut std::process::Child, max_memory: usize) {
     unsafe {
         let job = CreateJobObjectW(std::ptr::null_mut(), std::ptr::null());
         if job.is_null() {
-            tracing::warn!("Failed to create Job Object for sandbox; continuing without memory limits");
+            tracing::warn!(
+                "Failed to create Job Object for sandbox; continuing without memory limits"
+            );
             return;
         }
 
         // JOBOBJECT_BASIC_LIMIT_INFORMATION structure (simplified)
         // We set the working set limits to constrain memory usage
-        let limit = if max_memory > 0 { max_memory } else { MAX_PROCESS_MEMORY };
+        let limit = if max_memory > 0 {
+            max_memory
+        } else {
+            MAX_PROCESS_MEMORY
+        };
         let min_set = limit / 2; // Minimum working set = half of max
         let max_set = limit;
 
@@ -609,7 +629,8 @@ fn apply_job_object_limits(child: &mut std::process::Child, max_memory: usize) {
             tracing::warn!(
                 error = std::io::Error::last_os_error().raw_os_error(),
                 "Failed to set Job Object memory limits (min={}, max={})",
-                min_set, max_set
+                min_set,
+                max_set
             );
         }
 
@@ -672,7 +693,10 @@ fn random_suffix() -> String {
         .unwrap_or_default()
         .subsec_nanos() as u64;
     let pid = std::process::id() as u64;
-    format!("{:08x}", (nanos ^ (pid << 16) ^ count).wrapping_mul(2654435761))
+    format!(
+        "{:08x}",
+        (nanos ^ (pid << 16) ^ count).wrapping_mul(2654435761)
+    )
 }
 
 fn category_label(cat: &ViolationCategory) -> &'static str {
@@ -697,9 +721,8 @@ pub fn sanitize_error(msg: &str) -> String {
     let mut sanitized = truncated;
 
     // Compile regexes once using LazyLock for efficiency and safety
-    static RE_WINDOWS: std::sync::LazyLock<Option<regex::Regex>> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r#"[A-Z]:\\[^\s:,;"')\]]+"#).ok()
-    });
+    static RE_WINDOWS: std::sync::LazyLock<Option<regex::Regex>> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r#"[A-Z]:\\[^\s:,;"')\]]+"#).ok());
     static RE_UNIX: std::sync::LazyLock<Option<regex::Regex>> = std::sync::LazyLock::new(|| {
         regex::Regex::new(r#"/(?:home|tmp|var|usr|etc)/[^\s:,;"')\]]+"#).ok()
     });
@@ -787,7 +810,12 @@ mod tests {
         ];
         for (input, keyword) in cases {
             let sanitized = sanitize_error(input);
-            assert!(sanitized.contains(keyword), "sanitize_error stripped keyword {:?} from {:?}", keyword, input);
+            assert!(
+                sanitized.contains(keyword),
+                "sanitize_error stripped keyword {:?} from {:?}",
+                keyword,
+                input
+            );
         }
     }
 
@@ -825,8 +853,7 @@ mod tests {
 
     #[test]
     fn test_capability_path_allowlisting() {
-        let caps = ProcessCapabilities::restricted()
-            .with_allowed_path("C:\\projects");
+        let caps = ProcessCapabilities::restricted().with_allowed_path("C:\\projects");
         assert!(caps.is_path_allowed(Path::new("C:\\projects\\myfile.txt")));
         assert!(!caps.is_path_allowed(Path::new("C:\\Windows\\System32")));
     }
@@ -876,14 +903,18 @@ mod tests {
         let result = sandbox.check_file_access(Path::new("C:\\Windows\\System32\\config"));
         assert!(result.is_err());
         assert!(!sandbox.is_clean());
-        assert_eq!(sandbox.violations()[0].category, ViolationCategory::FileSystem);
+        assert_eq!(
+            sandbox.violations()[0].category,
+            ViolationCategory::FileSystem
+        );
     }
 
     #[test]
     fn test_sandbox_file_access_allowed_path() {
         let mut sandbox = Sandbox::with_capabilities(
-            ProcessCapabilities::restricted().with_allowed_path("C:\\projects")
-        ).unwrap();
+            ProcessCapabilities::restricted().with_allowed_path("C:\\projects"),
+        )
+        .unwrap();
         let result = sandbox.check_file_access(Path::new("C:\\projects\\data.csv"));
         assert!(result.is_ok());
         assert!(sandbox.is_clean());
@@ -894,7 +925,10 @@ mod tests {
         let mut sandbox = Sandbox::new().unwrap();
         let result = sandbox.check_interpreter("ruby");
         assert!(result.is_err());
-        assert_eq!(sandbox.violations()[0].category, ViolationCategory::Interpreter);
+        assert_eq!(
+            sandbox.violations()[0].category,
+            ViolationCategory::Interpreter
+        );
     }
 
     #[test]
@@ -935,8 +969,7 @@ mod tests {
 
     #[test]
     fn test_is_path_allowed_lexical_fallback() {
-        let caps = ProcessCapabilities::restricted()
-            .with_allowed_path("/tmp/sandbox_test_lex");
+        let caps = ProcessCapabilities::restricted().with_allowed_path("/tmp/sandbox_test_lex");
         // Non-existent path falls through to lexical check
         let path = Path::new("/tmp/sandbox_test_lex/subdir/file.txt");
         assert!(caps.is_path_allowed(path));
@@ -995,7 +1028,10 @@ mod tests {
     fn test_category_labels() {
         assert_eq!(category_label(&ViolationCategory::FileSystem), "FileSystem");
         assert_eq!(category_label(&ViolationCategory::Network), "Network");
-        assert_eq!(category_label(&ViolationCategory::Interpreter), "Interpreter");
+        assert_eq!(
+            category_label(&ViolationCategory::Interpreter),
+            "Interpreter"
+        );
         assert_eq!(category_label(&ViolationCategory::Memory), "Memory");
         assert_eq!(category_label(&ViolationCategory::Timeout), "Timeout");
     }

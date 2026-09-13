@@ -23,7 +23,6 @@ pub mod wasi_net;
 
 use std::collections::HashMap;
 use std::error::Error;
-use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex};
 use wasmer::{CompilerConfig, FunctionEnv, Instance, Memory, Module, Store};
 
@@ -32,14 +31,14 @@ use crate::wasm_runtime::wasi::WasiEnv;
 /// Shared memory layout constants for WASM runtimes.
 /// Most runtimes use this standard layout; QuickJS has its own extended layout.
 pub mod memory_layout {
-    pub const EXEC_SLOT: u64 = 512 * 1024;   // 512KB - for source code / args
-    pub const ARGS_SLOT: u64 = 4 * 1024;     // 4KB - for tool args JSON
-    pub const NAME_SLOT: u64 = 8 * 1024;     // 8KB - for tool name
+    pub const EXEC_SLOT: u64 = 512 * 1024; // 512KB - for source code / args
+    pub const ARGS_SLOT: u64 = 4 * 1024; // 4KB - for tool args JSON
+    pub const NAME_SLOT: u64 = 8 * 1024; // 8KB - for tool name
 }
 
 /// Global WASM module compilation cache.
 /// Maps WASM bytecode hash to cached Module for 20x faster cold starts.
-static MODULE_CACHE: LazyLock<Mutex<HashMap<u64, Arc<Vec<u8>>>>> = 
+static MODULE_CACHE: LazyLock<Mutex<HashMap<u64, Arc<Vec<u8>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Configuration for building a WASM runtime instance.
@@ -61,7 +60,7 @@ pub fn create_wasm_instance(
 ) -> Result<(Store, Instance, Memory, FunctionEnv<WasiEnv>), Box<dyn Error>> {
     // Configure compiler with optional metering middleware
     let mut cranelift = wasmer::Cranelift::default();
-    
+
     if let Some(limit) = config.instruction_limit {
         // Create metering middleware with flat cost (1 point per operation)
         let metering = wasmer_middlewares::metering::Metering::new(
@@ -70,18 +69,20 @@ pub fn create_wasm_instance(
         );
         cranelift.push_middleware(std::sync::Arc::new(metering));
     }
-    
+
     let engine = wasmer::Engine::from(cranelift);
-    
+
     // Check module cache first for faster cold starts
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
     config.wasm_bytes.hash(&mut hasher);
     let wasm_hash = hasher.finish();
-    
+
     let module = {
-        let mut cache = MODULE_CACHE.lock().map_err(|e| format!("Cache lock poisoned: {}", e))?;
+        let cache = MODULE_CACHE
+            .lock()
+            .map_err(|e| format!("Cache lock poisoned: {}", e))?;
         if let Some(cached_bytes) = cache.get(&wasm_hash) {
             // Deserialize cached module from bytes (faster than recompilation)
             unsafe { Module::deserialize(&engine, cached_bytes.as_slice())? }
@@ -90,13 +91,14 @@ pub fn create_wasm_instance(
             // Compile and cache the module
             let module = Module::new(&engine, config.wasm_bytes)?;
             let serialized = module.serialize()?;
-            MODULE_CACHE.lock()
+            MODULE_CACHE
+                .lock()
                 .map_err(|e| format!("Cache lock poisoned: {}", e))?
                 .insert(wasm_hash, Arc::new(serialized.to_vec()));
             module
         }
     };
-    
+
     let mut store = Store::new(engine);
 
     let env = FunctionEnv::new(&mut store, WasiEnv::new());
@@ -137,8 +139,7 @@ pub fn bench_cold_start_generic(
         let memory = instance.exports.get_memory("memory").unwrap().clone();
         env.as_mut(&mut store).memory = Some(memory);
 
-        let init_fn = instance.exports.get_function(init_fn_name)
-            .unwrap();
+        let init_fn = instance.exports.get_function(init_fn_name).unwrap();
 
         if let Some((arg1, arg2)) = init_args {
             let typed = init_fn.typed::<(i32, i32), i32>(&store).unwrap();
@@ -161,7 +162,11 @@ pub struct WasmExecHelper<'a> {
 
 impl<'a> WasmExecHelper<'a> {
     pub fn new(store: &'a mut Store, instance: &'a Instance, memory: &'a Memory) -> Self {
-        Self { store, instance, memory }
+        Self {
+            store,
+            instance,
+            memory,
+        }
     }
 
     /// Execute source code at EXEC_SLOT using the named export function.
@@ -170,10 +175,13 @@ impl<'a> WasmExecHelper<'a> {
         let data = src.as_bytes();
         self.memory.view(self.store).write(EXEC_SLOT, data)?;
         let exec_fn = self.instance.exports.get_function(exec_fn_name)?;
-        let result = exec_fn.call(self.store, &[
-            wasmer::Value::I32(EXEC_SLOT as i32),
-            wasmer::Value::I32(data.len() as i32),
-        ])?;
+        let result = exec_fn.call(
+            self.store,
+            &[
+                wasmer::Value::I32(EXEC_SLOT as i32),
+                wasmer::Value::I32(data.len() as i32),
+            ],
+        )?;
         Ok(result[0].unwrap_i32())
     }
 
@@ -194,7 +202,9 @@ impl<'a> WasmExecHelper<'a> {
         }
 
         let mut buf = vec![0u8; out_len as usize];
-        self.memory.view(self.store).read(out_ptr as u64, &mut buf)?;
+        self.memory
+            .view(self.store)
+            .read(out_ptr as u64, &mut buf)?;
         Ok(String::from_utf8_lossy(&buf).to_string())
     }
 
@@ -284,13 +294,19 @@ impl WasmRuntimeRegistry {
     }
 
     /// Register a language runtime.
-    pub fn register_runtime(&mut self, mut runtime: Box<dyn WasmRuntime>) -> Result<(), Box<dyn Error>> {
+    pub fn register_runtime(
+        &mut self,
+        mut runtime: Box<dyn WasmRuntime>,
+    ) -> Result<(), Box<dyn Error>> {
         let lang = runtime.language().to_string();
         runtime.init()?;
-        self.runtimes.insert(lang.clone(), RuntimeEntry {
-            runtime,
-            tool_names: Vec::new(),
-        });
+        self.runtimes.insert(
+            lang.clone(),
+            RuntimeEntry {
+                runtime,
+                tool_names: Vec::new(),
+            },
+        );
         Ok(())
     }
 
@@ -303,25 +319,34 @@ impl WasmRuntimeRegistry {
         description: &str,
         input_schema: serde_json::Value,
     ) -> Result<(), Box<dyn Error>> {
-        let entry = self.runtimes.get_mut(language)
+        let entry = self
+            .runtimes
+            .get_mut(language)
             .ok_or_else(|| format!("No runtime registered for language: {}", language))?;
         entry.runtime.register_tool(name, source)?;
         entry.tool_names.push(name.to_string());
-        self.tools.insert(name.to_string(), WasmToolMeta {
-            name: name.to_string(),
-            language: language.to_string(),
-            input_schema,
-            description: description.to_string(),
-        });
+        self.tools.insert(
+            name.to_string(),
+            WasmToolMeta {
+                name: name.to_string(),
+                language: language.to_string(),
+                input_schema,
+                description: description.to_string(),
+            },
+        );
         Ok(())
     }
 
     /// Call a tool by name. Routes to the correct language runtime.
     pub fn call_tool(&mut self, name: &str, args_json: &str) -> Result<String, Box<dyn Error>> {
-        let meta = self.tools.get(name)
+        let meta = self
+            .tools
+            .get(name)
             .ok_or_else(|| format!("Unknown WASM tool: {}", name))?;
         let lang = meta.language.clone();
-        let entry = self.runtimes.get_mut(&lang)
+        let entry = self
+            .runtimes
+            .get_mut(&lang)
             .ok_or_else(|| format!("Runtime missing for language: {}", lang))?;
         entry.runtime.call_tool(name, args_json)
     }
@@ -366,30 +391,54 @@ pub fn create_wasm_runtime_for_language(
         .map_err(|e| format!("Failed to read WASM module '{}': {}", wasm_path, e))?;
 
     let mut runtime: Box<dyn WasmRuntime> = match language {
-        "javascript" => Box::new(crate::wasm_runtime::quickjs::QuickJsRuntime::new(&wasm_bytes)
-            .map_err(|e| format!("QuickJS init failed: {}", e))?),
-        "typescript" => Box::new(crate::wasm_runtime::typescript::TypeScriptRuntime::new(&wasm_bytes)
-            .map_err(|e| format!("TypeScript init failed: {}", e))?),
-        "python" => Box::new(crate::wasm_runtime::micropython::MicroPythonRuntime::new(&wasm_bytes)
-            .map_err(|e| format!("MicroPython init failed: {}", e))?),
-        "lua" => Box::new(crate::wasm_runtime::lua::LuaRuntime::new(&wasm_bytes)
-            .map_err(|e| format!("Lua init failed: {}", e))?),
-        "ruby" => Box::new(crate::wasm_runtime::ruby::RubyRuntime::new(&wasm_bytes)
-            .map_err(|e| format!("Ruby init failed: {}", e))?),
-        "rust" => Box::new(crate::wasm_runtime::rust::RustRuntime::new(&wasm_bytes)
-            .map_err(|e| format!("Rust init failed: {}", e))?),
-        "php" => Box::new(crate::wasm_runtime::php::PhpRuntime::new(&wasm_bytes)
-            .map_err(|e| format!("PHP init failed: {}", e))?),
-        "csharp" => Box::new(crate::wasm_runtime::csharp::CSharpRuntime::new(&wasm_bytes)
-            .map_err(|e| format!("C# init failed: {}", e))?),
-        "java" => Box::new(crate::wasm_runtime::java::JavaRuntime::new(&wasm_bytes)
-            .map_err(|e| format!("Java init failed: {}", e))?),
-        "r" => Box::new(crate::wasm_runtime::r::RRuntime::new(&wasm_bytes)
-            .map_err(|e| format!("R init failed: {}", e))?),
-        "julia" => Box::new(crate::wasm_runtime::julia::JuliaRuntime::new(&wasm_bytes)
-            .map_err(|e| format!("Julia init failed: {}", e))?),
-        "perl" => Box::new(crate::wasm_runtime::perl::PerlRuntime::new(&wasm_bytes)
-            .map_err(|e| format!("Perl init failed: {}", e))?),
+        "javascript" => Box::new(
+            crate::wasm_runtime::quickjs::QuickJsRuntime::new(&wasm_bytes)
+                .map_err(|e| format!("QuickJS init failed: {}", e))?,
+        ),
+        "typescript" => Box::new(
+            crate::wasm_runtime::typescript::TypeScriptRuntime::new(&wasm_bytes)
+                .map_err(|e| format!("TypeScript init failed: {}", e))?,
+        ),
+        "python" => Box::new(
+            crate::wasm_runtime::micropython::MicroPythonRuntime::new(&wasm_bytes)
+                .map_err(|e| format!("MicroPython init failed: {}", e))?,
+        ),
+        "lua" => Box::new(
+            crate::wasm_runtime::lua::LuaRuntime::new(&wasm_bytes)
+                .map_err(|e| format!("Lua init failed: {}", e))?,
+        ),
+        "ruby" => Box::new(
+            crate::wasm_runtime::ruby::RubyRuntime::new(&wasm_bytes)
+                .map_err(|e| format!("Ruby init failed: {}", e))?,
+        ),
+        "rust" => Box::new(
+            crate::wasm_runtime::rust::RustRuntime::new(&wasm_bytes)
+                .map_err(|e| format!("Rust init failed: {}", e))?,
+        ),
+        "php" => Box::new(
+            crate::wasm_runtime::php::PhpRuntime::new(&wasm_bytes)
+                .map_err(|e| format!("PHP init failed: {}", e))?,
+        ),
+        "csharp" => Box::new(
+            crate::wasm_runtime::csharp::CSharpRuntime::new(&wasm_bytes)
+                .map_err(|e| format!("C# init failed: {}", e))?,
+        ),
+        "java" => Box::new(
+            crate::wasm_runtime::java::JavaRuntime::new(&wasm_bytes)
+                .map_err(|e| format!("Java init failed: {}", e))?,
+        ),
+        "r" => Box::new(
+            crate::wasm_runtime::r::RRuntime::new(&wasm_bytes)
+                .map_err(|e| format!("R init failed: {}", e))?,
+        ),
+        "julia" => Box::new(
+            crate::wasm_runtime::julia::JuliaRuntime::new(&wasm_bytes)
+                .map_err(|e| format!("Julia init failed: {}", e))?,
+        ),
+        "perl" => Box::new(
+            crate::wasm_runtime::perl::PerlRuntime::new(&wasm_bytes)
+                .map_err(|e| format!("Perl init failed: {}", e))?,
+        ),
         "go" => Box::new(crate::wasm_runtime::go::GoWasmRuntime::new(wasm_path)),
         _ => return Err(format!("Unsupported WASM language: {}", language).into()),
     };

@@ -140,7 +140,10 @@ pub fn load_plugins_from_directory(plugin_dir: &Path) -> Vec<LoadedPlugin> {
     let mut plugins = Vec::new();
 
     if !plugin_dir.exists() {
-        info!(?plugin_dir, "Plugin directory does not exist, skipping plugin loading");
+        info!(
+            ?plugin_dir,
+            "Plugin directory does not exist, skipping plugin loading"
+        );
         return plugins;
     }
 
@@ -196,8 +199,8 @@ pub fn load_plugins_from_directory(plugin_dir: &Path) -> Vec<LoadedPlugin> {
 ///
 /// The loaded plugin manifest or an error
 pub fn load_plugin_manifest(path: &Path) -> Result<PluginManifest, String> {
-    let meta = std::fs::metadata(path)
-        .map_err(|e| format!("Failed to stat plugin manifest: {}", e))?;
+    let meta =
+        std::fs::metadata(path).map_err(|e| format!("Failed to stat plugin manifest: {}", e))?;
     if meta.len() > 1_048_576 {
         return Err("Plugin manifest exceeds 1MB limit".to_string());
     }
@@ -224,15 +227,24 @@ pub fn load_plugin_manifest(path: &Path) -> Result<PluginManifest, String> {
         match tool.executor.executor_type.as_str() {
             "process" => {
                 if tool.executor.command.is_empty() {
-                    return Err(format!("Tool '{}' with process executor must specify a command", tool.name));
+                    return Err(format!(
+                        "Tool '{}' with process executor must specify a command",
+                        tool.name
+                    ));
                 }
             }
             "wasm" => {
                 if tool.executor.language.is_none() {
-                    return Err(format!("Tool '{}' with wasm executor must specify a language", tool.name));
+                    return Err(format!(
+                        "Tool '{}' with wasm executor must specify a language",
+                        tool.name
+                    ));
                 }
                 if tool.executor.source.is_none() && tool.executor.source_file.is_none() {
-                    return Err(format!("Tool '{}' with wasm executor must specify source or source_file", tool.name));
+                    return Err(format!(
+                        "Tool '{}' with wasm executor must specify source or source_file",
+                        tool.name
+                    ));
                 }
             }
             other => {
@@ -269,15 +281,28 @@ fn execute_process_plugin_tool(tool: &PluginTool, arguments: &Value) -> Result<S
     let executor = &tool.executor;
 
     // Detect if the plugin invokes a shell interpreter — arguments become shell commands
-    let shell_interpreters = ["sh", "bash", "cmd", "cmd.exe", "/bin/sh", "/bin/bash", "powershell", "powershell.exe"];
+    let shell_interpreters = [
+        "sh",
+        "bash",
+        "cmd",
+        "cmd.exe",
+        "/bin/sh",
+        "/bin/bash",
+        "powershell",
+        "powershell.exe",
+    ];
     let cmd_lower = executor.command.to_lowercase();
-    let is_shell_command = shell_interpreters.iter().any(|s| cmd_lower == *s || cmd_lower.ends_with(s))
+    let is_shell_command = shell_interpreters
+        .iter()
+        .any(|s| cmd_lower == *s || cmd_lower.ends_with(s))
         || executor.args.iter().any(|a| a == "-c" || a == "/C");
 
     // Build command with template variable substitution and validation
-    let args: Vec<String> = executor.args.iter().map(|arg| {
-        substitute_template_variables(arg, arguments)
-    }).collect();
+    let args: Vec<String> = executor
+        .args
+        .iter()
+        .map(|arg| substitute_template_variables(arg, arguments))
+        .collect();
 
     // Validate substituted arguments
     for (i, arg) in args.iter().enumerate() {
@@ -333,7 +358,10 @@ fn execute_process_plugin_tool(tool: &PluginTool, arguments: &Value) -> Result<S
                     if let Err(e) = child.kill() {
                         tracing::debug!(error = %e, "Failed to kill timed-out plugin process");
                     }
-                    return Err(format!("Plugin tool timed out after {} seconds", timeout_secs));
+                    return Err(format!(
+                        "Plugin tool timed out after {} seconds",
+                        timeout_secs
+                    ));
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
@@ -347,31 +375,26 @@ fn execute_process_plugin_tool(tool: &PluginTool, arguments: &Value) -> Result<S
     }
 }
 
-static WASM_RUNTIME_CACHE: std::sync::LazyLock<Mutex<HashMap<String, Box<dyn crate::wasm_runtime::WasmRuntime>>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+static WASM_RUNTIME_CACHE: std::sync::LazyLock<
+    Mutex<HashMap<String, Box<dyn crate::wasm_runtime::WasmRuntime>>>,
+> = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Maps WASM tool names to their language runtime (e.g., "lua", "python")
 static WASM_TOOL_METADATA: std::sync::LazyLock<Mutex<HashMap<String, String>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
-struct CachedWasmModule {
-    engine: wasmer::Engine,
-    module: wasmer::Module,
-    mtime: Option<std::time::SystemTime>,
-}
-
-static WASM_MODULE_CACHE: std::sync::LazyLock<Mutex<HashMap<String, CachedWasmModule>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
-
 fn execute_wasm_plugin_tool(tool: &PluginTool, arguments: &Value) -> Result<String, String> {
     let executor = &tool.executor;
-    let language = executor.language.as_deref()
+    let language = executor
+        .language
+        .as_deref()
         .ok_or_else(|| "WASM executor requires 'language' field".to_string())?;
 
     // All languages now use the same WasmRuntime interface
     let source = resolve_wasm_source(executor)?;
 
-    let mut cache = WASM_RUNTIME_CACHE.lock()
+    let mut cache = WASM_RUNTIME_CACHE
+        .lock()
         .map_err(|e| format!("WASM runtime cache poisoned: {}", e))?;
 
     if !cache.contains_key(language) {
@@ -379,15 +402,18 @@ fn execute_wasm_plugin_tool(tool: &PluginTool, arguments: &Value) -> Result<Stri
         cache.insert(language.to_string(), runtime);
     }
 
-    let runtime = cache.get_mut(language)
+    let runtime = cache
+        .get_mut(language)
         .ok_or_else(|| format!("No runtime for language: {}", language))?;
 
-    runtime.register_tool(&tool.name, &source)
+    runtime
+        .register_tool(&tool.name, &source)
         .map_err(|e| format!("Failed to register WASM tool '{}': {}", tool.name, e))?;
 
     // Register tool metadata for binary protocol lookup
     {
-        let mut metadata = WASM_TOOL_METADATA.lock()
+        let mut metadata = WASM_TOOL_METADATA
+            .lock()
             .map_err(|e| format!("WASM tool metadata cache poisoned: {}", e))?;
         metadata.insert(tool.name.clone(), language.to_string());
     }
@@ -444,12 +470,17 @@ fn wasm_runtimes_config() -> &'static crate::config::WasmRuntimesConfig {
     WASM_RUNTIMES_CONFIG.get_or_init(crate::config::WasmRuntimesConfig::default)
 }
 
-fn create_wasm_runtime(language: &str) -> Result<Box<dyn crate::wasm_runtime::WasmRuntime>, String> {
+fn create_wasm_runtime(
+    language: &str,
+) -> Result<Box<dyn crate::wasm_runtime::WasmRuntime>, String> {
     let (enabled, wasm_path) = wasm_runtimes_config()
         .resolve_language(language)
         .ok_or_else(|| format!("Unsupported WASM language: {}", language))?;
     if !enabled {
-        return Err(format!("WASM language '{}' is disabled in configuration", language));
+        return Err(format!(
+            "WASM language '{}' is disabled in configuration",
+            language
+        ));
     }
 
     crate::wasm_runtime::create_wasm_runtime_for_language(language, &wasm_path)
@@ -457,8 +488,13 @@ fn create_wasm_runtime(language: &str) -> Result<Box<dyn crate::wasm_runtime::Wa
 }
 
 /// Call a WASM tool with binary TLV arguments (optimized path).
-pub fn call_wasm_tool_binary(name: &str, language: &str, args_tlv: &[u8]) -> Result<String, String> {
-    let mut cache = WASM_RUNTIME_CACHE.lock()
+pub fn call_wasm_tool_binary(
+    name: &str,
+    language: &str,
+    args_tlv: &[u8],
+) -> Result<String, String> {
+    let mut cache = WASM_RUNTIME_CACHE
+        .lock()
         .map_err(|e| format!("WASM runtime cache poisoned: {}", e))?;
 
     if !cache.contains_key(language) {
@@ -466,11 +502,13 @@ pub fn call_wasm_tool_binary(name: &str, language: &str, args_tlv: &[u8]) -> Res
         cache.insert(language.to_string(), runtime);
     }
 
-    let runtime = cache.get_mut(language)
+    let runtime = cache
+        .get_mut(language)
         .ok_or_else(|| format!("No runtime for language: {}", language))?;
 
     // Use binary protocol - falls back to JSON if not supported
-    runtime.call_tool_binary(name, args_tlv)
+    runtime
+        .call_tool_binary(name, args_tlv)
         .map_err(|e| format!("WASM tool '{}' execution failed (binary): {}", name, e))
 }
 
@@ -478,130 +516,6 @@ pub fn call_wasm_tool_binary(name: &str, language: &str, args_tlv: &[u8]) -> Res
 pub fn get_wasm_tool_language(name: &str) -> Option<String> {
     let metadata = WASM_TOOL_METADATA.lock().ok()?;
     metadata.get(name).cloned()
-}
-
-fn execute_standalone_wasm_tool(source_file: &str, tool_name: &str, arguments: &Value) -> Result<String, String> {
-    use wasmer::{FunctionEnv, Instance, Store, Value as WasmValue};
-
-    let current_mtime = std::fs::metadata(source_file)
-        .ok().and_then(|m| m.modified().ok());
-
-    let (engine, module) = {
-        let mut cache = WASM_MODULE_CACHE.lock()
-            .map_err(|e| format!("WASM module cache poisoned: {}", e))?;
-
-        let cached = cache.get(source_file);
-        let needs_recompile = match cached {
-            Some(entry) => entry.mtime != current_mtime,
-            None => true,
-        };
-
-        if needs_recompile {
-            let wasm_bytes = std::fs::read(source_file)
-                .map_err(|e| format!("Failed to read WASM file '{}': {}", source_file, e))?;
-            let engine = wasmer::Engine::from(wasmer::Cranelift::default());
-            let module = wasmer::Module::new(&engine, &wasm_bytes)
-                .map_err(|e| format!("WASM compile failed: {}", e))?;
-            cache.insert(source_file.to_string(), CachedWasmModule {
-                engine: engine.clone(),
-                module: module.clone(),
-                mtime: current_mtime,
-            });
-            (engine, module)
-        } else {
-            let entry = cached.unwrap();
-            (entry.engine.clone(), entry.module.clone())
-        }
-    };
-
-    // Wall-clock timeout: spawn thread for entire WASM setup + execution, wait with recv_timeout(30s)
-    let (tx, rx) = std::sync::mpsc::channel();
-    let tool_name_owned = tool_name.to_string();
-    let arguments_owned = arguments.clone();
-    
-    let exec_handle = std::thread::spawn(move || -> Result<String, String> {
-        let mut store = Store::new(engine);
-
-        let env = FunctionEnv::new(&mut store, crate::wasm_runtime::wasi::WasiEnv::new());
-        let wasi_imports = crate::wasm_runtime::wasi::build_wasi_imports(&mut store, &env);
-        let instance = Instance::new(&mut store, &module, &wasi_imports)
-            .map_err(|e| format!("WASM instantiation failed: {}", e))?;
-        let memory = instance.exports.get_memory("memory")
-            .map_err(|e| format!("WASM module missing memory export: {}", e))?
-            .clone();
-        env.as_mut(&mut store).memory = Some(memory.clone());
-
-        if let Ok(start_fn) = instance.exports.get_function("_start") {
-            let _ = start_fn.call(&mut store, &[]);
-        }
-
-        // Include tool name in the payload for dynamic dispatch
-        let mut payload = serde_json::Map::new();
-        payload.insert("_tool_name".to_string(), serde_json::Value::String(tool_name_owned.clone()));
-        if let Some(args) = arguments_owned.as_object() {
-            for (k, v) in args {
-                payload.insert(k.clone(), v.clone());
-            }
-        }
-        let args_json = serde_json::to_string(&payload)
-            .map_err(|e| format!("Failed to serialize arguments: {}", e))?;
-        let args_bytes = args_json.as_bytes();
-
-        let prepare = instance.exports.get_function("prepare_call")
-            .map_err(|e| format!("WASM module missing prepare_call: {}", e))?;
-        prepare.call(&mut store, &[]).map_err(|e| format!("prepare_call failed: {}", e))?;
-
-        let malloc = instance.exports.get_function("malloc")
-            .map_err(|e| format!("WASM module missing malloc: {}", e))?;
-        let ptr_val = malloc.call(&mut store, &[WasmValue::I32(args_bytes.len() as i32)])
-            .map_err(|e| format!("malloc failed: {}", e))?;
-        let input_ptr = ptr_val[0].unwrap_i32();
-
-        memory.view(&store).write(input_ptr as u64, args_bytes)
-            .map_err(|e| format!("Failed to write input to WASM memory: {}", e))?;
-
-        let execute = instance.exports.get_function("tool_execute")
-            .map_err(|e| format!("WASM module missing tool_execute: {}", e))?;
-        let result = execute.call(&mut store, &[
-            WasmValue::I32(input_ptr),
-            WasmValue::I32(args_bytes.len() as i32),
-        ]).map_err(|e| {
-            let err_msg = e.to_string();
-            // Detect metering limit exceeded errors from Wasmer
-            if err_msg.contains("out of gas") || err_msg.contains("instruction limit") || err_msg.contains("metering") {
-                format!(
-                    "Standalone WASM tool '{}' exceeded resource limits (instruction count). This usually means the tool has an infinite loop or is too computationally expensive. Consider optimizing the code or increasing the instruction_limit in your configuration.",
-                    tool_name_owned
-                )
-            } else {
-                format!("tool_execute failed: {}", e)
-            }
-        })?;
-
-        let encoded = result[0].unwrap_i64();
-        let result_ptr = (encoded >> 32) as u32;
-        let result_len = (encoded & 0xFFFF_FFFF) as u32;
-
-        let mut result_buf = vec![0u8; result_len as usize];
-        memory.view(&store).read(result_ptr as u64, &mut result_buf)
-            .map_err(|e| format!("Failed to read WASM result: {}", e))?;
-
-        String::from_utf8(result_buf)
-            .map_err(|e| format!("WASM result is not valid UTF-8: {}", e))
-    });
-
-    match rx.recv_timeout(std::time::Duration::from_secs(30)) {
-        Ok(result) => result,
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            error!(tool = %tool_name, "Standalone WASM tool execution timed out (30s)");
-            drop(exec_handle);
-            Err(format!("Standalone WASM tool '{}' timed out after 30 seconds", tool_name))
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            drop(exec_handle);
-            Err(format!("Standalone WASM tool '{}' execution failed unexpectedly", tool_name))
-        }
-    }
 }
 
 /// Substitute template variables in a string.
@@ -635,17 +549,30 @@ fn substitute_template_variables(template: &str, arguments: &Value) -> String {
     result
 }
 
-fn validate_plugin_argument(value: &str, is_shell_command: bool, index: usize) -> Result<(), String> {
+fn validate_plugin_argument(
+    value: &str,
+    is_shell_command: bool,
+    index: usize,
+) -> Result<(), String> {
     if value.contains('\0') {
-        return Err(format!("Plugin argument {} contains null byte — rejected", index));
+        return Err(format!(
+            "Plugin argument {} contains null byte — rejected",
+            index
+        ));
     }
 
     if value.len() > 10_000 {
-        return Err(format!("Plugin argument {} exceeds 10KB limit ({} bytes)", index, value.len()));
+        return Err(format!(
+            "Plugin argument {} exceeds 10KB limit ({} bytes)",
+            index,
+            value.len()
+        ));
     }
 
     if is_shell_command {
-        let dangerous = [';', '|', '&', '`', '$', '\n', '\r', '(', ')', '{', '}', '<', '>'];
+        let dangerous = [
+            ';', '|', '&', '`', '$', '\n', '\r', '(', ')', '{', '}', '<', '>',
+        ];
         for ch in &dangerous {
             if value.contains(*ch) {
                 tracing::warn!(arg_index = index, char = %ch, "Blocked shell metacharacter in plugin argument");
@@ -704,13 +631,23 @@ mod tests {
 
     fn test_timer(name: &str) -> impl Drop {
         let start = std::time::Instant::now();
-        struct Timer { name: String, start: std::time::Instant }
+        struct Timer {
+            name: String,
+            start: std::time::Instant,
+        }
         impl Drop for Timer {
             fn drop(&mut self) {
-                eprintln!("[TEST] {} completed in {:.3}ms", self.name, self.start.elapsed().as_secs_f64() * 1000.0);
+                eprintln!(
+                    "[TEST] {} completed in {:.3}ms",
+                    self.name,
+                    self.start.elapsed().as_secs_f64() * 1000.0
+                );
             }
         }
-        Timer { name: name.to_string(), start }
+        Timer {
+            name: name.to_string(),
+            start,
+        }
     }
 
     #[test]
@@ -777,8 +714,16 @@ mod tests {
             input_schema: json!({"type": "object", "properties": {"msg": {"type": "string"}}}),
             executor: PluginExecutor {
                 executor_type: "process".to_string(),
-                command: if cfg!(windows) { "cmd".to_string() } else { "echo".to_string() },
-                args: if cfg!(windows) { vec!["/C".to_string(), "echo".to_string(), "{{msg}}".to_string()] } else { vec!["{{msg}}".to_string()] },
+                command: if cfg!(windows) {
+                    "cmd".to_string()
+                } else {
+                    "echo".to_string()
+                },
+                args: if cfg!(windows) {
+                    vec!["/C".to_string(), "echo".to_string(), "{{msg}}".to_string()]
+                } else {
+                    vec!["{{msg}}".to_string()]
+                },
                 working_dir: None,
                 env: HashMap::new(),
                 timeout: 5,
@@ -792,7 +737,11 @@ mod tests {
         let result = execute_plugin_tool(&tool, &json!({"msg": "hello"}));
         assert!(result.is_ok(), "Echo tool should succeed");
         let output = result.unwrap();
-        assert!(output.contains("hello"), "Output should contain 'hello': {}", output);
+        assert!(
+            output.contains("hello"),
+            "Output should contain 'hello': {}",
+            output
+        );
     }
 
     #[test]
@@ -804,8 +753,16 @@ mod tests {
             input_schema: json!({"type": "object"}),
             executor: PluginExecutor {
                 executor_type: "process".to_string(),
-                command: if cfg!(windows) { "cmd".to_string() } else { "false".to_string() },
-                args: if cfg!(windows) { vec!["/C".to_string(), "exit".to_string(), "1".to_string()] } else { vec![] },
+                command: if cfg!(windows) {
+                    "cmd".to_string()
+                } else {
+                    "false".to_string()
+                },
+                args: if cfg!(windows) {
+                    vec!["/C".to_string(), "exit".to_string(), "1".to_string()]
+                } else {
+                    vec![]
+                },
                 working_dir: None,
                 env: HashMap::new(),
                 timeout: 5,
@@ -829,7 +786,11 @@ mod tests {
             input_schema: json!({"type": "object"}),
             executor: PluginExecutor {
                 executor_type: "process".to_string(),
-                command: if cfg!(windows) { "cmd".to_string() } else { "sleep".to_string() },
+                command: if cfg!(windows) {
+                    "cmd".to_string()
+                } else {
+                    "sleep".to_string()
+                },
                 args: if cfg!(windows) {
                     vec!["/C".to_string(), "ping -n 10 127.0.0.1".to_string()]
                 } else {
@@ -848,7 +809,11 @@ mod tests {
         let result = execute_plugin_tool(&tool, &json!({}));
         assert!(result.is_err(), "Tool should timeout");
         let err = result.unwrap_err();
-        assert!(err.contains("timed out") || err.contains("Timeout"), "Error should mention timeout: {}", err);
+        assert!(
+            err.contains("timed out") || err.contains("Timeout"),
+            "Error should mention timeout: {}",
+            err
+        );
     }
 
     #[test]
@@ -946,34 +911,30 @@ mod tests {
     #[test]
     fn test_plugins_to_registry_tools() {
         let _t = test_timer("test_plugins_to_registry_tools");
-        let plugins = vec![
-            LoadedPlugin {
-                manifest: PluginManifest {
-                    name: "plugin1".to_string(),
-                    version: "1.0.0".to_string(),
-                    tools: vec![
-                        PluginTool {
-                            name: "tool_a".to_string(),
-                            description: "Tool A".to_string(),
-                            input_schema: json!({"type": "object", "properties": {"x": {"type": "string"}}}),
-                            executor: PluginExecutor {
-                                executor_type: "process".to_string(),
-                                command: "echo".to_string(),
-                                args: vec![],
-                                working_dir: None,
-                                env: HashMap::new(),
-                                timeout: 5,
-                                language: None,
-                                source: None,
-                                source_file: None,
-                                handler_function: None,
-                            },
-                        },
-                    ],
-                },
-                path: std::path::PathBuf::from("plugin1.json"),
+        let plugins = vec![LoadedPlugin {
+            manifest: PluginManifest {
+                name: "plugin1".to_string(),
+                version: "1.0.0".to_string(),
+                tools: vec![PluginTool {
+                    name: "tool_a".to_string(),
+                    description: "Tool A".to_string(),
+                    input_schema: json!({"type": "object", "properties": {"x": {"type": "string"}}}),
+                    executor: PluginExecutor {
+                        executor_type: "process".to_string(),
+                        command: "echo".to_string(),
+                        args: vec![],
+                        working_dir: None,
+                        env: HashMap::new(),
+                        timeout: 5,
+                        language: None,
+                        source: None,
+                        source_file: None,
+                        handler_function: None,
+                    },
+                }],
             },
-        ];
+            path: std::path::PathBuf::from("plugin1.json"),
+        }];
 
         let tools = plugins_to_registry_tools(&plugins);
         assert_eq!(tools.len(), 1);
@@ -984,7 +945,8 @@ mod tests {
     #[test]
     fn test_load_plugins_from_nonexistent_directory() {
         let _t = test_timer("test_load_plugins_from_nonexistent_directory");
-        let plugins = load_plugins_from_directory(Path::new("/nonexistent/dir/that/does/not/exist"));
+        let plugins =
+            load_plugins_from_directory(Path::new("/nonexistent/dir/that/does/not/exist"));
         assert!(plugins.is_empty());
     }
 
@@ -1041,8 +1003,16 @@ mod tests {
             "list": [1, 2, 3]
         });
         let result = substitute_template_variables(template, &arguments);
-        assert!(result.contains("true"), "Bool should serialize to 'true': {}", result);
-        assert!(result.contains("[1,2,3]"), "Array should serialize: {}", result);
+        assert!(
+            result.contains("true"),
+            "Bool should serialize to 'true': {}",
+            result
+        );
+        assert!(
+            result.contains("[1,2,3]"),
+            "Array should serialize: {}",
+            result
+        );
     }
 
     #[test]
@@ -1051,7 +1021,10 @@ mod tests {
         let template = "value={{x}}";
         let arguments = json!("just a string");
         let result = substitute_template_variables(template, &arguments);
-        assert_eq!(result, "value={{x}}", "Non-object args should not substitute");
+        assert_eq!(
+            result, "value={{x}}",
+            "Non-object args should not substitute"
+        );
     }
 
     #[test]
@@ -1077,14 +1050,21 @@ mod tests {
         let result = validate_plugin_argument("hello; rm -rf /", true, 0);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.contains("shell metacharacter"), "Expected shell metacharacter error, got: {}", err);
+        assert!(
+            err.contains("shell metacharacter"),
+            "Expected shell metacharacter error, got: {}",
+            err
+        );
     }
 
     #[test]
     fn test_validate_plugin_argument_safe_when_not_shell() {
         let _t = test_timer("test_validate_plugin_argument_safe_when_not_shell");
         let result = validate_plugin_argument("hello; world", false, 0);
-        assert!(result.is_ok(), "Semicolons should be allowed when not a shell command");
+        assert!(
+            result.is_ok(),
+            "Semicolons should be allowed when not a shell command"
+        );
     }
 
     #[test]
@@ -1097,7 +1077,11 @@ mod tests {
             input_schema: json!({"type": "object"}),
             executor: PluginExecutor {
                 executor_type: "process".to_string(),
-                command: if cfg!(windows) { "cmd".to_string() } else { "echo".to_string() },
+                command: if cfg!(windows) {
+                    "cmd".to_string()
+                } else {
+                    "echo".to_string()
+                },
                 args: if cfg!(windows) {
                     vec!["/C".to_string(), "echo".to_string(), "%MY_VAR%".to_string()]
                 } else {
@@ -1118,7 +1102,11 @@ mod tests {
         };
 
         let result = execute_plugin_tool(&tool, &json!({}));
-        assert!(result.is_ok(), "Tool with working_dir and env should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Tool with working_dir and env should succeed: {:?}",
+            result.err()
+        );
     }
 
     // ── WASM real-world integration tests ──────────────────────────────
@@ -1207,7 +1195,10 @@ mod tests {
         assert!(r1.is_ok(), "upper failed: {:?}", r1.err());
         assert!(r1.unwrap().contains("HELLO WORLD"));
 
-        let r2 = execute_plugin_tool(&tool, &json!({"action": "slug", "input": "Hello World! Foo Bar"}));
+        let r2 = execute_plugin_tool(
+            &tool,
+            &json!({"action": "slug", "input": "Hello World! Foo Bar"}),
+        );
         assert!(r2.is_ok(), "slug failed: {:?}", r2.err());
         assert!(r2.unwrap().contains("hello-world-foo-bar"));
 
@@ -1215,7 +1206,10 @@ mod tests {
         assert!(r3.is_ok(), "reverse failed: {:?}", r3.err());
         assert!(r3.unwrap().contains("fedcba"));
 
-        let r4 = execute_plugin_tool(&tool, &json!({"action": "title", "input": "the quick brown fox"}));
+        let r4 = execute_plugin_tool(
+            &tool,
+            &json!({"action": "title", "input": "the quick brown fox"}),
+        );
         assert!(r4.is_ok(), "title failed: {:?}", r4.err());
         assert!(r4.unwrap().contains("The Quick Brown Fox"));
     }
@@ -1300,12 +1294,27 @@ def py_text_analyzer(args):
 "#;
         let tool = wasm_py_tool("py_text_analyzer", source);
 
-        let r = execute_plugin_tool(&tool, &json!({"text": "the quick brown fox jumps over the lazy dog\nthe fox is quick"}));
+        let r = execute_plugin_tool(
+            &tool,
+            &json!({"text": "the quick brown fox jumps over the lazy dog\nthe fox is quick"}),
+        );
         assert!(r.is_ok(), "text analyzer failed: {:?}", r.err());
         let output = r.unwrap();
-        assert!(output.contains("\"words\""), "should have word count: {}", output);
-        assert!(output.contains("\"chars\""), "should have char count: {}", output);
-        assert!(output.contains("\"unique_words\""), "should have unique words: {}", output);
+        assert!(
+            output.contains("\"words\""),
+            "should have word count: {}",
+            output
+        );
+        assert!(
+            output.contains("\"chars\""),
+            "should have char count: {}",
+            output
+        );
+        assert!(
+            output.contains("\"unique_words\""),
+            "should have unique words: {}",
+            output
+        );
     }
 
     #[test]
@@ -1332,11 +1341,17 @@ def py_unit_converter(args):
 "#;
         let tool = wasm_py_tool("py_unit_converter", source);
 
-        let r1 = execute_plugin_tool(&tool, &json!({"value": 100, "from_unit": "celsius", "to_unit": "fahrenheit"}));
+        let r1 = execute_plugin_tool(
+            &tool,
+            &json!({"value": 100, "from_unit": "celsius", "to_unit": "fahrenheit"}),
+        );
         assert!(r1.is_ok(), "C→F failed: {:?}", r1.err());
         assert!(r1.unwrap().contains("212"), "100°C should be 212°F");
 
-        let r2 = execute_plugin_tool(&tool, &json!({"value": 1, "from_unit": "mile", "to_unit": "km"}));
+        let r2 = execute_plugin_tool(
+            &tool,
+            &json!({"value": 1, "from_unit": "mile", "to_unit": "km"}),
+        );
         assert!(r2.is_ok(), "mi→km failed: {:?}", r2.err());
         assert!(r2.unwrap().contains("1.609"), "1 mile should be ~1.609 km");
     }
@@ -1360,15 +1375,24 @@ def py_list_operations(args):
 "#;
         let tool = wasm_py_tool("py_list_operations", source);
 
-        let r1 = execute_plugin_tool(&tool, &json!({"operation": "sort", "items": [5, 3, 1, 4, 2]}));
+        let r1 = execute_plugin_tool(
+            &tool,
+            &json!({"operation": "sort", "items": [5, 3, 1, 4, 2]}),
+        );
         assert!(r1.is_ok(), "sort failed: {:?}", r1.err());
         assert!(r1.unwrap().contains("[1, 2, 3, 4, 5]"));
 
-        let r2 = execute_plugin_tool(&tool, &json!({"operation": "sum", "items": [10, 20, 30, 40]}));
+        let r2 = execute_plugin_tool(
+            &tool,
+            &json!({"operation": "sum", "items": [10, 20, 30, 40]}),
+        );
         assert!(r2.is_ok(), "sum failed: {:?}", r2.err());
         assert!(r2.unwrap().contains("100"));
 
-        let r3 = execute_plugin_tool(&tool, &json!({"operation": "average", "items": [10, 20, 30, 40]}));
+        let r3 = execute_plugin_tool(
+            &tool,
+            &json!({"operation": "average", "items": [10, 20, 30, 40]}),
+        );
         assert!(r3.is_ok(), "average failed: {:?}", r3.err());
         assert!(r3.unwrap().contains("25"));
     }
@@ -1404,14 +1428,21 @@ def py_list_operations(args):
         let r1 = execute_plugin_tool(&tool, &json!({"action": "upper", "input": "hello world"}));
         assert!(r1.is_ok(), "upper failed: {:?}", r1.err());
         let out1 = r1.unwrap();
-        assert!(out1.contains("HELLO WORLD"), "expected HELLO WORLD in: {}", out1);
+        assert!(
+            out1.contains("HELLO WORLD"),
+            "expected HELLO WORLD in: {}",
+            out1
+        );
 
         let r2 = execute_plugin_tool(&tool, &json!({"action": "reverse", "input": "abcdef"}));
         assert!(r2.is_ok(), "reverse failed: {:?}", r2.err());
         let out2 = r2.unwrap();
         assert!(out2.contains("fedcba"), "expected fedcba in: {}", out2);
 
-        let r3 = execute_plugin_tool(&tool, &json!({"action": "word_count", "input": "the quick brown fox"}));
+        let r3 = execute_plugin_tool(
+            &tool,
+            &json!({"action": "word_count", "input": "the quick brown fox"}),
+        );
         assert!(r3.is_ok(), "word_count failed: {:?}", r3.err());
         let out3 = r3.unwrap();
         assert!(out3.contains("4"), "expected 4 in: {}", out3);
@@ -1449,7 +1480,10 @@ def py_list_operations(args):
         let out1 = r1.unwrap();
         assert!(out1.contains("12"), "expected 12 in: {}", out1);
 
-        let r2 = execute_plugin_tool(&tool, &json!({"operation": "power", "value": 2, "exponent": 10}));
+        let r2 = execute_plugin_tool(
+            &tool,
+            &json!({"operation": "power", "value": 2, "exponent": 10}),
+        );
         assert!(r2.is_ok(), "power failed: {:?}", r2.err());
         let out2 = r2.unwrap();
         assert!(out2.contains("1024"), "expected 1024 in: {}", out2);
@@ -1467,17 +1501,22 @@ def py_list_operations(args):
         let _t = test_timer("test_wasm_plugin_manifests_parse");
 
         let js_manifest = include_str!("../../plugins/wasm_javascript_tools.json");
-        let js: PluginManifest = serde_json::from_str(js_manifest).expect("JS manifest should parse");
+        let js: PluginManifest =
+            serde_json::from_str(js_manifest).expect("JS manifest should parse");
         assert_eq!(js.name, "wasm-javascript-tools");
         assert_eq!(js.tools.len(), 3);
         for tool in &js.tools {
             assert_eq!(tool.executor.executor_type, "wasm");
             assert_eq!(tool.executor.language.as_deref(), Some("javascript"));
-            assert!(tool.executor.source.is_some(), "JS tools should have inline source");
+            assert!(
+                tool.executor.source.is_some(),
+                "JS tools should have inline source"
+            );
         }
 
         let py_manifest = include_str!("../../plugins/wasm_python_tools.json");
-        let py: PluginManifest = serde_json::from_str(py_manifest).expect("Python manifest should parse");
+        let py: PluginManifest =
+            serde_json::from_str(py_manifest).expect("Python manifest should parse");
         assert_eq!(py.name, "wasm-python-tools");
         assert_eq!(py.tools.len(), 3);
         for tool in &py.tools {
@@ -1486,7 +1525,8 @@ def py_list_operations(args):
         }
 
         let lua_manifest = include_str!("../../plugins/wasm_lua_tools.json");
-        let lua: PluginManifest = serde_json::from_str(lua_manifest).expect("Lua manifest should parse");
+        let lua: PluginManifest =
+            serde_json::from_str(lua_manifest).expect("Lua manifest should parse");
         assert_eq!(lua.name, "wasm-lua-tools");
         assert_eq!(lua.tools.len(), 2);
         for tool in &lua.tools {
@@ -1527,9 +1567,15 @@ end
         let lua_r = execute_plugin_tool(&lua_tool, &input).expect("Lua reverse failed");
 
         assert!(js_r.contains("yaB seitneH ,olleH"), "JS result: {}", js_r);
-        assert!(py_r.contains("yaB seitneH ,olleH"), "Python result: {}", py_r);
-        assert!(lua_r.contains("yaB seitneH ,olleH"), "Lua result: {}", lua_r);
+        assert!(
+            py_r.contains("yaB seitneH ,olleH"),
+            "Python result: {}",
+            py_r
+        );
+        assert!(
+            lua_r.contains("yaB seitneH ,olleH"),
+            "Lua result: {}",
+            lua_r
+        );
     }
-
 }
-

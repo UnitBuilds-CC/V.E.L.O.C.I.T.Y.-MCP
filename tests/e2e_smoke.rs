@@ -49,10 +49,11 @@ impl ServerProcess {
     fn read_response(&mut self) -> serde_json::Value {
         let reader = self.reader.as_mut().expect("reader");
         let mut line = String::new();
-        reader.read_line(&mut line).expect("failed to read response");
+        reader
+            .read_line(&mut line)
+            .expect("failed to read response");
         serde_json::from_str(&line).expect("response is not valid JSON")
     }
-
 }
 
 impl Drop for ServerProcess {
@@ -63,11 +64,17 @@ impl Drop for ServerProcess {
 }
 
 trait ChildWaitTimeout {
-    fn wait_timeout(&mut self, timeout: Duration) -> std::io::Result<Option<std::process::ExitStatus>>;
+    fn wait_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> std::io::Result<Option<std::process::ExitStatus>>;
 }
 
 impl ChildWaitTimeout for Child {
-    fn wait_timeout(&mut self, timeout: Duration) -> std::io::Result<Option<std::process::ExitStatus>> {
+    fn wait_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> std::io::Result<Option<std::process::ExitStatus>> {
         let start = std::time::Instant::now();
         while start.elapsed() < timeout {
             match self.try_wait()? {
@@ -83,34 +90,37 @@ impl ChildWaitTimeout for Child {
 fn test_e2e_stdio_initialize() {
     let mut server = ServerProcess::spawn();
 
-    let response = server.send(
-        serde_json::json!({"jsonrpc": "2.0", "method": "initialize", "id": 1}),
-    );
+    let response =
+        server.send(serde_json::json!({"jsonrpc": "2.0", "method": "initialize", "id": 1}));
 
     assert_eq!(response["jsonrpc"], "2.0");
     assert_eq!(response["id"], 1);
     assert_eq!(response["result"]["protocolVersion"], "2024-11-05");
-    assert_eq!(response["result"]["serverInfo"]["name"], "velocity-mcp-rust-server");
+    assert_eq!(
+        response["result"]["serverInfo"]["name"],
+        "velocity-mcp-rust-server"
+    );
 }
 
 #[test]
 fn test_e2e_stdio_tools_list() {
     let mut server = ServerProcess::spawn();
 
-    let _ = server.send(
-        serde_json::json!({"jsonrpc": "2.0", "method": "initialize", "id": 1}),
-    );
+    let _ = server.send(serde_json::json!({"jsonrpc": "2.0", "method": "initialize", "id": 1}));
 
     // notifications/initialized produces no response
     server.send_raw(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
 
-    let response = server.send(
-        serde_json::json!({"jsonrpc": "2.0", "method": "tools/list", "id": 2}),
-    );
+    let response =
+        server.send(serde_json::json!({"jsonrpc": "2.0", "method": "tools/list", "id": 2}));
 
     assert_eq!(response["id"], 2);
     let tools = response["result"]["tools"].as_array().unwrap();
-    assert!(tools.len() >= 4, "expected at least 4 built-in tools, got {}", tools.len());
+    assert!(
+        tools.len() >= 4,
+        "expected at least 4 built-in tools, got {}",
+        tools.len()
+    );
 
     let tool_names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(tool_names.contains(&"convert_to_nda_document"));
@@ -122,9 +132,8 @@ fn test_e2e_stdio_tools_list() {
 fn test_e2e_stdio_health_check() {
     let mut server = ServerProcess::spawn();
 
-    let response = server.send(
-        serde_json::json!({"jsonrpc": "2.0", "method": "health/check", "id": 1}),
-    );
+    let response =
+        server.send(serde_json::json!({"jsonrpc": "2.0", "method": "health/check", "id": 1}));
 
     assert_eq!(response["result"]["status"], "healthy");
     assert_eq!(response["result"]["version"], velocity_mcp::VERSION);
@@ -135,9 +144,8 @@ fn test_e2e_stdio_error_handling() {
     let mut server = ServerProcess::spawn();
 
     // Unknown method → JSON-RPC error
-    let response = server.send(
-        serde_json::json!({"jsonrpc": "2.0", "method": "nonexistent/method", "id": 1}),
-    );
+    let response =
+        server.send(serde_json::json!({"jsonrpc": "2.0", "method": "nonexistent/method", "id": 1}));
     assert_eq!(response["error"]["code"], -32601);
 
     // Malformed JSON → parse error, server must not crash
@@ -146,9 +154,8 @@ fn test_e2e_stdio_error_handling() {
     assert_eq!(err_resp["error"]["code"], -32700);
 
     // Server still works after a parse error
-    let response = server.send(
-        serde_json::json!({"jsonrpc": "2.0", "method": "health/check", "id": 2}),
-    );
+    let response =
+        server.send(serde_json::json!({"jsonrpc": "2.0", "method": "health/check", "id": 2}));
     assert_eq!(response["result"]["status"], "healthy");
 }
 
@@ -157,9 +164,8 @@ fn test_e2e_stdio_multiple_requests() {
     let mut server = ServerProcess::spawn();
 
     for i in 1..=10 {
-        let response = server.send(
-            serde_json::json!({"jsonrpc": "2.0", "method": "health/check", "id": i}),
-        );
+        let response =
+            server.send(serde_json::json!({"jsonrpc": "2.0", "method": "health/check", "id": i}));
         assert_eq!(response["id"], i);
         assert_eq!(response["result"]["status"], "healthy");
     }
@@ -169,9 +175,8 @@ fn test_e2e_stdio_multiple_requests() {
 fn test_e2e_stdio_clean_shutdown_on_eof() {
     let mut server = ServerProcess::spawn();
 
-    let response = server.send(
-        serde_json::json!({"jsonrpc": "2.0", "method": "health/check", "id": 1}),
-    );
+    let response =
+        server.send(serde_json::json!({"jsonrpc": "2.0", "method": "health/check", "id": 1}));
     assert_eq!(response["result"]["status"], "healthy");
 
     // Close stdin → server should exit cleanly
@@ -179,9 +184,13 @@ fn test_e2e_stdio_clean_shutdown_on_eof() {
     // Drop the reader so it doesn't hold stdout
     drop(server.reader.take());
 
-    let exit_status = server.child
+    let exit_status = server
+        .child
         .wait_timeout(Duration::from_secs(5))
         .expect("wait_timeout failed");
 
-    assert!(exit_status.is_some(), "server should exit within 5s after stdin closes");
+    assert!(
+        exit_status.is_some(),
+        "server should exit within 5s after stdin closes"
+    );
 }

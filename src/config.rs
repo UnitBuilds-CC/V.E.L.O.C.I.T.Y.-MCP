@@ -19,31 +19,31 @@ pub struct ServerConfig {
     /// Server mode (stdio, shmem, http)
     #[serde(default = "default_mode")]
     pub mode: String,
-    
+
     /// Shared memory buffer path (for shmem mode)
     #[serde(default = "default_buffer_path")]
     pub buffer_path: String,
-    
+
     /// HTTP server configuration
     #[serde(default)]
     pub http: HttpConfig,
-    
+
     /// C# engine path
     #[serde(default = "default_csharp_path")]
     pub csharp_path: String,
-    
+
     /// Plugin directory path
     #[serde(default = "default_plugin_dir")]
     pub plugin_dir: String,
-    
+
     /// Logging configuration
     #[serde(default)]
     pub logging: LoggingConfig,
-    
+
     /// Feature flags
     #[serde(default)]
     pub features: FeaturesConfig,
-    
+
     /// WASM runtime configuration for cross-language tool execution
     #[serde(default)]
     pub wasm_runtimes: WasmRuntimesConfig,
@@ -55,18 +55,18 @@ pub struct HttpConfig {
     /// HTTP server address
     #[serde(default = "default_http_addr")]
     pub addr: String,
-    
+
     /// API key for authentication (None = no auth)
     pub api_key: Option<String>,
-    
+
     /// Maximum request body size in bytes
     #[serde(default = "default_max_request_size")]
     pub max_request_size: usize,
-    
+
     /// Enable rate limiting
     #[serde(default = "default_enable_rate_limit")]
     pub enable_rate_limit: bool,
-    
+
     /// Allowed CORS origins
     pub cors_origins: Option<Vec<String>>,
 }
@@ -97,11 +97,11 @@ pub struct FeaturesConfig {
     /// Enable database resources
     #[serde(default)]
     pub database: bool,
-    
+
     /// Enable OAuth2 support
     #[serde(default)]
     pub oauth2: bool,
-    
+
     /// Enable HTTP transport
     #[serde(default)]
     pub http: bool,
@@ -113,55 +113,55 @@ pub struct WasmRuntimesConfig {
     /// JavaScript (QuickJS) runtime configuration
     #[serde(default)]
     pub javascript: WasmLanguageConfig,
-    
+
     /// Python (MicroPython) runtime configuration
     #[serde(default)]
     pub python: WasmLanguageConfig,
-    
+
     /// Lua runtime configuration
     #[serde(default)]
     pub lua: WasmLanguageConfig,
-    
+
     /// Go (TinyGo) runtime configuration
     #[serde(default)]
     pub go: WasmLanguageConfig,
-    
+
     /// Ruby (CRuby/WASM) runtime configuration
     #[serde(default)]
     pub ruby: WasmLanguageConfig,
-    
+
     /// Rust (wasm32-wasi) runtime configuration
     #[serde(default)]
     pub rust: WasmLanguageConfig,
-    
+
     /// TypeScript (QuickJS) runtime configuration
     #[serde(default)]
     pub typescript: WasmLanguageConfig,
-    
+
     /// PHP runtime configuration
     #[serde(default)]
     pub php: WasmLanguageConfig,
-    
+
     /// C#/.NET runtime configuration
     #[serde(default)]
     pub csharp: WasmLanguageConfig,
-    
+
     /// Java/Kotlin runtime configuration
     #[serde(default)]
     pub java: WasmLanguageConfig,
-    
+
     /// R runtime configuration
     #[serde(default)]
     pub r: WasmLanguageConfig,
-    
+
     /// Julia runtime configuration
     #[serde(default)]
     pub julia: WasmLanguageConfig,
-    
+
     /// Perl runtime configuration
     #[serde(default)]
     pub perl: WasmLanguageConfig,
-    
+
     /// Global instruction limit for all WASM runtimes (meters execution to prevent infinite loops).
     /// Set to None to disable metering (NOT recommended for production).
     /// Default: 10,000,000 instructions (~1-5 seconds of computation depending on workload).
@@ -175,7 +175,7 @@ pub struct WasmLanguageConfig {
     /// Whether this language runtime is enabled
     #[serde(default = "default_true")]
     pub enabled: bool,
-    
+
     /// Path to the WASM module for this language
     #[serde(default)]
     pub wasm_path: String,
@@ -401,11 +401,10 @@ impl ServerConfig {
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, String> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("Failed to read config file: {}", e))?;
-        
-        toml::from_str(&content)
-            .map_err(|e| format!("Failed to parse config file: {}", e))
+
+        toml::from_str(&content).map_err(|e| format!("Failed to parse config file: {}", e))
     }
-    
+
     /// Load configuration with environment variable overrides.
     pub fn load_with_env<P: AsRef<Path>>(path: Option<P>) -> Self {
         let config = if let Some(path) = path {
@@ -419,95 +418,100 @@ impl ServerConfig {
         } else {
             Self::default()
         };
-        
+
         config.apply_env_overrides()
     }
-    
+
     /// Apply environment variable overrides to an existing config.
     pub fn apply_env_overrides(mut self) -> Self {
         if let Ok(mode) = std::env::var("VELOCITY_MODE") {
             self.mode = mode;
         }
-        
+
         if let Ok(buffer_path) = std::env::var("VELOCITY_BUFFER_PATH") {
             self.buffer_path = buffer_path;
         }
-        
+
         if let Ok(csharp_path) = std::env::var("VELOCITY_CSHARP_PATH") {
             self.csharp_path = csharp_path;
         }
-        
+
         if let Ok(log_level) = std::env::var("VELOCITY_LOG_LEVEL") {
             self.logging.level = log_level;
         }
-        
+
         if let Ok(addr) = std::env::var("VELOCITY_HTTP_ADDR") {
             self.http.addr = addr;
         }
-        
+
         if let Ok(api_key) = std::env::var("VELOCITY_API_KEY") {
             self.http.api_key = Some(api_key);
         }
-        
+
         if let Ok(max_size) = std::env::var("VELOCITY_MAX_REQUEST_SIZE") {
             if let Ok(size) = max_size.parse() {
                 self.http.max_request_size = size;
             }
         }
-        
+
         if let Ok(enable) = std::env::var("VELOCITY_ENABLE_RATE_LIMIT") {
             self.http.enable_rate_limit = enable.parse().unwrap_or(true);
         }
-        
+
         self
     }
-    
+
     /// Validate the configuration.
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
-        
+
         // Validate mode
         if !["stdio", "shmem", "http"].contains(&self.mode.as_str()) {
-            errors.push(format!("Invalid mode: {}. Must be stdio, shmem, or http", self.mode));
+            errors.push(format!(
+                "Invalid mode: {}. Must be stdio, shmem, or http",
+                self.mode
+            ));
         }
-        
+
         // Validate log level
         if !["error", "warn", "info", "debug", "trace"].contains(&self.logging.level.as_str()) {
-            errors.push(format!("Invalid log level: {}. Must be error, warn, info, debug, or trace", self.logging.level));
+            errors.push(format!(
+                "Invalid log level: {}. Must be error, warn, info, debug, or trace",
+                self.logging.level
+            ));
         }
-        
+
         // Validate HTTP config
         if self.mode == "http" {
             if self.http.addr.is_empty() {
                 errors.push("HTTP address cannot be empty".to_string());
             }
-            
+
             if self.http.max_request_size == 0 {
                 errors.push("Max request size must be greater than 0".to_string());
             }
         }
-        
+
         if errors.is_empty() {
             Ok(())
         } else {
             Err(errors)
         }
     }
-    
+
     /// Save configuration to a TOML file.
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), String> {
         let content = toml::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize config: {}", e))?;
-        
-        std::fs::write(path, content)
-            .map_err(|e| format!("Failed to write config file: {}", e))
+
+        std::fs::write(path, content).map_err(|e| format!("Failed to write config file: {}", e))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_default_config() {
         let config = ServerConfig::default();
@@ -515,21 +519,21 @@ mod tests {
         assert_eq!(config.logging.level, "info");
         assert!(config.http.enable_rate_limit);
     }
-    
+
     #[test]
     fn test_config_validation() {
         let mut config = ServerConfig::default();
         assert!(config.validate().is_ok());
-        
+
         config.mode = "invalid".to_string();
         assert!(config.validate().is_err());
-        
+
         config.mode = "http".to_string();
         config.http.addr = "".to_string();
         let errors = config.validate().unwrap_err();
         assert!(errors.iter().any(|e| e.contains("HTTP address")));
     }
-    
+
     #[test]
     fn test_config_serialization() {
         let config = ServerConfig::default();
@@ -707,15 +711,31 @@ mod tests {
         assert!(config.wasm_runtimes.r.enabled);
         assert!(config.wasm_runtimes.julia.enabled);
         assert!(config.wasm_runtimes.perl.enabled);
-        assert!(config.wasm_runtimes.javascript.wasm_path.contains("quickjs"));
-        assert!(config.wasm_runtimes.python.wasm_path.contains("micropython"));
+        assert!(config
+            .wasm_runtimes
+            .javascript
+            .wasm_path
+            .contains("quickjs"));
+        assert!(config
+            .wasm_runtimes
+            .python
+            .wasm_path
+            .contains("micropython"));
         assert!(config.wasm_runtimes.lua.wasm_path.contains("lua"));
         assert!(config.wasm_runtimes.go.wasm_path.contains("tinygo"));
         assert!(config.wasm_runtimes.ruby.wasm_path.contains("mruby"));
         assert!(config.wasm_runtimes.rust.wasm_path.contains("rust_wasm"));
-        assert!(config.wasm_runtimes.typescript.wasm_path.contains("quickjs"));
+        assert!(config
+            .wasm_runtimes
+            .typescript
+            .wasm_path
+            .contains("quickjs"));
         assert!(config.wasm_runtimes.php.wasm_path.contains("php_wasm"));
-        assert!(config.wasm_runtimes.csharp.wasm_path.contains("csharp_wasm"));
+        assert!(config
+            .wasm_runtimes
+            .csharp
+            .wasm_path
+            .contains("csharp_wasm"));
         assert!(config.wasm_runtimes.java.wasm_path.contains("java_wasm"));
         assert!(config.wasm_runtimes.r.wasm_path.contains("r_wasm"));
         assert!(config.wasm_runtimes.julia.wasm_path.contains("julia_wasm"));
@@ -727,8 +747,14 @@ mod tests {
         let config = ServerConfig::default();
         let toml_str = toml::to_string(&config).unwrap();
         let parsed: ServerConfig = toml::from_str(&toml_str).unwrap();
-        assert_eq!(parsed.wasm_runtimes.javascript.wasm_path, config.wasm_runtimes.javascript.wasm_path);
-        assert_eq!(parsed.wasm_runtimes.python.enabled, config.wasm_runtimes.python.enabled);
+        assert_eq!(
+            parsed.wasm_runtimes.javascript.wasm_path,
+            config.wasm_runtimes.javascript.wasm_path
+        );
+        assert_eq!(
+            parsed.wasm_runtimes.python.enabled,
+            config.wasm_runtimes.python.enabled
+        );
     }
 
     #[test]

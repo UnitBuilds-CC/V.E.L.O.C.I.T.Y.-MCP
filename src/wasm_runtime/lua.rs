@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::error::Error;
 use wasmer::{Function, FunctionEnv, Instance, Memory, Module, Store, Value};
 
-use super::wasi::{WasiEnv, build_wasi_imports};
-use super::{WasmRuntime, WasmExecHelper, create_wasm_instance, WasmRuntimeConfig, memory_layout};
+use super::wasi::{build_wasi_imports, WasiEnv};
+use super::{create_wasm_instance, memory_layout, WasmExecHelper, WasmRuntime, WasmRuntimeConfig};
 
 pub struct LuaRuntime {
     store: Store,
@@ -22,14 +22,14 @@ pub struct LuaRuntime {
 }
 
 // Re-export shared constants for backwards compatibility with existing code
-use memory_layout::{EXEC_SLOT, ARGS_SLOT, NAME_SLOT};
+use memory_layout::{ARGS_SLOT, EXEC_SLOT, NAME_SLOT};
 
 impl LuaRuntime {
     pub fn new(wasm_bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
         let (store, instance, memory, env) = create_wasm_instance(WasmRuntimeConfig {
             wasm_bytes,
-            import_builder: Box::new(|store, env| build_wasi_imports(store, env)),
-            extra_memory_pages: 1, // 64KB beyond EXEC_SLOT
+            import_builder: Box::new(build_wasi_imports),
+            extra_memory_pages: 1,   // 64KB beyond EXEC_SLOT
             instruction_limit: None, // No metering by default
         })?;
 
@@ -81,8 +81,12 @@ impl LuaRuntime {
             let instance = Instance::new(&mut store, &module, &imports).unwrap();
             let memory = instance.exports.get_memory("memory").unwrap().clone();
             env.as_mut(&mut store).memory = Some(memory);
-            let init_fn = instance.exports.get_function("lua_wasi_init")
-                .unwrap().typed::<(), i32>(&store).unwrap();
+            let init_fn = instance
+                .exports
+                .get_function("lua_wasi_init")
+                .unwrap()
+                .typed::<(), i32>(&store)
+                .unwrap();
             let _ = init_fn.call(&mut store).unwrap();
         }
         start.elapsed().as_nanos() as f64 / cold_iters as f64 / 1_000_000.0
@@ -92,17 +96,26 @@ impl LuaRuntime {
     /// Returns (ns_per_call, checksum).
     pub fn bench_exec_repeated(&mut self, src: &str, iters: usize) -> (f64, u32) {
         let data = src.as_bytes();
-        self.memory.view(&self.store).write(EXEC_SLOT, data).unwrap();
+        self.memory
+            .view(&self.store)
+            .write(EXEC_SLOT, data)
+            .unwrap();
         let ptr = EXEC_SLOT as i32;
         let len = data.len() as i32;
 
         let exec_fn = self.instance.exports.get_function("lua_wasi_exec").unwrap();
-        let get_len_fn = self.instance.exports.get_function("lua_wasi_get_output_len").unwrap();
+        let get_len_fn = self
+            .instance
+            .exports
+            .get_function("lua_wasi_get_output_len")
+            .unwrap();
 
         let start = std::time::Instant::now();
         let mut checksum: u32 = 0;
         for _ in 0..iters {
-            let rc = exec_fn.call(&mut self.store, &[Value::I32(ptr), Value::I32(len)]).unwrap();
+            let rc = exec_fn
+                .call(&mut self.store, &[Value::I32(ptr), Value::I32(len)])
+                .unwrap();
             if rc[0].unwrap_i32() == 0 {
                 let out_len = get_len_fn.call(&mut self.store, &[]).unwrap()[0].unwrap_i32();
                 checksum = checksum.wrapping_add(out_len as u32);
@@ -115,15 +128,28 @@ impl LuaRuntime {
 
 impl WasmRuntime for LuaRuntime {
     fn init(&mut self) -> Result<(), Box<dyn Error>> {
-        let init_fn = self.instance.exports.get_function("lua_wasi_init")?
+        let init_fn = self
+            .instance
+            .exports
+            .get_function("lua_wasi_init")?
             .typed::<(), i32>(&self.store)?;
         let result = init_fn.call(&mut self.store)?;
         if result != 0 {
             return Err(format!("lua_wasi_init() failed with code {}", result).into());
         }
-        self.call_tool_fn = Some(self.instance.exports.get_function("lua_wasi_call_tool")?.clone());
+        self.call_tool_fn = Some(
+            self.instance
+                .exports
+                .get_function("lua_wasi_call_tool")?
+                .clone(),
+        );
         // Load binary protocol function if available (optional, for optimized path)
-        self.call_tool_binary_fn = self.instance.exports.get_function("lua_wasi_call_tool_binary").ok().cloned();
+        self.call_tool_binary_fn = self
+            .instance
+            .exports
+            .get_function("lua_wasi_call_tool_binary")
+            .ok()
+            .cloned();
         Ok(())
     }
 
@@ -148,20 +174,28 @@ impl WasmRuntime for LuaRuntime {
 
         // Write wrapper source to EXEC_SLOT
         let wrapper_bytes = wrapper.as_bytes();
-        self.memory.view(&self.store).write(EXEC_SLOT, wrapper_bytes)?;
+        self.memory
+            .view(&self.store)
+            .write(EXEC_SLOT, wrapper_bytes)?;
 
         // Write tool name to NAME_SLOT
         let name_bytes = name.as_bytes();
         self.memory.view(&self.store).write(NAME_SLOT, name_bytes)?;
 
         // Call lua_wasi_register_wrapper(name_ptr, name_len, src_ptr, src_len)
-        let register_fn = self.instance.exports.get_function("lua_wasi_register_wrapper")?;
-        let result = register_fn.call(&mut self.store, &[
-            Value::I32(NAME_SLOT as i32),
-            Value::I32(name_bytes.len() as i32),
-            Value::I32(EXEC_SLOT as i32),
-            Value::I32(wrapper_bytes.len() as i32),
-        ])?;
+        let register_fn = self
+            .instance
+            .exports
+            .get_function("lua_wasi_register_wrapper")?;
+        let result = register_fn.call(
+            &mut self.store,
+            &[
+                Value::I32(NAME_SLOT as i32),
+                Value::I32(name_bytes.len() as i32),
+                Value::I32(EXEC_SLOT as i32),
+                Value::I32(wrapper_bytes.len() as i32),
+            ],
+        )?;
 
         if result[0].unwrap_i32() != 0 {
             let output = self.get_output()?;
@@ -185,12 +219,15 @@ impl WasmRuntime for LuaRuntime {
 
         // Single WASI call: lua_wasi_call_tool(args_ptr, args_len, name_ptr, name_len)
         let call_fn = self.call_tool_fn.as_ref().unwrap();
-        let result = call_fn.call(&mut self.store, &[
-            Value::I32(ARGS_SLOT as i32),
-            Value::I32(args_bytes.len() as i32),
-            Value::I32(NAME_SLOT as i32),
-            Value::I32(name_bytes.len() as i32),
-        ])?;
+        let result = call_fn.call(
+            &mut self.store,
+            &[
+                Value::I32(ARGS_SLOT as i32),
+                Value::I32(args_bytes.len() as i32),
+                Value::I32(NAME_SLOT as i32),
+                Value::I32(name_bytes.len() as i32),
+            ],
+        )?;
 
         let rc = result[0].unwrap_i32();
         let output = self.get_output()?;
@@ -215,12 +252,15 @@ impl WasmRuntime for LuaRuntime {
             self.memory.view(&self.store).write(NAME_SLOT, name_bytes)?;
 
             // Call lua_wasi_call_tool_binary(tlv_ptr, tlv_len, name_ptr, name_len)
-            let result = call_fn.call(&mut self.store, &[
-                Value::I32(ARGS_SLOT as i32),
-                Value::I32(args_tlv.len() as i32),
-                Value::I32(NAME_SLOT as i32),
-                Value::I32(name_bytes.len() as i32),
-            ])?;
+            let result = call_fn.call(
+                &mut self.store,
+                &[
+                    Value::I32(ARGS_SLOT as i32),
+                    Value::I32(args_tlv.len() as i32),
+                    Value::I32(NAME_SLOT as i32),
+                    Value::I32(name_bytes.len() as i32),
+                ],
+            )?;
 
             let rc = result[0].unwrap_i32();
             let output = self.get_output()?;
@@ -266,13 +306,21 @@ mod tests {
         let wasm = std::fs::read(wasm_path()).expect("Lua WASM not found");
         let mut rt = LuaRuntime::cold_start(&wasm).expect("cold start failed");
 
-        let buf_start_fn = rt.instance.exports.get_function("lua_wasi_get_output_buf_start").expect("no output_buf_start");
+        let buf_start_fn = rt
+            .instance
+            .exports
+            .get_function("lua_wasi_get_output_buf_start")
+            .expect("no output_buf_start");
         let buf_start = buf_start_fn.call(&mut rt.store, &[]).unwrap()[0].unwrap_i32();
         let buf_end = buf_start + 256 * 1024;
 
-        assert!(EXEC_SLOT > buf_end as u64,
+        assert!(
+            EXEC_SLOT > buf_end as u64,
             "EXEC_SLOT {} overlaps output_buf ({} - {})",
-            EXEC_SLOT, buf_start, buf_end);
+            EXEC_SLOT,
+            buf_start,
+            buf_end
+        );
 
         rt.destroy().unwrap();
     }
@@ -283,7 +331,9 @@ mod tests {
         let wasm = std::fs::read(wasm_path()).expect("Lua WASM not found — run build.sh first");
         let mut rt = LuaRuntime::cold_start(&wasm).expect("cold start failed");
 
-        let output = rt.exec_and_get_output("print('hello from lua')").expect("exec failed");
+        let output = rt
+            .exec_and_get_output("print('hello from lua')")
+            .expect("exec failed");
         assert_eq!(output.trim(), "hello from lua");
 
         rt.destroy().unwrap();
@@ -301,15 +351,24 @@ mod tests {
                 return { sum = args.a + args.b }
             end
         "#;
-        rt.register_tool("add_numbers", source).expect("register_tool failed");
+        rt.register_tool("add_numbers", source)
+            .expect("register_tool failed");
 
         // Call the tool with JSON args
-        let result = rt.call_tool("add_numbers", r#"{"a": 3, "b": 4}"#).expect("call_tool failed");
-        assert!(result.contains("\"sum\""), "Expected sum in result: {}", result);
+        let result = rt
+            .call_tool("add_numbers", r#"{"a": 3, "b": 4}"#)
+            .expect("call_tool failed");
+        assert!(
+            result.contains("\"sum\""),
+            "Expected sum in result: {}",
+            result
+        );
         assert!(result.contains("7"), "Expected 7 in result: {}", result);
 
         // Call again with different args to verify pre-compiled wrapper reuse
-        let result2 = rt.call_tool("add_numbers", r#"{"a": 10, "b": 20}"#).expect("call_tool failed");
+        let result2 = rt
+            .call_tool("add_numbers", r#"{"a": 10, "b": 20}"#)
+            .expect("call_tool failed");
         assert!(result2.contains("30"), "Expected 30 in result: {}", result2);
 
         rt.destroy().unwrap();

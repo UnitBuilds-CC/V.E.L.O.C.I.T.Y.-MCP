@@ -246,7 +246,10 @@ fn test_real_tools_perl() {
 
 fn test_real_tool(language: &str) {
     let test_cases = get_test_cases();
-    let test_case = test_cases.iter().find(|t| t.language == language).expect("no test case");
+    let test_case = test_cases
+        .iter()
+        .find(|t| t.language == language)
+        .expect("no test case");
 
     println!("\n=== Testing {} with real tool source ===", language);
     println!("Source:\n{}", test_case.source);
@@ -266,7 +269,12 @@ fn test_real_tool(language: &str) {
         Ok(output) => {
             println!("Output: {}", output);
             for expected in &test_case.expected_contains {
-                assert!(output.contains(expected), "expected '{}' in output '{}'", expected, output);
+                assert!(
+                    output.contains(expected),
+                    "expected '{}' in output '{}'",
+                    expected,
+                    output
+                );
             }
             println!("✓ {} passed all assertions", language);
         }

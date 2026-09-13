@@ -35,7 +35,10 @@ fn main() {
     #[cfg(target_arch = "wasm32")]
     {
         println!("VELOCITY-MCP Edge adapter running on Wasmer Edge");
-        println!("Core protocol: velocity-mcp-core v{}", env!("CARGO_PKG_VERSION"));
+        println!(
+            "Core protocol: velocity-mcp-core v{}",
+            env!("CARGO_PKG_VERSION")
+        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]

@@ -30,15 +30,15 @@
 //! }
 //! ```
 
+mod client;
 mod error;
 mod transport;
 mod types;
-mod client;
 
-pub use error::{Error, Result};
-pub use transport::{Transport, StdioTransport, HttpTransport, ShmemTransport, JsonShmemTransport};
-pub use types::*;
 pub use client::McpClient;
+pub use error::{Error, Result};
+pub use transport::{HttpTransport, JsonShmemTransport, ShmemTransport, StdioTransport, Transport};
+pub use types::*;
 
 /// Protocol version supported by this client
 pub const PROTOCOL_VERSION: &str = "2024-11-05";

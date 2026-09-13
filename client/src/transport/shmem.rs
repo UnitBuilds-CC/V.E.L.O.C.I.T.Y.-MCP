@@ -63,12 +63,16 @@ fn to_wstring(s: &str) -> Vec<u16> {
 
 #[cfg(target_os = "windows")]
 fn enable_high_resolution_timer() {
-    unsafe { timeBeginPeriod(1); }
+    unsafe {
+        timeBeginPeriod(1);
+    }
 }
 
 #[cfg(target_os = "windows")]
 fn disable_high_resolution_timer() {
-    unsafe { timeEndPeriod(1); }
+    unsafe {
+        timeEndPeriod(1);
+    }
 }
 
 pub(crate) struct ShmemBuffer {
@@ -96,10 +100,15 @@ impl ShmemBuffer {
                 .read(true)
                 .write(true)
                 .open(buffer_path)
-                .map_err(|e| Error::SharedMemory(format!("Failed to open buffer '{}': {}", buffer_path, e)))?;
+                .map_err(|e| {
+                    Error::SharedMemory(format!("Failed to open buffer '{}': {}", buffer_path, e))
+                })?;
 
-            let file_len = file.metadata()
-                .map_err(|e| Error::SharedMemory(format!("Failed to stat buffer '{}': {}", buffer_path, e)))?
+            let file_len = file
+                .metadata()
+                .map_err(|e| {
+                    Error::SharedMemory(format!("Failed to stat buffer '{}': {}", buffer_path, e))
+                })?
                 .len();
             if (file_len as usize) < TOTAL_BUFFER_SIZE {
                 return Err(Error::SharedMemory(format!(
@@ -128,16 +137,20 @@ impl ShmemBuffer {
             if h_req.is_null() {
                 let err = unsafe { GetLastError() };
                 return Err(Error::SharedMemory(format!(
-                    "Failed to create req event '{}' (error {})", req_name, err
+                    "Failed to create req event '{}' (error {})",
+                    req_name, err
                 )));
             }
 
             let h_res = unsafe { CreateEventW(std::ptr::null_mut(), 0, 0, w_res.as_ptr()) };
             if h_res.is_null() {
                 let err = unsafe { GetLastError() };
-                unsafe { CloseHandle(h_req); }
+                unsafe {
+                    CloseHandle(h_req);
+                }
                 return Err(Error::SharedMemory(format!(
-                    "Failed to create res event '{}' (error {})", res_name, err
+                    "Failed to create res event '{}' (error {})",
+                    res_name, err
                 )));
             }
 
@@ -172,8 +185,7 @@ impl ShmemBuffer {
 
             self.mmap[INPUT_LEN_OFFSET..INPUT_LEN_OFFSET + 4]
                 .copy_from_slice(&(data.len() as u32).to_le_bytes());
-            self.mmap[INPUT_BUFFER_OFFSET..INPUT_BUFFER_OFFSET + data.len()]
-                .copy_from_slice(data);
+            self.mmap[INPUT_BUFFER_OFFSET..INPUT_BUFFER_OFFSET + data.len()].copy_from_slice(data);
 
             let sent_seq = self.next_seq;
             self.next_seq = self.next_seq.wrapping_add(1);
@@ -209,7 +221,8 @@ impl ShmemBuffer {
                 self.reset_to_idle();
                 let out_len = self.read_output_len();
                 if out_len > 0 && out_len <= TOTAL_BUFFER_SIZE - OUTPUT_BUFFER_OFFSET {
-                    let err_bytes = &self.mmap[OUTPUT_BUFFER_OFFSET..OUTPUT_BUFFER_OFFSET + out_len];
+                    let err_bytes =
+                        &self.mmap[OUTPUT_BUFFER_OFFSET..OUTPUT_BUFFER_OFFSET + out_len];
                     if let Ok(err_str) = std::str::from_utf8(err_bytes) {
                         return Err(Error::SharedMemory(format!("Server error: {}", err_str)));
                     }
@@ -247,7 +260,8 @@ impl ShmemBuffer {
             ]);
             if echoed_seq != sent_seq {
                 return Err(Error::StaleResponse(format!(
-                    "Expected seq {}, got {}", sent_seq, echoed_seq
+                    "Expected seq {}, got {}",
+                    sent_seq, echoed_seq
                 )));
             }
 
@@ -309,7 +323,8 @@ impl ShmemBuffer {
             if rc != 0 {
                 let err = GetLastError();
                 return Err(Error::SharedMemory(format!(
-                    "WaitForSingleObject failed (rc={}, error={})", rc, err
+                    "WaitForSingleObject failed (rc={}, error={})",
+                    rc, err
                 )));
             }
         }

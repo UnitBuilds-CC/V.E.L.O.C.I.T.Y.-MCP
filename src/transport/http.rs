@@ -17,10 +17,10 @@
 
 use axum::{
     extract::{Query, State, WebSocketUpgrade},
-    http::{StatusCode, Request},
+    http::{Request, StatusCode},
     middleware::{self, Next},
     response::sse::{Event, Sse},
-    routing::{get, post, delete},
+    routing::{delete, get, post},
     Json, Router,
 };
 use serde::Deserialize;
@@ -47,8 +47,13 @@ pub(crate) fn sanitize_session_id(raw: &str) -> Result<String, String> {
     if raw.len() > 128 || raw.is_empty() {
         return Err("Session ID must be 1-128 characters".into());
     }
-    if !raw.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        return Err("Session ID must contain only alphanumeric characters, hyphens, or underscores".into());
+    if !raw
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(
+            "Session ID must contain only alphanumeric characters, hyphens, or underscores".into(),
+        );
     }
     Ok(raw.to_string())
 }
@@ -109,7 +114,8 @@ impl HttpMetrics {
     /// Record a request completion.
     pub fn record_request(&self, latency_us: u64, success: bool) {
         self.total_requests.fetch_add(1, Ordering::Relaxed);
-        self.total_latency_us.fetch_add(latency_us, Ordering::Relaxed);
+        self.total_latency_us
+            .fetch_add(latency_us, Ordering::Relaxed);
         if success {
             self.successful_requests.fetch_add(1, Ordering::Relaxed);
         } else {
@@ -163,49 +169,73 @@ impl HttpMetrics {
     /// Get metrics in Prometheus text exposition format.
     pub fn to_prometheus(&self) -> String {
         let mut output = String::new();
-        
+
         // Total requests
         output.push_str("# HELP velocity_mcp_requests_total Total number of requests received\n");
         output.push_str("# TYPE velocity_mcp_requests_total counter\n");
-        output.push_str(&format!("velocity_mcp_requests_total {}\n", 
-            self.total_requests.load(Ordering::Relaxed)));
-        
+        output.push_str(&format!(
+            "velocity_mcp_requests_total {}\n",
+            self.total_requests.load(Ordering::Relaxed)
+        ));
+
         // Successful requests
-        output.push_str("# HELP velocity_mcp_requests_successful Total number of successful requests\n");
+        output.push_str(
+            "# HELP velocity_mcp_requests_successful Total number of successful requests\n",
+        );
         output.push_str("# TYPE velocity_mcp_requests_successful counter\n");
-        output.push_str(&format!("velocity_mcp_requests_successful {}\n", 
-            self.successful_requests.load(Ordering::Relaxed)));
-        
+        output.push_str(&format!(
+            "velocity_mcp_requests_successful {}\n",
+            self.successful_requests.load(Ordering::Relaxed)
+        ));
+
         // Failed requests
         output.push_str("# HELP velocity_mcp_requests_failed Total number of failed requests\n");
         output.push_str("# TYPE velocity_mcp_requests_failed counter\n");
-        output.push_str(&format!("velocity_mcp_requests_failed {}\n", 
-            self.failed_requests.load(Ordering::Relaxed)));
-        
+        output.push_str(&format!(
+            "velocity_mcp_requests_failed {}\n",
+            self.failed_requests.load(Ordering::Relaxed)
+        ));
+
         // Auth failures
-        output.push_str("# HELP velocity_mcp_auth_failures_total Total number of authentication failures\n");
+        output.push_str(
+            "# HELP velocity_mcp_auth_failures_total Total number of authentication failures\n",
+        );
         output.push_str("# TYPE velocity_mcp_auth_failures_total counter\n");
-        output.push_str(&format!("velocity_mcp_auth_failures_total {}\n", 
-            self.auth_failures.load(Ordering::Relaxed)));
-        
+        output.push_str(&format!(
+            "velocity_mcp_auth_failures_total {}\n",
+            self.auth_failures.load(Ordering::Relaxed)
+        ));
+
         // Rate limit hits
-        output.push_str("# HELP velocity_mcp_rate_limit_hits_total Total number of rate limit hits\n");
+        output.push_str(
+            "# HELP velocity_mcp_rate_limit_hits_total Total number of rate limit hits\n",
+        );
         output.push_str("# TYPE velocity_mcp_rate_limit_hits_total counter\n");
-        output.push_str(&format!("velocity_mcp_rate_limit_hits_total {}\n", 
-            self.rate_limit_hits.load(Ordering::Relaxed)));
-        
+        output.push_str(&format!(
+            "velocity_mcp_rate_limit_hits_total {}\n",
+            self.rate_limit_hits.load(Ordering::Relaxed)
+        ));
+
         // Average latency
-        output.push_str("# HELP velocity_mcp_latency_microseconds Average request latency in microseconds\n");
+        output.push_str(
+            "# HELP velocity_mcp_latency_microseconds Average request latency in microseconds\n",
+        );
         output.push_str("# TYPE velocity_mcp_latency_microseconds gauge\n");
-        output.push_str(&format!("velocity_mcp_latency_microseconds {}\n", 
-            self.average_latency_us()));
-        
+        output.push_str(&format!(
+            "velocity_mcp_latency_microseconds {}\n",
+            self.average_latency_us()
+        ));
+
         // Active SSE connections
-        output.push_str("# HELP velocity_mcp_sse_connections_active Number of active SSE connections\n");
+        output.push_str(
+            "# HELP velocity_mcp_sse_connections_active Number of active SSE connections\n",
+        );
         output.push_str("# TYPE velocity_mcp_sse_connections_active gauge\n");
-        output.push_str(&format!("velocity_mcp_sse_connections_active {}\n", 
-            self.active_sse_connections.load(Ordering::Relaxed)));
-        
+        output.push_str(&format!(
+            "velocity_mcp_sse_connections_active {}\n",
+            self.active_sse_connections.load(Ordering::Relaxed)
+        ));
+
         output
     }
 }
@@ -257,11 +287,15 @@ async fn auth_middleware(
     next: Next,
 ) -> Result<axum::response::Response, (StatusCode, Json<Value>)> {
     if let Some(expected_key) = &state.security.api_key {
-        let auth_header = request.headers().get("Authorization")
+        let auth_header = request
+            .headers()
+            .get("Authorization")
             .and_then(|v| v.to_str().ok());
 
         match auth_header {
-            Some(header) if header.starts_with("Bearer ") && constant_time_eq(&header[7..], expected_key) => {}
+            Some(header)
+                if header.starts_with("Bearer ")
+                    && constant_time_eq(&header[7..], expected_key) => {}
             _ => {
                 state.metrics.record_auth_failure();
                 return Err((
@@ -270,7 +304,7 @@ async fn auth_middleware(
                         "jsonrpc": "2.0",
                         "error": { "code": -32000, "message": "Unauthorized" },
                         "id": null
-                    }))
+                    })),
                 ));
             }
         }
@@ -293,7 +327,7 @@ async fn rate_limit_middleware(
                 "jsonrpc": "2.0",
                 "error": { "code": -32000, "message": "Rate limit exceeded" },
                 "id": null
-            }))
+            })),
         ));
     }
 
@@ -308,7 +342,8 @@ async fn handle_json_rpc(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let start_time = std::time::Instant::now();
 
-    let session_id = headers.get("X-Session-ID")
+    let session_id = headers
+        .get("X-Session-ID")
         .and_then(|v| v.to_str().ok())
         .map(|s| sanitize_session_id(s).unwrap_or_else(|_| Uuid::new_v4().to_string()))
         .unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -330,19 +365,19 @@ async fn handle_json_rpc(
 
     let response = json_rpc::handle_request(&request);
     let latency_us = start_time.elapsed().as_micros() as u64;
-    
+
     match response {
         Some(res) => {
             state.metrics.record_request(latency_us, true);
             Ok(Json(res))
-        },
+        }
         None => {
             state.metrics.record_request(latency_us, true);
             Err((
                 StatusCode::NO_CONTENT,
                 Json(json!({"message": "Notification processed"})),
             ))
-        },
+        }
     }
 }
 
@@ -359,7 +394,8 @@ async fn handle_nda_rpc(
 
     let start_time = std::time::Instant::now();
 
-    let session_id = headers.get("X-Session-ID")
+    let session_id = headers
+        .get("X-Session-ID")
         .and_then(|v| v.to_str().ok())
         .map(|s| sanitize_session_id(s).unwrap_or_else(|_| Uuid::new_v4().to_string()))
         .unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -402,25 +438,32 @@ async fn handle_streamable(
 
     // Get or create session
     let session_id = match query.session_id {
-        Some(ref raw) => sanitize_session_id(raw).map_err(|e| {
-            tracing::warn!(error = %e, "Invalid session ID");
-            e
-        }).unwrap_or_else(|_| Uuid::new_v4().to_string()),
+        Some(ref raw) => sanitize_session_id(raw)
+            .map_err(|e| {
+                tracing::warn!(error = %e, "Invalid session ID");
+                e
+            })
+            .unwrap_or_else(|_| Uuid::new_v4().to_string()),
         None => Uuid::new_v4().to_string(),
     };
 
     {
         let mut sessions = state.sessions.write().await;
         if sessions.len() >= MAX_SESSIONS {
-            tracing::warn!("Maximum session limit reached ({}), rejecting new session", MAX_SESSIONS);
+            tracing::warn!(
+                "Maximum session limit reached ({}), rejecting new session",
+                MAX_SESSIONS
+            );
             // Don't create the session, but continue - the request will fail naturally
         } else {
-            let session = sessions.entry(session_id.clone()).or_insert_with(|| Session {
-                id: session_id.clone(),
-                created_at: std::time::Instant::now(),
-                last_activity: std::time::Instant::now(),
-                request_count: AtomicU64::new(0),
-            });
+            let session = sessions
+                .entry(session_id.clone())
+                .or_insert_with(|| Session {
+                    id: session_id.clone(),
+                    created_at: std::time::Instant::now(),
+                    last_activity: std::time::Instant::now(),
+                    request_count: AtomicU64::new(0),
+                });
             session.last_activity = std::time::Instant::now();
             session.request_count.fetch_add(1, Ordering::Relaxed);
         }
@@ -443,46 +486,65 @@ async fn handle_streamable(
         crate::audit::set_transport_context("sse".to_string());
 
         // Send session ID as first event
-        if tx.send(format!("event: session\ndata: {}\n\n", session_id_clone)).await.is_err() {
+        if tx
+            .send(format!("event: session\ndata: {}\n\n", session_id_clone))
+            .await
+            .is_err()
+        {
             tracing::debug!("SSE client disconnected before session event");
             return;
         }
 
         // Process the request
         let response = json_rpc::handle_request(&request_json);
-        
+
         match response {
             Some(res) => {
                 // Stream the response
                 let response_str = serde_json::to_string(&res).unwrap_or_default();
-                if tx.send(format!("event: response\ndata: {}\n\n", response_str)).await.is_err() {
+                if tx
+                    .send(format!("event: response\ndata: {}\n\n", response_str))
+                    .await
+                    .is_err()
+                {
                     tracing::debug!("SSE client disconnected before response");
                     return;
                 }
-                
+
                 // Notify other SSE clients about the completed request
-                broadcast_event(&state_clone, "request_completed", &json!({
-                    "sessionId": session_id_clone,
-                    "method": request_json.get("method").cloned().unwrap_or(Value::Null),
-                })).await;
+                broadcast_event(
+                    &state_clone,
+                    "request_completed",
+                    &json!({
+                        "sessionId": session_id_clone,
+                        "method": request_json.get("method").cloned().unwrap_or(Value::Null),
+                    }),
+                )
+                .await;
             }
             None => {
                 // Notification, no response needed
-                if tx.send("event: notification\ndata: {\"status\": \"processed\"}\n\n".to_string()).await.is_err() {
+                if tx
+                    .send("event: notification\ndata: {\"status\": \"processed\"}\n\n".to_string())
+                    .await
+                    .is_err()
+                {
                     tracing::debug!("SSE client disconnected before notification event");
                 }
             }
         }
 
         // Send completion event
-        if tx.send("event: complete\ndata: {}\n\n".to_string()).await.is_err() {
+        if tx
+            .send("event: complete\ndata: {}\n\n".to_string())
+            .await
+            .is_err()
+        {
             tracing::debug!("SSE client disconnected before complete event");
         }
     });
 
-    let stream = ReceiverStream::new(rx).map(|msg| {
-        Ok(Event::default().data(msg))
-    });
+    let stream = ReceiverStream::new(rx).map(|msg| Ok(Event::default().data(msg)));
 
     Sse::new(stream).keep_alive(
         axum::response::sse::KeepAlive::new()
@@ -508,7 +570,10 @@ async fn sse_handler(
     {
         let mut broadcasts = state.event_broadcast.write().await;
         if broadcasts.len() >= MAX_BROADCAST_SUBSCRIBERS {
-            tracing::warn!("Maximum broadcast subscriber limit reached ({}), rejecting new subscriber", MAX_BROADCAST_SUBSCRIBERS);
+            tracing::warn!(
+                "Maximum broadcast subscriber limit reached ({}), rejecting new subscriber",
+                MAX_BROADCAST_SUBSCRIBERS
+            );
             // Don't add to broadcasts, but continue
         } else {
             broadcasts.push(tx.clone());
@@ -517,25 +582,32 @@ async fn sse_handler(
 
     // Get or create session
     let session_id = match query.session_id {
-        Some(ref raw) => sanitize_session_id(raw).map_err(|e| {
-            tracing::warn!(error = %e, "Invalid session ID");
-            e
-        }).unwrap_or_else(|_| Uuid::new_v4().to_string()),
+        Some(ref raw) => sanitize_session_id(raw)
+            .map_err(|e| {
+                tracing::warn!(error = %e, "Invalid session ID");
+                e
+            })
+            .unwrap_or_else(|_| Uuid::new_v4().to_string()),
         None => Uuid::new_v4().to_string(),
     };
 
     {
         let mut sessions = state.sessions.write().await;
         if sessions.len() >= MAX_SESSIONS {
-            tracing::warn!("Maximum session limit reached ({}), rejecting new session", MAX_SESSIONS);
+            tracing::warn!(
+                "Maximum session limit reached ({}), rejecting new session",
+                MAX_SESSIONS
+            );
             // Don't create the session, but continue
         } else {
-            sessions.entry(session_id.clone()).or_insert_with(|| Session {
-                id: session_id.clone(),
-                created_at: std::time::Instant::now(),
-                last_activity: std::time::Instant::now(),
-                request_count: AtomicU64::new(0),
-            });
+            sessions
+                .entry(session_id.clone())
+                .or_insert_with(|| Session {
+                    id: session_id.clone(),
+                    created_at: std::time::Instant::now(),
+                    last_activity: std::time::Instant::now(),
+                    request_count: AtomicU64::new(0),
+                });
         }
     }
 
@@ -543,10 +615,14 @@ async fn sse_handler(
     let tx_init = tx.clone();
     let session_id_init = session_id.clone();
     tokio::spawn(async move {
-        if tx_init.send(format!(
-            "event: connected\ndata: {{\"sessionId\": \"{}\"}}\n\n",
-            session_id_init
-        )).await.is_err() {
+        if tx_init
+            .send(format!(
+                "event: connected\ndata: {{\"sessionId\": \"{}\"}}\n\n",
+                session_id_init
+            ))
+            .await
+            .is_err()
+        {
             tracing::debug!("SSE client disconnected before connected event");
         }
     });
@@ -558,15 +634,17 @@ async fn sse_handler(
         let mut interval = interval(Duration::from_secs(15));
         loop {
             interval.tick().await;
-            if tx_heartbeat.send(":heartbeat\n\n".to_string()).await.is_err() {
+            if tx_heartbeat
+                .send(":heartbeat\n\n".to_string())
+                .await
+                .is_err()
+            {
                 break;
             }
         }
     });
 
-    let stream = ReceiverStream::new(rx).map(|msg| {
-        Ok(Event::default().data(msg))
-    });
+    let stream = ReceiverStream::new(rx).map(|msg| Ok(Event::default().data(msg)));
 
     Sse::new(stream).keep_alive(
         axum::response::sse::KeepAlive::new()
@@ -616,7 +694,7 @@ async fn cleanup_sessions(state: &ServerState) {
 async fn health_check(State(state): State<Arc<ServerState>>) -> Json<Value> {
     let sessions = state.sessions.read().await;
     let session_count = sessions.len();
-    
+
     Json(json!({
         "status": "healthy",
         "transport": "http",
@@ -631,10 +709,19 @@ async fn metrics(State(state): State<Arc<ServerState>>) -> Json<Value> {
 }
 
 /// Prometheus metrics endpoint for monitoring.
-async fn metrics_prometheus(State(state): State<Arc<ServerState>>) -> (StatusCode, [(axum::http::header::HeaderName, &'static str); 1], String) {
+async fn metrics_prometheus(
+    State(state): State<Arc<ServerState>>,
+) -> (
+    StatusCode,
+    [(axum::http::header::HeaderName, &'static str); 1],
+    String,
+) {
     (
         StatusCode::OK,
-        [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
         state.metrics.to_prometheus(),
     )
 }
@@ -654,11 +741,11 @@ async fn performance(State(state): State<Arc<ServerState>>) -> Json<Value> {
     } else {
         0.0
     };
-    
+
     // Estimate what Node.js would take (based on typical V8 JSON-RPC overhead)
     let nodejs_equiv_latency_us = avg_latency_us * 3.8;
     let time_saved_ms = (nodejs_equiv_latency_us - avg_latency_us) * total_requests as f64 / 1000.0;
-    
+
     Json(json!({
         "server": {
             "version": env!("CARGO_PKG_VERSION"),
@@ -701,8 +788,12 @@ async fn performance(State(state): State<Arc<ServerState>>) -> Json<Value> {
 
 /// Audit log export endpoint (JSON format) — aggregate across all sessions.
 async fn audit_export_json() -> Result<
-    (StatusCode, [(axum::http::header::HeaderName, &'static str); 1], String),
-    StatusCode
+    (
+        StatusCode,
+        [(axum::http::header::HeaderName, &'static str); 1],
+        String,
+    ),
+    StatusCode,
 > {
     let entries = crate::audit::audit_registry().aggregate_all();
     match serde_json::to_string_pretty(&entries) {
@@ -717,8 +808,12 @@ async fn audit_export_json() -> Result<
 
 /// Audit log export endpoint (CSV format) — aggregate across all sessions.
 async fn audit_export_csv() -> Result<
-    (StatusCode, [(axum::http::header::HeaderName, &'static str); 1], String),
-    StatusCode
+    (
+        StatusCode,
+        [(axum::http::header::HeaderName, &'static str); 1],
+        String,
+    ),
+    StatusCode,
 > {
     let entries = crate::audit::audit_registry().aggregate_all();
     let csv = format_audit_csv(&entries);
@@ -731,8 +826,8 @@ async fn audit_export_csv() -> Result<
 
 /// Flush all audit logs to disk. Uses VELOCITY_AUDIT_LOG_PATH env var or defaults to audit_logs.
 async fn audit_flush() -> Result<Json<Value>, StatusCode> {
-    let path = std::env::var("VELOCITY_AUDIT_LOG_PATH")
-        .unwrap_or_else(|_| "audit_logs".to_string());
+    let path =
+        std::env::var("VELOCITY_AUDIT_LOG_PATH").unwrap_or_else(|_| "audit_logs".to_string());
     match crate::audit::audit_registry().flush_all(&path) {
         Ok(n) => Ok(Json(json!({
             "status": "ok",
@@ -749,8 +844,12 @@ async fn audit_flush() -> Result<Json<Value>, StatusCode> {
 async fn session_audit_export_json(
     axum::extract::Path(raw_session_id): axum::extract::Path<String>,
 ) -> Result<
-    (StatusCode, [(axum::http::header::HeaderName, &'static str); 1], String),
-    StatusCode
+    (
+        StatusCode,
+        [(axum::http::header::HeaderName, &'static str); 1],
+        String,
+    ),
+    StatusCode,
 > {
     let session_id = sanitize_session_id(&raw_session_id).map_err(|_| StatusCode::BAD_REQUEST)?;
     match crate::audit::audit_registry().get(&session_id) {
@@ -770,8 +869,12 @@ async fn session_audit_export_json(
 async fn session_audit_export_csv(
     axum::extract::Path(raw_session_id): axum::extract::Path<String>,
 ) -> Result<
-    (StatusCode, [(axum::http::header::HeaderName, &'static str); 1], String),
-    StatusCode
+    (
+        StatusCode,
+        [(axum::http::header::HeaderName, &'static str); 1],
+        String,
+    ),
+    StatusCode,
 > {
     let session_id = sanitize_session_id(&raw_session_id).map_err(|_| StatusCode::BAD_REQUEST)?;
     match crate::audit::audit_registry().get(&session_id) {
@@ -783,7 +886,7 @@ async fn session_audit_export_csv(
                 [(axum::http::header::CONTENT_TYPE, "text/csv")],
                 csv,
             ))
-        },
+        }
         None => Err(StatusCode::NOT_FOUND),
     }
 }
@@ -793,13 +896,15 @@ async fn session_audit_flush(
     axum::extract::Path(raw_session_id): axum::extract::Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
     let session_id = sanitize_session_id(&raw_session_id).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let base_path = std::env::var("VELOCITY_AUDIT_LOG_PATH")
-        .unwrap_or_else(|_| "audit_logs".to_string());
+    let base_path =
+        std::env::var("VELOCITY_AUDIT_LOG_PATH").unwrap_or_else(|_| "audit_logs".to_string());
     match crate::audit::audit_registry().get(&session_id) {
         Some(log) => {
             let file_path = format!("{}/{}.json", base_path, session_id);
             if let Err(e) = std::fs::create_dir_all(&base_path) {
-                return Ok(Json(json!({ "status": "error", "error": crate::sandbox::sanitize_error(&format!("Failed to create directory: {}", e)) })));
+                return Ok(Json(
+                    json!({ "status": "error", "error": crate::sandbox::sanitize_error(&format!("Failed to create directory: {}", e)) }),
+                ));
             }
             let entries = log.all();
             match serde_json::to_string_pretty(&entries) {
@@ -809,19 +914,27 @@ async fn session_audit_flush(
                         "entries": entries.len(),
                         "session": session_id
                     }))),
-                    Err(e) => Ok(Json(json!({ "status": "error", "error": crate::sandbox::sanitize_error(&format!("Failed to write: {}", e)) }))),
+                    Err(e) => Ok(Json(
+                        json!({ "status": "error", "error": crate::sandbox::sanitize_error(&format!("Failed to write: {}", e)) }),
+                    )),
                 },
-                Err(e) => Ok(Json(json!({ "status": "error", "error": crate::sandbox::sanitize_error(&e.to_string()) }))),
+                Err(e) => Ok(Json(
+                    json!({ "status": "error", "error": crate::sandbox::sanitize_error(&e.to_string()) }),
+                )),
             }
-        },
+        }
         None => Err(StatusCode::NOT_FOUND),
     }
 }
 
 /// Admin audit export (JSON) — merged entries from all sessions.
 async fn admin_audit_export_json() -> Result<
-    (StatusCode, [(axum::http::header::HeaderName, &'static str); 1], String),
-    StatusCode
+    (
+        StatusCode,
+        [(axum::http::header::HeaderName, &'static str); 1],
+        String,
+    ),
+    StatusCode,
 > {
     let entries = crate::audit::audit_registry().aggregate_all();
     match serde_json::to_string_pretty(&entries) {
@@ -836,8 +949,12 @@ async fn admin_audit_export_json() -> Result<
 
 /// Admin audit export (CSV) — merged entries from all sessions.
 async fn admin_audit_export_csv() -> Result<
-    (StatusCode, [(axum::http::header::HeaderName, &'static str); 1], String),
-    StatusCode
+    (
+        StatusCode,
+        [(axum::http::header::HeaderName, &'static str); 1],
+        String,
+    ),
+    StatusCode,
 > {
     let entries = crate::audit::audit_registry().aggregate_all();
     let csv = format_audit_csv(&entries);
@@ -852,10 +969,13 @@ async fn admin_audit_export_csv() -> Result<
 async fn admin_audit_summary() -> Json<Value> {
     let registry = crate::audit::audit_registry();
     let session_ids = registry.session_ids();
-    let per_session: Vec<Value> = session_ids.iter().map(|id| {
-        let count = registry.get(id).map(|l| l.len()).unwrap_or(0);
-        json!({ "sessionId": id, "entries": count })
-    }).collect();
+    let per_session: Vec<Value> = session_ids
+        .iter()
+        .map(|id| {
+            let count = registry.get(id).map(|l| l.len()).unwrap_or(0);
+            json!({ "sessionId": id, "entries": count })
+        })
+        .collect();
     Json(json!({
         "totalSessions": registry.session_count(),
         "totalEntries": registry.aggregate_all().len(),
@@ -871,7 +991,9 @@ fn format_audit_csv(entries: &[crate::audit::AuditEntry]) -> String {
             crate::audit::AuditOutcome::Success => "success".to_string(),
             crate::audit::AuditOutcome::Error(msg) => format!("error:{}", msg.replace(',', ";")),
             crate::audit::AuditOutcome::Timeout => "timeout".to_string(),
-            crate::audit::AuditOutcome::Rejected(msg) => format!("rejected:{}", msg.replace(',', ";")),
+            crate::audit::AuditOutcome::Rejected(msg) => {
+                format!("rejected:{}", msg.replace(',', ";"))
+            }
         };
         csv.push_str(&format!(
             "{},{},{},{},{},{},{},{},{},{}\n",
@@ -881,8 +1003,14 @@ fn format_audit_csv(entries: &[crate::audit::AuditEntry]) -> String {
             entry.duration_us,
             outcome_str,
             entry.transport.as_deref().unwrap_or(""),
-            entry.payload_size.map(|s| s.to_string()).unwrap_or_default(),
-            entry.response_size.map(|s| s.to_string()).unwrap_or_default(),
+            entry
+                .payload_size
+                .map(|s| s.to_string())
+                .unwrap_or_default(),
+            entry
+                .response_size
+                .map(|s| s.to_string())
+                .unwrap_or_default(),
             entry.merkle_root.as_deref().unwrap_or(""),
             entry.session_id.as_deref().unwrap_or(""),
         ));
@@ -893,14 +1021,17 @@ fn format_audit_csv(entries: &[crate::audit::AuditEntry]) -> String {
 /// Session management endpoints.
 async fn list_sessions(State(state): State<Arc<ServerState>>) -> Json<Value> {
     let sessions = state.sessions.read().await;
-    let session_list: Vec<Value> = sessions.values().map(|s| {
-        json!({
-            "id": s.id,
-            "createdAt": s.created_at.elapsed().as_secs(),
-            "lastActivity": s.last_activity.elapsed().as_secs(),
-            "requestCount": s.request_count.load(Ordering::Relaxed)
+    let session_list: Vec<Value> = sessions
+        .values()
+        .map(|s| {
+            json!({
+                "id": s.id,
+                "createdAt": s.created_at.elapsed().as_secs(),
+                "lastActivity": s.last_activity.elapsed().as_secs(),
+                "requestCount": s.request_count.load(Ordering::Relaxed)
+            })
         })
-    }).collect();
+        .collect();
 
     Json(json!({ "sessions": session_list }))
 }
@@ -934,7 +1065,7 @@ async fn handle_websocket(socket: axum::extract::ws::WebSocket, state: Arc<Serve
         let mut tokens: u32 = 100;
         const MAX_TOKENS: u32 = 100;
         const REFILL_RATE: u32 = 50; // tokens per second
-        
+
         while let Some(msg) = StreamExt::next(&mut receiver).await {
             match msg {
                 Ok(Message::Text(text)) => {
@@ -947,18 +1078,19 @@ async fn handle_websocket(socket: axum::extract::ws::WebSocket, state: Arc<Serve
                         let _ = sender.send(Message::Text(err_res.to_string())).await;
                         continue;
                     }
-                    
+
                     // Refill tokens based on elapsed time
                     let now = std::time::Instant::now();
                     let elapsed_ms = now.duration_since(last_refill).as_millis() as u64;
-                    if elapsed_ms >= 20 { // refill every 20ms
+                    if elapsed_ms >= 20 {
+                        // refill every 20ms
                         let new_tokens = (elapsed_ms * REFILL_RATE as u64 / 1000) as u32;
                         if new_tokens > 0 {
                             tokens = (tokens + new_tokens).min(MAX_TOKENS);
                             last_refill = now;
                         }
                     }
-                    
+
                     // Check rate limit
                     if tokens == 0 {
                         let err_res = serde_json::json!({
@@ -972,21 +1104,26 @@ async fn handle_websocket(socket: axum::extract::ws::WebSocket, state: Arc<Serve
                         continue;
                     }
                     tokens -= 1;
-                    
+
                     match serde_json::from_str::<Value>(&text) {
                         Ok(request) => {
                             // Process the request
                             let start_time = std::time::Instant::now();
                             let response = json_rpc::handle_request(&request);
                             let latency_us = start_time.elapsed().as_micros() as u64;
-                            
+
                             // Record metrics
-                            state_clone.metrics.record_request(latency_us, response.is_some());
-                            
+                            state_clone
+                                .metrics
+                                .record_request(latency_us, response.is_some());
+
                             // Send response back
                             if let Some(resp) = response {
                                 let resp_text = serde_json::to_string(&resp).unwrap_or_default();
-                                if SinkExt::send(&mut sender, Message::Text(resp_text)).await.is_err() {
+                                if SinkExt::send(&mut sender, Message::Text(resp_text))
+                                    .await
+                                    .is_err()
+                                {
                                     break;
                                 }
                             }
@@ -1002,7 +1139,10 @@ async fn handle_websocket(socket: axum::extract::ws::WebSocket, state: Arc<Serve
                                 "id": null
                             });
                             let error_text = serde_json::to_string(&error_resp).unwrap_or_default();
-                            if SinkExt::send(&mut sender, Message::Text(error_text)).await.is_err() {
+                            if SinkExt::send(&mut sender, Message::Text(error_text))
+                                .await
+                                .is_err()
+                            {
                                 break;
                             }
                         }
@@ -1014,7 +1154,7 @@ async fn handle_websocket(socket: axum::extract::ws::WebSocket, state: Arc<Serve
             }
         }
     });
-    
+
     // Wait for the receive task to complete
     if let Err(e) = recv_task.await {
         tracing::warn!(error = %e, "WebSocket recv_task panicked");
@@ -1055,7 +1195,7 @@ async fn marketplace_get_plugin(
 ) -> Result<Json<crate::plugins::marketplace::PluginMetadata>, StatusCode> {
     let marketplace_path = std::path::Path::new("marketplace");
     let marketplace = crate::plugins::marketplace::Marketplace::new(marketplace_path);
-    
+
     match marketplace.get_plugin(&plugin_id) {
         Some(plugin) => Ok(Json(plugin.clone())),
         None => Err(StatusCode::NOT_FOUND),
@@ -1067,7 +1207,7 @@ async fn marketplace_install_plugin(
 ) -> Result<Json<crate::plugins::marketplace::InstalledPlugin>, (StatusCode, String)> {
     let marketplace_path = std::path::Path::new("marketplace");
     let mut marketplace = crate::plugins::marketplace::Marketplace::new(marketplace_path);
-    
+
     match marketplace.install(&plugin_id) {
         Ok(installed) => {
             // Reload plugins after installation
@@ -1083,7 +1223,7 @@ async fn marketplace_uninstall_plugin(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let marketplace_path = std::path::Path::new("marketplace");
     let mut marketplace = crate::plugins::marketplace::Marketplace::new(marketplace_path);
-    
+
     match marketplace.uninstall(&plugin_id) {
         Ok(_) => {
             // Reload plugins after uninstallation
@@ -1120,8 +1260,13 @@ async fn marketplace_submit_review(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let marketplace_path = std::path::Path::new("marketplace");
     let mut marketplace = crate::plugins::marketplace::Marketplace::new(marketplace_path);
-    
-    match marketplace.submit_review(&plugin_id, &request.reviewer, request.rating, request.comment) {
+
+    match marketplace.submit_review(
+        &plugin_id,
+        &request.reviewer,
+        request.rating,
+        request.comment,
+    ) {
         Ok(_) => Ok(StatusCode::CREATED),
         Err(e) => Err((StatusCode::BAD_REQUEST, crate::sandbox::sanitize_error(&e))),
     }
@@ -1138,7 +1283,7 @@ async fn marketplace_update_plugin(
 ) -> Result<Json<crate::plugins::marketplace::InstalledPlugin>, (StatusCode, String)> {
     let marketplace_path = std::path::Path::new("marketplace");
     let mut marketplace = crate::plugins::marketplace::Marketplace::new(marketplace_path);
-    
+
     match marketplace.update_plugin(&plugin_id) {
         Ok(installed) => {
             // Reload plugins after update
@@ -1153,10 +1298,8 @@ async fn marketplace_update_plugin(
 fn build_router(state: Arc<ServerState>) -> Router {
     // Configure CORS based on security config
     let cors = if let Some(origins) = &state.security.cors_origins {
-        let mut cors = CorsLayer::new()
-            .allow_methods(Any)
-            .allow_headers(Any);
-        
+        let mut cors = CorsLayer::new().allow_methods(Any).allow_headers(Any);
+
         // Parse and add allowed origins
         for origin in origins {
             if let Ok(origin_header) = origin.parse::<axum::http::HeaderValue>() {
@@ -1192,8 +1335,14 @@ fn build_router(state: Arc<ServerState>) -> Router {
         .route("/audit/export/json", get(audit_export_json))
         .route("/audit/export/csv", get(audit_export_csv))
         .route("/audit/flush", post(audit_flush))
-        .route("/sessions/:id/audit/export/json", get(session_audit_export_json))
-        .route("/sessions/:id/audit/export/csv", get(session_audit_export_csv))
+        .route(
+            "/sessions/:id/audit/export/json",
+            get(session_audit_export_json),
+        )
+        .route(
+            "/sessions/:id/audit/export/csv",
+            get(session_audit_export_csv),
+        )
         .route("/sessions/:id/audit/flush", post(session_audit_flush))
         .route("/admin/audit/export/json", get(admin_audit_export_json))
         .route("/admin/audit/export/csv", get(admin_audit_export_csv))
@@ -1202,23 +1351,41 @@ fn build_router(state: Arc<ServerState>) -> Router {
         .route("/sessions/:id", delete(delete_session))
         .route("/marketplace/plugins", get(marketplace_list_plugins))
         .route("/marketplace/plugins/:id", get(marketplace_get_plugin))
-        .route("/marketplace/plugins/:id/review", post(marketplace_submit_review))
+        .route(
+            "/marketplace/plugins/:id/review",
+            post(marketplace_submit_review),
+        )
         .route("/marketplace/install/:id", post(marketplace_install_plugin))
-        .route("/marketplace/install/:id", delete(marketplace_uninstall_plugin))
+        .route(
+            "/marketplace/install/:id",
+            delete(marketplace_uninstall_plugin),
+        )
         .route("/marketplace/installed", get(marketplace_list_installed))
         .route("/marketplace/updates", get(marketplace_check_updates))
         .route("/marketplace/update/:id", post(marketplace_update_plugin))
         .route("/marketplace/stats", get(marketplace_stats))
-        .layer(middleware::from_fn(crate::middleware::request_logger_middleware))
-        .layer(middleware::from_fn(crate::middleware::request_validator_middleware))
-        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
-        .layer(middleware::from_fn_with_state(state.clone(), rate_limit_middleware));
+        .layer(middleware::from_fn(
+            crate::middleware::request_logger_middleware,
+        ))
+        .layer(middleware::from_fn(
+            crate::middleware::request_validator_middleware,
+        ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit_middleware,
+        ));
 
     Router::new()
         .route("/health", get(health_check))
         .nest("/v1", protected)
         .layer(cors)
-        .layer(axum::extract::DefaultBodyLimit::max(state.security.max_request_size))
+        .layer(axum::extract::DefaultBodyLimit::max(
+            state.security.max_request_size,
+        ))
         .with_state(state)
 }
 
@@ -1227,7 +1394,7 @@ fn build_router(state: Arc<ServerState>) -> Router {
 /// This function blocks until the shutdown signal is received.
 /// If tls_config is provided, the server will use HTTPS instead of HTTP.
 pub async fn run_http_server(
-    addr: &str, 
+    addr: &str,
     shutdown: Arc<AtomicBool>,
     security_config: Option<HttpSecurityConfig>,
     tls_config: Option<TlsConfig>,
@@ -1268,13 +1435,13 @@ pub async fn run_http_server(
 
     if let Some(tls_cfg) = tls_config {
         info!(addr = addr, "Starting HTTPS server with TLS");
-        
+
         // Load TLS certificates
         let tls_config = load_tls_config(&tls_cfg.cert_path, &tls_cfg.key_path)?;
         let tls_acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls_config));
-        
+
         let listener = tokio::net::TcpListener::bind(addr).await?;
-        
+
         loop {
             let (stream, addr) = tokio::select! {
                 result = listener.accept() => {
@@ -1291,10 +1458,10 @@ pub async fn run_http_server(
                     break;
                 }
             };
-            
+
             let tls_acceptor = tls_acceptor.clone();
             let app = app.clone();
-            
+
             tokio::spawn(async move {
                 let tls_stream = match tls_acceptor.accept(stream).await {
                     Ok(s) => s,
@@ -1303,10 +1470,10 @@ pub async fn run_http_server(
                         return;
                     }
                 };
-                
+
                 let io = hyper_util::rt::TokioIo::new(tls_stream);
                 let service = hyper_util::service::TowerToHyperService::new(app);
-                
+
                 if let Err(e) = hyper_util::server::conn::auto::Builder::new(
                     hyper_util::rt::TokioExecutor::new(),
                 )
@@ -1319,7 +1486,7 @@ pub async fn run_http_server(
         }
     } else {
         info!(addr = addr, "Starting HTTP server");
-        
+
         let listener = tokio::net::TcpListener::bind(addr).await?;
         axum::serve(listener, app)
             .with_graceful_shutdown(shutdown_signal(shutdown))
@@ -1333,33 +1500,33 @@ pub async fn run_http_server(
 }
 
 /// Load TLS configuration from certificate and key files.
-fn load_tls_config(cert_path: &str, key_path: &str) -> Result<rustls::ServerConfig, Box<dyn std::error::Error>> {
+fn load_tls_config(
+    cert_path: &str,
+    key_path: &str,
+) -> Result<rustls::ServerConfig, Box<dyn std::error::Error>> {
+    use rustls_pemfile::{certs, private_key};
     use std::fs::File;
     use std::io::BufReader;
-    use rustls_pemfile::{certs, private_key};
-    
+
     // Load certificate chain
     let cert_file = File::open(cert_path)?;
     let mut cert_reader = BufReader::new(cert_file);
-    let certs: Vec<_> = certs(&mut cert_reader)
-        .filter_map(|c| c.ok())
-        .collect();
-    
+    let certs: Vec<_> = certs(&mut cert_reader).filter_map(|c| c.ok()).collect();
+
     if certs.is_empty() {
         return Err("No certificates found in certificate file".into());
     }
-    
+
     // Load private key
     let key_file = File::open(key_path)?;
     let mut key_reader = BufReader::new(key_file);
-    let key = private_key(&mut key_reader)?
-        .ok_or("No private key found in key file")?;
-    
+    let key = private_key(&mut key_reader)?.ok_or("No private key found in key file")?;
+
     // Build server config
     let config = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, key)?;
-    
+
     Ok(config)
 }
 
@@ -1370,17 +1537,17 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
     if max_len == 0 {
         return true;
     }
-    
+
     // Pad shorter string to match longer one (cycling through bytes).
     // This prevents length-based timing attacks while still comparing all bytes.
     let mut result = if a.len() != b.len() { 1u8 } else { 0u8 };
-    
+
     for i in 0..max_len {
         let byte_a = a.as_bytes().get(i % a.len()).copied().unwrap_or(0);
         let byte_b = b.as_bytes().get(i % b.len()).copied().unwrap_or(0);
         result |= byte_a ^ byte_b;
     }
-    
+
     result == 0
 }
 
@@ -1508,14 +1675,14 @@ mod tests {
             metrics: Arc::new(HttpMetrics::default()),
             start_time: std::time::Instant::now(),
         });
-        
+
         // Record some metrics
         state.metrics.record_request(100, true);
         state.metrics.record_request(200, true);
         state.metrics.record_request(50, false);
         state.metrics.record_auth_failure();
         state.metrics.record_rate_limit_hit();
-        
+
         let app = build_router(state);
 
         let response = app
@@ -1529,10 +1696,12 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let metrics: Value = serde_json::from_slice(&body).unwrap();
-        
+
         assert_eq!(metrics["total_requests"], 3);
         assert_eq!(metrics["successful_requests"], 2);
         assert_eq!(metrics["failed_requests"], 1);
@@ -1544,21 +1713,21 @@ mod tests {
     #[test]
     fn test_http_metrics_calculation() {
         let metrics = HttpMetrics::default();
-        
+
         // Test initial state
         assert_eq!(metrics.total_requests.load(Ordering::Relaxed), 0);
         assert_eq!(metrics.average_latency_us(), 0.0);
-        
+
         // Record some requests
         metrics.record_request(100, true);
         metrics.record_request(200, true);
         metrics.record_request(300, false);
-        
+
         assert_eq!(metrics.total_requests.load(Ordering::Relaxed), 3);
         assert_eq!(metrics.successful_requests.load(Ordering::Relaxed), 2);
         assert_eq!(metrics.failed_requests.load(Ordering::Relaxed), 1);
         assert_eq!(metrics.average_latency_us(), 200.0); // (100+200+300)/3
-        
+
         // Test JSON serialization
         let json = metrics.to_json();
         assert_eq!(json["total_requests"], 3);
@@ -1589,7 +1758,8 @@ mod tests {
             "id": 1
         });
 
-        let response = app.clone()
+        let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -1604,7 +1774,8 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
         // Test with invalid auth - should fail
-        let response = app.clone()
+        let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -1647,11 +1818,11 @@ mod tests {
             metrics: Arc::new(HttpMetrics::default()),
             start_time: std::time::Instant::now(),
         });
-        
+
         // Record some metrics
         state.metrics.record_request(100, true);
         state.metrics.record_request(200, true);
-        
+
         let app = build_router(state);
 
         let response = app
@@ -1665,10 +1836,12 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let perf: Value = serde_json::from_slice(&body).unwrap();
-        
+
         // Check that performance data is present (nested structure)
         assert!(perf.get("server").is_some());
         assert!(perf.get("throughput").is_some());
@@ -1717,10 +1890,12 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let results: Value = serde_json::from_slice(&body).unwrap();
-        
+
         // Should return array of results
         assert!(results.is_array());
         assert_eq!(results.as_array().unwrap().len(), 2);

@@ -1,0 +1,261 @@
+   Compiling velocity_mcp v3.1.0 (C:\Users\ian\Documents\MCP)
+warning: unused import: `Memory`
+  --> src\wasm_runtime\go.rs:11:24
+   |
+11 | use wasmer::{Instance, Memory, Module, Store};
+   |                        ^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `std::path::PathBuf`
+  --> src\wasm_runtime\mod.rs:26:5
+   |
+26 | use std::path::PathBuf;
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `tx`
+   --> src\plugins\mod.rs:518:10
+    |
+518 |     let (tx, rx) = std::sync::mpsc::channel();
+    |          ^^ help: if this is intentional, prefix it with an underscore: `_tx`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+  --> src\wasm_runtime\mod.rs:84:13
+   |
+84 |         let mut cache = MODULE_CACHE.lock().map_err(|e| format!("Cache lock poisoned: {}", e))?;
+   |             ----^^^^^
+   |             |
+   |             help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `CachedWasmModule` is never constructed
+   --> src\plugins\mod.rs:357:8
+    |
+357 | struct CachedWasmModule {
+    |        ^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: static `WASM_MODULE_CACHE` is never used
+   --> src\plugins\mod.rs:363:8
+    |
+363 | static WASM_MODULE_CACHE: std::sync::LazyLock<Mutex<HashMap<String, CachedWasmModule>>> =
+    |        ^^^^^^^^^^^^^^^^^
+
+warning: function `execute_standalone_wasm_tool` is never used
+   --> src\plugins\mod.rs:483:4
+    |
+483 | fn execute_standalone_wasm_tool(source_file: &str, tool_name: &str, arguments: &Value) -> Result<String, String> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `wasm_path` is never read
+  --> src\wasm_runtime\go.rs:21:5
+   |
+20 | pub struct GoWasmRuntime {
+   |            ------------- field in this struct
+21 |     wasm_path: String, // Path to base TinyGo WASM (used for config reference)
+   |     ^^^^^^^^^
+
+warning: `velocity_mcp` (lib) generated 8 warnings (run `cargo fix --lib -p velocity_mcp` to apply 4 suggestions)
+warning: `velocity_mcp` (lib) generated 8 warnings (8 duplicates)
+warning: unused import: `ruby::RubyRuntime`
+  --> benches\comprehensive_benchmark.rs:26:5
+   |
+26 |     ruby::RubyRuntime,
+   |     ^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `COLD_ITERS` is never used
+  --> benches\comprehensive_benchmark.rs:40:7
+   |
+40 | const COLD_ITERS: usize = 20;
+   |       ^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `HOT_NATIVE_ITERS` is never used
+  --> benches\comprehensive_benchmark.rs:42:7
+   |
+42 | const HOT_NATIVE_ITERS: usize = 500;
+   |       ^^^^^^^^^^^^^^^^
+
+warning: constant `RUBY_TOOL_SOURCE` is never used
+  --> benches\comprehensive_benchmark.rs:96:7
+   |
+96 | const RUBY_TOOL_SOURCE: &str = r#"
+   |       ^^^^^^^^^^^^^^^^
+
+warning: constant `RUST_TOOL_SOURCE` is never used
+   --> benches\comprehensive_benchmark.rs:108:7
+    |
+108 | const RUST_TOOL_SOURCE: &str = r#"
+    |       ^^^^^^^^^^^^^^^^
+
+warning: field `wasm_label` is never read
+   --> benches\comprehensive_benchmark.rs:201:5
+    |
+199 | struct WasmRuntimeResult {
+    |        ----------------- field in this struct
+200 |     name: &'static str,
+201 |     wasm_label: &'static str,
+    |     ^^^^^^^^^^
+
+warning: field `label` is never read
+   --> benches\comprehensive_benchmark.rs:210:5
+    |
+208 | struct TransportResult {
+    |        --------------- field in this struct
+209 |     protocol: &'static str,
+210 |     label: &'static str,
+    |     ^^^^^
+
+warning: `velocity_mcp` (bench "comprehensive_benchmark") generated 7 warnings (run `cargo fix --bench "comprehensive_benchmark" -p velocity_mcp` to apply 1 suggestion)
+    Finished `bench` profile [optimized] target(s) in 10m 15s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running benches\comprehensive_benchmark.rs (target\release\build\velocity_mcp/280b378c14fd3996\out\comprehensive_benchmark-280b378c14fd3996.exe)
+═══════════════════════════════════════════════════════════════════
+  Comprehensive WASM Runtime + Transport Protocol Benchmark
+═══════════════════════════════════════════════════════════════════
+
+Checking WASM modules...
+  QuickJS: found
+  MicroPython: found
+  Lua: found
+  TinyGo: found
+  Ruby: found
+  Rust: found
+  PHP: found
+  C#: found
+  Java: found
+  R: found
+  Julia: found
+  Perl: found
+
+Native runtimes:
+  Node.js: node
+
+
+╔═══════════════════════════════════════════════════════════════╗
+║  WASM Runtime Benchmarks                                     ║
+╚═══════════════════════════════════════════════════════════════╝
+
+─── JavaScript ────────────────────────────────────────────────
+Warning: qjs_init() returned -1, continuing anyway
+Warning: qjs_init() returned -1, continuing anyway
+Warning: qjs_init() returned -1, continuing anyway
+  Cold start: 224.5 ms
+Warning: qjs_init() returned -1, continuing anyway
+  Correctness: OK
+  Hot call: 92.3 µs/call (10833.3K calls/s)
+    P50: 90.7 µs, P95: 135.2 µs, P99: 167.2 µs
+
+─── TypeScript ────────────────────────────────────────────────
+  TypeScript tool registration failed: SyntaxError: Unexpected token ':'
+  TypeScript tool registration failed: SyntaxError: Unexpected token ':'
+  TypeScript tool registration failed: SyntaxError: Unexpected token ':'
+  TypeScript hot call registration failed: SyntaxError: Unexpected token ':'
+
+─── Python ────────────────────────────────────────────────
+  Cold start: 184.0 ms
+  Correctness: OK
+
+─── Lua ────────────────────────────────────────────────
+  Cold start: 4.9 ms
+  Correctness: OK
+  Hot call: 28.6 µs/call (34931.6K calls/s)
+    P50: 16.0 µs, P95: 43.4 µs, P99: 333.9 µs
+
+─── Rust ────────────────────────────────────────────────
+  Cold start: 21.6 ms
+  Correctness: OK
+  Hot call: 16.3 µs/call (61341.4K calls/s)
+    P50: 4.3 µs, P95: 5.5 µs, P99: 31.0 µs
+
+─── Go (TinyGo/WASM) ─────────────────────────────────────
+  Cold start: 1003.4 ms
+  Cached module: 1057.5 µs/call (0.9K calls/s)
+
+─── PHP ────────────────────────────────────────────────
+  Cold start: 163.1 ms
+  WARNING: PHP WASM returned unexpected result: wc=0 cc=0
+  Hot call: 38.0 µs/call (26305.1K calls/s)
+    P50: 7.7 µs, P95: 10.0 µs, P99: 15.3 µs
+
+─── C# ────────────────────────────────────────────────
+  Cold start: 171.5 ms
+  WARNING: C# WASM returned unexpected result: wc=0 cc=0
+  Hot call: 27.6 µs/call (36228.5K calls/s)
+    P50: 9.2 µs, P95: 13.4 µs, P99: 26.8 µs
+
+─── Java ────────────────────────────────────────────────
+  Cold start: 171.9 ms
+  WARNING: Java WASM returned unexpected result: wc=0 cc=0
+  Hot call: 52.6 µs/call (18996.3K calls/s)
+    P50: 8.6 µs, P95: 15.8 µs, P99: 205.4 µs
+
+─── R ────────────────────────────────────────────────
+  Cold start: 189.8 ms
+  WARNING: R WASM returned unexpected result: wc=0 cc=0
+  Hot call: 44.4 µs/call (22504.1K calls/s)
+    P50: 9.2 µs, P95: 13.6 µs, P99: 33.6 µs
+
+─── Julia ────────────────────────────────────────────────
+  Cold start: 235.6 ms
+  WARNING: Julia WASM returned unexpected result: wc=0 cc=0
+  Hot call: 51.8 µs/call (19296.4K calls/s)
+    P50: 10.5 µs, P95: 16.7 µs, P99: 27.4 µs
+
+─── Perl ────────────────────────────────────────────────
+  Cold start: 131.7 ms
+  WARNING: Perl WASM returned unexpected result: wc=0 cc=0
+  Hot call: 24.7 µs/call (40518.3K calls/s)
+    P50: 7.8 µs, P95: 12.2 µs, P99: 28.9 µs
+
+
+╔═══════════════════════════════════════════════════════════════╗
+║  Transport Protocol Benchmarks                               ║
+╚═══════════════════════════════════════════════════════════════╝
+
+─── Transport: JSON-RPC stdio ─────────────────────────────
+  Ping: 883.0 µs
+  Tools/list: 208.9 µs
+  Tools/call: 150.4 µs
+
+═══ WASM Runtime Summary ═══════════════════════════════════════════
+Language          Cold (ms)     Hot (µs)  Cached (µs)   Mem (KB)
+──────────────────────────────────────────────────────────────────
+JavaScript            224.5         92.3            —          —
+TypeScript             SKIP         SKIP            —          —
+Python                184.0         SKIP            —          —
+Lua                     4.9         28.6            —          —
+Rust                   21.6         16.3            —          —
+Go                   1003.4         SKIP       1057.5          —
+PHP                   163.1         38.0            —          —
+C#                    171.5         27.6            —          —
+Java                  171.9         52.6            —          —
+R                     189.8         44.4            —          —
+Julia                 235.6         51.8            —          —
+Perl                  131.7         24.7            —          —
+──────────────────────────────────────────────────────────────────
+
+═══ Transport Protocol Summary ═════════════════════════════════════
+Protocol                Ping (µs)    List (µs)    Call (µs)
+──────────────────────────────────────────────────────────────────
+JSON-RPC stdio              883.0        208.9        150.4
+──────────────────────────────────────────────────────────────────
+
+═══ Recommendations ════════════════════════════════════════════════
+  Fastest WASM runtime: Rust (16.3 µs/call)
+  Fastest transport: JSON-RPC stdio (150.4 µs)
+
+  For low-latency tools (<100µs): Use QuickJS, MicroPython, or Lua
+  For complex computations: Use Rust WASI or TinyGo
+  For maximum compatibility: Use Node.js native with JSON-RPC stdio
+  For highest throughput: Use NDA binary protocol with shmem transport
+
+Done.

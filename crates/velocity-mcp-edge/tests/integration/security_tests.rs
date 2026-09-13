@@ -194,7 +194,12 @@ async fn test_security_mixed_concurrent_endpoints() {
                 assert_eq!(resp.status(), 200);
             } else {
                 let body = serde_json::json!({"jsonrpc": "2.0", "method": "ping", "id": i});
-                let resp = c.post(&format!("{}/mcp", b)).json(&body).send().await.unwrap();
+                let resp = c
+                    .post(&format!("{}/mcp", b))
+                    .json(&body)
+                    .send()
+                    .await
+                    .unwrap();
                 assert_eq!(resp.status(), 200);
             }
         }));
@@ -223,7 +228,11 @@ async fn test_security_unknown_method_returns_proper_error() {
     let result: Value = resp.json().await.unwrap();
     assert_eq!(result["error"]["code"], -32601);
     // Server should stay healthy after unknown method
-    let health = client.get(&format!("{}/health", base)).send().await.unwrap();
+    let health = client
+        .get(&format!("{}/health", base))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(health.status(), 200);
 }
 
@@ -263,7 +272,7 @@ async fn test_security_no_content_type_header() {
 #[tokio::test]
 async fn test_security_math_eval_depth_limit() {
     let (client, base) = setup().await;
-    
+
     // Create a deeply nested expression: (((...1...)))
     let nested = "(".repeat(150) + "1" + &")".repeat(150);
     let body = serde_json::json!({
@@ -275,18 +284,24 @@ async fn test_security_math_eval_depth_limit() {
         },
         "id": 1
     });
-    
+
     let resp = client
         .post(&format!("{}/mcp", base))
         .json(&body)
         .send()
         .await
         .unwrap();
-    
+
     assert_eq!(resp.status(), 200);
     let result: Value = resp.json().await.unwrap();
     // Should return an error about complexity, not crash
-    assert!(result["error"].is_object() || result["result"]["content"][0]["text"].as_str().unwrap_or("").contains("too complex"));
+    assert!(
+        result["error"].is_object()
+            || result["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or("")
+                .contains("too complex")
+    );
 }
 
 /// Test that text_transform replace rejects empty 'old' parameter (string amplification DoS).
@@ -295,9 +310,12 @@ async fn test_security_text_transform_empty_old_parameter() {
     // The mock server in tests/common.rs doesn't include security middleware,
     // so this test validates the code path exists rather than testing enforcement.
     // In production main.rs, tool_text_transform checks for empty 'old' and returns error.
-    
+
     // This is a regression test documenting the vulnerability fix
-    assert!(true, "Empty 'old' parameter rejection implemented in tools.rs tool_text_transform");
+    assert!(
+        true,
+        "Empty 'old' parameter rejection implemented in tools.rs tool_text_transform"
+    );
 }
 
 /// Test that rate limiting cannot be bypassed via X-Forwarded-For header spoofing.
@@ -307,17 +325,20 @@ async fn test_security_rate_limit_xff_spoofing() {
     // Since the mock server doesn't have the security middleware, this test
     // validates the fix is in place by checking the code path exists
     // In production, only trusted proxy peers would have XFF honored
-    
+
     // This is a documentation test - actual enforcement happens in main.rs
     // The key fix: extract_client_ip now checks is_trusted_proxy before using XFF
-    assert!(true, "Rate limit XFF bypass fixed in main.rs extract_client_ip");
+    assert!(
+        true,
+        "Rate limit XFF bypass fixed in main.rs extract_client_ip"
+    );
 }
 
 /// Test that CORS responses include Vary: Origin header to prevent cache poisoning.
 #[tokio::test]
 async fn test_security_cors_vary_header() {
     let (client, base) = setup().await;
-    
+
     // Send request with Origin header (GET works for testing headers)
     let resp = client
         .get(&format!("{}/health", base))
@@ -325,13 +346,16 @@ async fn test_security_cors_vary_header() {
         .send()
         .await
         .unwrap();
-    
+
     // Check for Vary: Origin header
     let vary = resp.headers().get("vary");
     if let Some(vary_val) = vary {
         let vary_str = vary_val.to_str().unwrap_or("");
-        assert!(vary_str.to_lowercase().contains("origin"), 
-                "Vary header should include 'origin', got: {}", vary_str);
+        assert!(
+            vary_str.to_lowercase().contains("origin"),
+            "Vary header should include 'origin', got: {}",
+            vary_str
+        );
     }
 }
 
@@ -340,14 +364,17 @@ async fn test_security_cors_vary_header() {
 async fn test_security_empty_api_key_rejected() {
     // This tests the ServerConfig::from_env logic
     // Empty VELOCITY_API_KEY should disable auth rather than allow all requests
-    
+
     // Set empty env var and verify it's treated as disabled
     std::env::set_var("VELOCITY_API_KEY", "");
-    
+
     // Re-read config (in real code this happens at startup)
     // For this test, we just verify the behavior is documented
-    assert!(true, "Empty API key handling verified in ServerConfig::from_env");
-    
+    assert!(
+        true,
+        "Empty API key handling verified in ServerConfig::from_env"
+    );
+
     std::env::remove_var("VELOCITY_API_KEY");
 }
 
@@ -356,7 +383,10 @@ async fn test_security_empty_api_key_rejected() {
 async fn test_security_memory_exhaustion_prevention() {
     // The fix uses http_body_util::Limited to enforce hard cap during collection
     // This prevents attackers from sending chunked requests without Content-Length
-    
+
     // Mock server doesn't enforce limits, but production main.rs does
-    assert!(true, "Memory exhaustion prevention implemented via Limited in handle_mcp_post");
+    assert!(
+        true,
+        "Memory exhaustion prevention implemented via Limited in handle_mcp_post"
+    );
 }

@@ -36,7 +36,10 @@ impl Transport for JsonShmemTransport {
         let json_bytes = serde_json::to_vec(&request)?;
 
         let response_bytes = {
-            let mut guard = self.buffer.lock().map_err(|e| Error::SharedMemory(format!("lock: {}", e)))?;
+            let mut guard = self
+                .buffer
+                .lock()
+                .map_err(|e| Error::SharedMemory(format!("lock: {}", e)))?;
             let buf = guard.as_mut().ok_or(Error::ConnectionClosed)?;
             buf.send_raw(&json_bytes)?
         };
@@ -79,7 +82,10 @@ impl Transport for JsonShmemTransport {
 
     async fn close(&self) -> Result<()> {
         self.closed.store(true, Ordering::Release);
-        let mut guard = self.buffer.lock().map_err(|e| Error::SharedMemory(format!("lock: {}", e)))?;
+        let mut guard = self
+            .buffer
+            .lock()
+            .map_err(|e| Error::SharedMemory(format!("lock: {}", e)))?;
         if let Some(buf) = guard.take() {
             drop(buf);
         }

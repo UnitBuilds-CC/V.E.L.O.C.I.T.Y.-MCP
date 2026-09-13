@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use wasmer::{Function, FunctionEnv, Instance, Memory, Module, Store, Value};
 
-use super::wasi::{WasiEnv, build_wasi_imports};
+use super::wasi::{build_wasi_imports, WasiEnv};
 use super::WasmRuntime;
 
 const EXEC_SLOT: u64 = 512 * 1024;
@@ -66,13 +66,19 @@ impl JavaRuntime {
         let data = src.as_bytes();
         self.memory.view(&self.store).write(EXEC_SLOT, data)?;
         let exec_fn = self.instance.exports.get_function("java_wasi_exec")?;
-        let result = exec_fn.call(&mut self.store, &[Value::I32(EXEC_SLOT as i32), Value::I32(data.len() as i32)])?;
+        let result = exec_fn.call(
+            &mut self.store,
+            &[Value::I32(EXEC_SLOT as i32), Value::I32(data.len() as i32)],
+        )?;
         Ok(result[0].unwrap_i32())
     }
 
     fn get_output(&mut self) -> Result<String, Box<dyn Error>> {
         let get_output_fn = self.instance.exports.get_function("java_wasi_get_output")?;
-        let get_len_fn = self.instance.exports.get_function("java_wasi_get_output_len")?;
+        let get_len_fn = self
+            .instance
+            .exports
+            .get_function("java_wasi_get_output_len")?;
 
         let out_ptr = get_output_fn.call(&mut self.store, &[])?[0].unwrap_i32();
         let out_len = get_len_fn.call(&mut self.store, &[])?[0].unwrap_i32();
@@ -82,7 +88,9 @@ impl JavaRuntime {
         }
 
         let mut buf = vec![0u8; out_len as usize];
-        self.memory.view(&self.store).read(out_ptr as u64, &mut buf)?;
+        self.memory
+            .view(&self.store)
+            .read(out_ptr as u64, &mut buf)?;
         Ok(String::from_utf8_lossy(&buf).to_string())
     }
 
@@ -98,15 +106,28 @@ impl JavaRuntime {
 
 impl WasmRuntime for JavaRuntime {
     fn init(&mut self) -> Result<(), Box<dyn Error>> {
-        let init_fn = self.instance.exports.get_function("java_wasi_init")?
+        let init_fn = self
+            .instance
+            .exports
+            .get_function("java_wasi_init")?
             .typed::<(), i32>(&self.store)?;
         let result = init_fn.call(&mut self.store)?;
         if result != 0 {
             return Err(format!("java_wasi_init() failed with code {}", result).into());
         }
-        self.call_tool_fn = Some(self.instance.exports.get_function("java_wasi_call_tool")?.clone());
+        self.call_tool_fn = Some(
+            self.instance
+                .exports
+                .get_function("java_wasi_call_tool")?
+                .clone(),
+        );
         // Load binary protocol function if available (optional, for optimized path)
-        self.call_tool_binary_fn = self.instance.exports.get_function("java_wasi_call_tool_binary").ok().cloned();
+        self.call_tool_binary_fn = self
+            .instance
+            .exports
+            .get_function("java_wasi_call_tool_binary")
+            .ok()
+            .cloned();
         Ok(())
     }
 
@@ -119,18 +140,26 @@ impl WasmRuntime for JavaRuntime {
         }
 
         let source_bytes = source.as_bytes();
-        self.memory.view(&self.store).write(EXEC_SLOT, source_bytes)?;
+        self.memory
+            .view(&self.store)
+            .write(EXEC_SLOT, source_bytes)?;
 
         let name_bytes = name.as_bytes();
         self.memory.view(&self.store).write(NAME_SLOT, name_bytes)?;
 
-        let register_fn = self.instance.exports.get_function("java_wasi_register_tool")?;
-        let result = register_fn.call(&mut self.store, &[
-            Value::I32(NAME_SLOT as i32),
-            Value::I32(name_bytes.len() as i32),
-            Value::I32(EXEC_SLOT as i32),
-            Value::I32(source_bytes.len() as i32),
-        ])?;
+        let register_fn = self
+            .instance
+            .exports
+            .get_function("java_wasi_register_tool")?;
+        let result = register_fn.call(
+            &mut self.store,
+            &[
+                Value::I32(NAME_SLOT as i32),
+                Value::I32(name_bytes.len() as i32),
+                Value::I32(EXEC_SLOT as i32),
+                Value::I32(source_bytes.len() as i32),
+            ],
+        )?;
 
         if result[0].unwrap_i32() != 0 {
             let output = self.get_output()?;
@@ -152,12 +181,15 @@ impl WasmRuntime for JavaRuntime {
         self.memory.view(&self.store).write(NAME_SLOT, name_bytes)?;
 
         let call_fn = self.call_tool_fn.as_ref().unwrap();
-        let result = call_fn.call(&mut self.store, &[
-            Value::I32(ARGS_SLOT as i32),
-            Value::I32(args_bytes.len() as i32),
-            Value::I32(NAME_SLOT as i32),
-            Value::I32(name_bytes.len() as i32),
-        ])?;
+        let result = call_fn.call(
+            &mut self.store,
+            &[
+                Value::I32(ARGS_SLOT as i32),
+                Value::I32(args_bytes.len() as i32),
+                Value::I32(NAME_SLOT as i32),
+                Value::I32(name_bytes.len() as i32),
+            ],
+        )?;
 
         let rc = result[0].unwrap_i32();
         let output = self.get_output()?;
@@ -191,12 +223,15 @@ impl WasmRuntime for JavaRuntime {
         self.memory.view(&self.store).write(NAME_SLOT, name_bytes)?;
 
         // Single WASI call: java_wasi_call_tool_binary(tlv_ptr, tlv_len, name_ptr, name_len)
-        let result = call_fn.call(&mut self.store, &[
-            Value::I32(ARGS_SLOT as i32),
-            Value::I32(args_tlv.len() as i32),
-            Value::I32(NAME_SLOT as i32),
-            Value::I32(name_bytes.len() as i32),
-        ])?;
+        let result = call_fn.call(
+            &mut self.store,
+            &[
+                Value::I32(ARGS_SLOT as i32),
+                Value::I32(args_tlv.len() as i32),
+                Value::I32(NAME_SLOT as i32),
+                Value::I32(name_bytes.len() as i32),
+            ],
+        )?;
 
         let rc = result[0].unwrap_i32();
         let output = self.get_output()?;
@@ -235,7 +270,9 @@ mod tests {
         let wasm = std::fs::read(wasm_path()).expect("Java WASM not found");
         let mut rt = JavaRuntime::cold_start(&wasm).expect("cold start failed");
 
-        let output = rt.exec_and_get_output("System.out.println(\"hello from java\");").expect("exec failed");
+        let output = rt
+            .exec_and_get_output("System.out.println(\"hello from java\");")
+            .expect("exec failed");
         assert_eq!(output.trim(), "hello from java");
 
         rt.destroy().unwrap();
@@ -250,8 +287,14 @@ mod tests {
         let source = "set_tool_result(\"Hello, \" + name + \"!\");";
         rt.register_tool("greet", source).expect("register failed");
 
-        let result = rt.call_tool("greet", r#"{"name": "Java"}"#).expect("call failed");
-        assert!(result.contains("Hello, Java!"), "unexpected result: {}", result);
+        let result = rt
+            .call_tool("greet", r#"{"name": "Java"}"#)
+            .expect("call failed");
+        assert!(
+            result.contains("Hello, Java!"),
+            "unexpected result: {}",
+            result
+        );
 
         rt.destroy().unwrap();
     }

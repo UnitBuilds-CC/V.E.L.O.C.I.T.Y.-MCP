@@ -46,7 +46,10 @@ impl Transport for ShmemTransport {
         let frame = nda_codec::build_nda_request(method_code, &id, &params)?;
 
         let response_bytes = {
-            let mut guard = self.buffer.lock().map_err(|e| Error::SharedMemory(format!("lock: {}", e)))?;
+            let mut guard = self
+                .buffer
+                .lock()
+                .map_err(|e| Error::SharedMemory(format!("lock: {}", e)))?;
             let buf = guard.as_mut().ok_or(Error::ConnectionClosed)?;
             buf.send_raw(&frame)?
         };
@@ -86,7 +89,10 @@ impl Transport for ShmemTransport {
 
     async fn close(&self) -> Result<()> {
         self.closed.store(true, Ordering::Release);
-        let mut guard = self.buffer.lock().map_err(|e| Error::SharedMemory(format!("lock: {}", e)))?;
+        let mut guard = self
+            .buffer
+            .lock()
+            .map_err(|e| Error::SharedMemory(format!("lock: {}", e)))?;
         if let Some(buf) = guard.take() {
             drop(buf);
         }
