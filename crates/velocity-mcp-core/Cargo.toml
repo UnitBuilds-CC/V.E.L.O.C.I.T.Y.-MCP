@@ -8,7 +8,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP"
 homepage = "https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP"
 documentation = "https://docs.rs/velocity-mcp-core"
-keywords = ["mcp", "model-context-protocol", "wasm", "json-rpc", "protocol"]
+keywords = ["mcp", "wasm", "json-rpc", "protocol", "ai"]
 categories = ["web-programming", "no-std", "wasm"]
 readme = "../../README.md"
 

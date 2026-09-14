@@ -8,29 +8,33 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP"
 homepage = "https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP"
 documentation = "https://docs.rs/velocity_mcp"
-keywords = ["mcp", "model-context-protocol", "ai", "llm", "server"]
+keywords = ["mcp", "ai", "llm", "server", "protocol"]
 categories = ["web-programming", "development-tools"]
 readme = "README.md"
-include = [
-    "src/**",
-    "tests/**",
-    "benches/**",
-    "examples/**",
-    "plugins/**",
-    "docs/**",
-    "README.md",
-    "CHANGELOG.md",
-    "LICENSE",
-    "LICENSE-APACHE",
-    "LICENSE-MIT",
-]
 exclude = [
-    "bench_nodejs/**",
-    "bench_tools/**",
-    "bench_nda/**",
-    "sdk/**",
-    ".qoder/**",
-    ".github/**",
+    # workspace members package separately
+    "macros",
+    "client",
+    "crates",
+    # benchmarks, SDKs, and deploy tooling (500MB+ of non-crate content)
+    "bench_tools",
+    "bench_nodejs",
+    "bench_nda",
+    "sdk",
+    "deploy",
+    "scripts",
+    # test scratch dirs
+    "test_nda_dir",
+    "test_registry_search",
+    "test_registry_tree",
+    "test_registry_list_dir",
+    # infra and tooling config
+    ".github",
+    ".qoder",
+    "wasmer.toml",
+    "app.yaml",
+    "bench_results_core5.txt",
+    "bench_nda_run.txt",
 ]
 
 [workspace]

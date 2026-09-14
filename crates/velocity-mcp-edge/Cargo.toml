@@ -8,7 +8,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP"
 homepage = "https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP"
 documentation = "https://docs.rs/velocity-mcp-edge"
-keywords = ["mcp", "model-context-protocol", "wasmer", "edge", "wasm"]
+keywords = ["mcp", "wasmer", "edge", "wasm", "serverless"]
 categories = ["web-programming", "wasm"]
 readme = "../../README.md"
 
