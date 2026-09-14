@@ -177,7 +177,7 @@ Deletes a specific session.
 
 ### MCP Endpoint (JSON-RPC)
 
-**Endpoint:** `POST /mcp`
+**Endpoint:** `POST /v1/mcp`
 
 Main JSON-RPC endpoint for MCP protocol.
 
@@ -230,7 +230,7 @@ Authorization: Bearer <api-key>  # If authentication enabled
 
 ### Batch Requests
 
-**Endpoint:** `POST /mcp/batch`
+**Endpoint:** `POST /v1/mcp/batch`
 
 Process multiple JSON-RPC requests in a single HTTP request.
 
@@ -274,7 +274,7 @@ Process multiple JSON-RPC requests in a single HTTP request.
 
 ### Streamable HTTP
 
-**Endpoint:** `POST /mcp/stream`
+**Endpoint:** `POST /v1/mcp/stream`
 
 Stream JSON-RPC responses via Server-Sent Events.
 
@@ -755,7 +755,7 @@ Include the API key in the `Authorization` header:
 
 ```bash
 curl -H "Authorization: Bearer your-secret-key" \
-     http://localhost:3000/mcp \
+     http://localhost:3000/v1/mcp \
      -d '{"jsonrpc":"2.0","method":"ping","id":1}'
 ```
 
@@ -1149,7 +1149,7 @@ Convert a JSON tool to NDA format for 2.8x faster parsing (measured).
 
 **1. Initialize:**
 ```bash
-curl -X POST http://localhost:3000/mcp \
+curl -X POST http://localhost:3000/v1/mcp \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
@@ -1165,7 +1165,7 @@ curl -X POST http://localhost:3000/mcp \
 
 **2. Send initialized notification:**
 ```bash
-curl -X POST http://localhost:3000/mcp \
+curl -X POST http://localhost:3000/v1/mcp \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
@@ -1175,7 +1175,7 @@ curl -X POST http://localhost:3000/mcp \
 
 **3. List tools:**
 ```bash
-curl -X POST http://localhost:3000/mcp \
+curl -X POST http://localhost:3000/v1/mcp \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
@@ -1186,7 +1186,7 @@ curl -X POST http://localhost:3000/mcp \
 
 **4. Call a tool:**
 ```bash
-curl -X POST http://localhost:3000/mcp \
+curl -X POST http://localhost:3000/v1/mcp \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",

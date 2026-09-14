@@ -23,7 +23,7 @@ import { McpClient, HttpTransport } from '@velocity-mcp/client';
 
 async function main() {
   // Connect via HTTP
-  const transport = new HttpTransport('http://localhost:3000/mcp', {
+  const transport = new HttpTransport('http://localhost:3000/v1/mcp', {
     apiKey: 'your-api-key', // Optional
     timeout: 30000 // Optional, in milliseconds
   });
@@ -271,7 +271,7 @@ The SDK is fully async using Promises:
 
 ```typescript
 async function main() {
-  const client = new McpClient(new HttpTransport('http://localhost:3000/mcp'));
+  const client = new McpClient(new HttpTransport('http://localhost:3000/v1/mcp'));
   await client.initialize();
   
   // Make multiple concurrent requests

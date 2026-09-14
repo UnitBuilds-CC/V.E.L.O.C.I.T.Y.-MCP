@@ -10,7 +10,7 @@ Example:
 
     async def main():
         # Connect via HTTP
-        transport = HttpTransport("http://localhost:3000/mcp", api_key="your-key")
+        transport = HttpTransport("http://localhost:3000/v1/mcp", api_key="your-key")
         client = McpClient(transport)
         
         # Initialize connection

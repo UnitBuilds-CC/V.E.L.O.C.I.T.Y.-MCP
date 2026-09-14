@@ -32,7 +32,7 @@ class HttpTransport(Transport):
         Initialize HTTP transport.
         
         Args:
-            url: MCP server URL (e.g., "http://localhost:3000/mcp")
+            url: MCP server URL (e.g., "http://localhost:3000/v1/mcp")
             api_key: Optional API key for authentication
             timeout: Request timeout in seconds
         """

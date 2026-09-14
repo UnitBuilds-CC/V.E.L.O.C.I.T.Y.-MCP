@@ -44,7 +44,7 @@ Run VELOCITY-MCP as an HTTP server. Demonstrates:
 - Health: http://localhost:3000/health
 - Performance: http://localhost:3000/performance
 - Metrics: http://localhost:3000/metrics
-- MCP: http://localhost:3000/mcp (POST)
+- MCP: http://localhost:3000/v1/mcp (POST)
 
 ### 3. File Operations (`file-operations.sh`)
 
@@ -126,7 +126,7 @@ EOF
 ./velocity_mcp --mode http --addr 127.0.0.1:3000 &
 
 # Make requests
-curl -X POST http://127.0.0.1:3000/mcp \
+curl -X POST http://127.0.0.1:3000/v1/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"tools/call","params":{...},"id":1}'
 

@@ -120,7 +120,7 @@ When running in HTTP mode, any HTTP client can connect:
 ./velocity_mcp --mode http --addr 0.0.0.0:3000
 
 # Send a JSON-RPC request
-curl -X POST http://localhost:3000/mcp \
+curl -X POST http://localhost:3000/v1/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
 ```

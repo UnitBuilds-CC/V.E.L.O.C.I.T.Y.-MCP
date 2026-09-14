@@ -26,7 +26,7 @@ import (
 func main() {
     // Create HTTP transport
     transport := velocity_mcp.NewHttpTransport(
-        "http://localhost:3000/mcp",
+        "http://localhost:3000/v1/mcp",
         "your-api-key", // Optional
         30*time.Second,
     )
@@ -128,7 +128,7 @@ HTTP transport for connecting to MCP servers over HTTP.
 
 ```go
 transport := velocity_mcp.NewHttpTransport(
-    "http://localhost:3000/mcp", // URL
+    "http://localhost:3000/v1/mcp", // URL
     "your-api-key",              // API key (optional)
     30*time.Second,              // Timeout
 )

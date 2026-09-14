@@ -68,7 +68,7 @@ use velocity_mcp_client::{McpClient, HttpTransport};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create HTTP transport
     let transport = HttpTransport::new(
-        "http://localhost:3000/mcp",
+        "http://localhost:3000/v1/mcp",
         Some("your-api-key".to_string())
     )?;
     let mut client = McpClient::new(transport);
@@ -128,7 +128,7 @@ let transport = StdioTransport::new("velocity_mcp", &["--mode", "stdio"])?;
 Communicates with the server via HTTP POST requests.
 
 ```rust
-let transport = HttpTransport::new("http://localhost:3000/mcp", Some("api-key".to_string()))?;
+let transport = HttpTransport::new("http://localhost:3000/v1/mcp", Some("api-key".to_string()))?;
 ```
 
 ### Error Handling

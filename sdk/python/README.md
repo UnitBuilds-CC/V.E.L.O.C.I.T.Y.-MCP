@@ -26,7 +26,7 @@ from velocity_mcp_client import McpClient, HttpTransport
 async def main():
     # Connect via HTTP
     transport = HttpTransport(
-        url="http://localhost:3000/mcp",
+        url="http://localhost:3000/v1/mcp",
         api_key="your-api-key",  # Optional
         timeout=30.0
     )
@@ -110,7 +110,7 @@ HTTP transport for connecting to MCP servers over HTTP.
 
 ```python
 HttpTransport(
-    url="http://localhost:3000/mcp",  # Required
+    url="http://localhost:3000/v1/mcp",  # Required
     api_key="your-api-key",           # Optional
     timeout=30.0                       # Optional, seconds
 )
@@ -244,7 +244,7 @@ import asyncio
 from velocity_mcp_client import McpClient, HttpTransport
 
 async def main():
-    async with HttpTransport("http://localhost:3000/mcp") as transport:
+    async with HttpTransport("http://localhost:3000/v1/mcp") as transport:
         client = McpClient(transport)
         await client.initialize()
         

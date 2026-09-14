@@ -9,7 +9,7 @@
  * 
  * async function main() {
  *   // Connect via HTTP
- *   const transport = new HttpTransport('http://localhost:3000/mcp', {
+ *   const transport = new HttpTransport('http://localhost:3000/v1/mcp', {
  *     apiKey: 'your-api-key'
  *   });
  *   const client = new McpClient(transport);
