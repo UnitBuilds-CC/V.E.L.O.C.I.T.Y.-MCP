@@ -4180,7 +4180,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "velocity-mcp-client"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "async-trait",
  "memmap2 0.9.11",
@@ -4225,7 +4225,7 @@ dependencies = [
 
 [[package]]
 name = "velocity_mcp"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "aes-gcm",
  "axum 0.7.9",

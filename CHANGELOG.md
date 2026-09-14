@@ -49,7 +49,7 @@ Existing native deployments continue to work without modification. The `velocity
 
 ---
 
-## [Unreleased] — Binary Protocol & WASM Optimization
+## [3.2.0] — 2026-09-14 — Binary Protocol & WASM Optimization
 
 ### Added
 

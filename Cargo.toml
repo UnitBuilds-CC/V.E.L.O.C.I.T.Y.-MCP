@@ -1,6 +1,6 @@
 [package]
 name = "velocity_mcp"
-version = "3.1.0"
+version = "3.2.0"
 edition = "2021"
 authors = ["UnitBuilds <ian@unitbuilds.com>"]
 description = "A high-performance, zero-allocation Model Context Protocol (MCP) server in Rust"
@@ -11,6 +11,27 @@ documentation = "https://docs.rs/velocity_mcp"
 keywords = ["mcp", "model-context-protocol", "ai", "llm", "server"]
 categories = ["web-programming", "development-tools"]
 readme = "README.md"
+include = [
+    "src/**",
+    "tests/**",
+    "benches/**",
+    "examples/**",
+    "plugins/**",
+    "docs/**",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+]
+exclude = [
+    "bench_nodejs/**",
+    "bench_tools/**",
+    "bench_nda/**",
+    "sdk/**",
+    ".qoder/**",
+    ".github/**",
+]
 
 [workspace]
 members = [".", "macros", "client", "crates/velocity-mcp-core", "crates/velocity-mcp-edge"]
