@@ -12,8 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`VELOCITY_WASM_INSTRUCTION_LIMIT` env var**: Overrides `wasm_runtimes.instruction_limit` at startup (`0` disables metering — not recommended for production).
+- **Metering & caching benchmark harness** (`cargo bench --bench metering_cache_bench`): measures module-compile vs cached-deserialize cost and per-call metering overhead through the real dispatch path. Measured (Windows, Wasmer/Cranelift, 10M instruction limit): module-cache cold start 235 ms → 15.3 ms (**15.4x** on the Lua cache path); metering roughly doubles compile time (+117%) and per-call latency on minimal tools (+145% QuickJS, +158% Lua through `WasmRuntimeRegistry::call_tool`), diluted to **~+19%** end-to-end through the full JSON-RPC stdio stack.
 
 ### Changed
+
+- **Module cache key includes the instruction limit**: metering is baked into the compiled module at compile time, so the cache key now hashes the limit alongside the bytecode. Previously a module compiled under one limit could be deserialized for a request using a different limit, silently misapplying (or dropping) metering.
 
 - **WASM instruction limit now enforced**: The `instruction_limit` setting in `[wasm_runtimes]` config (default 10,000,000) was previously parsed but never applied. It now drives wasmer-middlewares metering on every plugin WASM runtime (all 12 languages), with a bypass for the internal benchmark harness. Metering traps are classified as resource-limit errors with actionable guidance, including at runtime creation (interpreter bootstrap consumes metered instructions too — QuickJS needs more than 1,000,000 instructions just to initialize).
 - **Per-call budget reset**: Metered instruction budgets deplete cumulatively across calls on persistent interpreter instances. Budgets are now reset before tool registration and before each tool call, so every call starts with a fresh allowance.

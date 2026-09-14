@@ -72,7 +72,7 @@ For each runtime, you'll see:
 
 Go shows two measurements:
 - **Per-call (no cache)**: Full compilation + instantiation per call (production path without caching)
-- **Cached module**: Module compiled once, reused for subsequent calls (20x+ faster cold starts)
+- **Cached module**: Module compiled once, reused for subsequent calls (~15x faster cold starts via the production module cache; see `benches/metering_cache_bench.rs`)
 
 ### Transport Protocol Section
 
@@ -145,6 +145,26 @@ TinyGo demonstrates the power of module caching:
 - **Speedup**: 670x improvement
 
 The same principle applies to all WASM runtimes - if you can keep the compiled module in memory and reuse it, cold start costs disappear.
+
+### Metering & Module-Cache Measurements (production paths)
+
+Measured with `cargo bench --bench metering_cache_bench` (release profile, Windows, Wasmer/Cranelift):
+
+| Metric | QuickJS | Lua |
+|--------|---------|-----|
+| Compile (unmetered) | 471 ms | 206 ms |
+| Compile (metered, 10M limit) | 1028 ms (+118%) | 445 ms (+117%) |
+| Deserialize cached module | 33.6 ms (14.0x) | 11.5 ms (17.9x) |
+| Runtime cold start, cache hit | n/a (no cache path) | 15.3 ms (15.4x vs 235 ms compile) |
+| Hot call, metered | 28.4 µs mean | 12.2 µs mean |
+| Hot call, unmetered | 11.6 µs mean | 4.7 µs mean |
+
+Key findings:
+- **Module caching is worth ~15x on cold start** for runtimes that use the cache path (Lua; the cache covers runtimes built through `create_wasm_instance`).
+- **Metering roughly doubles compile time** (~+117% from instrumentation) and **roughly doubles per-call latency on minimal tools** (+145% QuickJS, +158% Lua through `WasmRuntimeRegistry::call_tool`). Through the full JSON-RPC stdio stack the dilution brings E2E overhead to ~+19% (208 µs vs 175 µs mean on `js_string_transform`).
+- Metering is enforced at compile time — the instruction limit is part of the module cache key, so cached modules always match the active limit.
+
+Scope note: `MODULE_CACHE` is currently consulted only by the Lua runtime construction path; other runtimes compile directly on init. Wiring them through the same cache is tracked as follow-up work.
 
 ## Extending the Benchmark
 

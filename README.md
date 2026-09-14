@@ -178,7 +178,7 @@ Zero-copy TLV parsing with SHA-256 Merkle integrity verification on every frame:
 - 7 WASM language runtimes (JavaScript, TypeScript, Python, Lua, Ruby, Rust, Go)
 - Client SDKs in 4 languages (Rust, Python, TypeScript, Go)
 - Type-safe tool registration via proc macros
-- Wasmer-powered execution: metering middleware, module caching (20x faster cold starts)
+- Wasmer-powered execution: metering middleware (configurable instruction limit), module caching (~15x faster cold starts, measured on the Lua cache path)
 
 ### Built-in Tools
 
