@@ -157,6 +157,10 @@ harness = false
 name = "comprehensive_benchmark"
 harness = false
 
+[[bench]]
+name = "metering_cache_bench"
+harness = false
+
 [profile.release]
 opt-level = 3
 lto = true
