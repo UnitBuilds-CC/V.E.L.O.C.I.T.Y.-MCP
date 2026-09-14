@@ -1,5 +1,7 @@
 # Multi-stage build for VELOCITY-MCP
-FROM rust:1.85-bookworm as builder
+# Floating stable toolchain: Cargo.lock pins crate versions, and a hard rustc
+# pin breaks whenever a locked dependency raises its rust-version (1.85 -> 1.88 did).
+FROM rust:1-bookworm AS builder
 
 # Set working directory
 WORKDIR /build

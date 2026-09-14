@@ -4242,6 +4242,7 @@ dependencies = [
  "http-body-util",
  "hyper 1.11.1",
  "hyper-util",
+ "libc",
  "lru",
  "memmap2 0.9.11",
  "nix 0.28.0",

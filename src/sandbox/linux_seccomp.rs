@@ -33,7 +33,7 @@
 //! a stub implementation is provided that returns success without applying filters.
 
 #[cfg(target_os = "linux")]
-use seccompiler::{BpfProgram, SeccompAction, SeccompFilter, SeccompRule};
+use seccompiler::{BpfProgram, SeccompAction, SeccompFilter};
 #[cfg(target_os = "linux")]
 use std::convert::TryInto;
 
@@ -57,6 +57,8 @@ use std::convert::TryInto;
 #[cfg(target_os = "linux")]
 pub fn apply_seccomp_filters() -> Result<(), String> {
     // Define allowed syscalls for basic plugin operation
+    // (mut is required when the wasm-networking feature extends the list below)
+    #[allow(unused_mut)]
     let mut allowed_syscalls = vec![
         // Basic I/O
         libc::SYS_read,
@@ -130,8 +132,9 @@ pub fn apply_seccomp_filters() -> Result<(), String> {
         libc::SYS_epoll_wait,
         libc::SYS_epoll_pwait,
         // Wait for child processes
+        // NOTE: SYS_waitpid does not exist on x86_64/aarch64 (i386 only);
+        // wait4 is what glibc's waitpid maps to on modern architectures.
         libc::SYS_wait4,
-        libc::SYS_waitpid,
         // Memory mapping
         libc::SYS_mlock,
         libc::SYS_munlock,

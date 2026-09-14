@@ -121,6 +121,7 @@ wasmer-middlewares = "5"
 [target.'cfg(target_os = "linux")'.dependencies]
 seccompiler = "0.4"
 nix = { version = "0.28", features = ["process", "signal"] }
+libc = "0.2"
 
 [dev-dependencies]
 proptest = "1"

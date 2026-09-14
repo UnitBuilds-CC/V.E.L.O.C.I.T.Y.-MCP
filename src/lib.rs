@@ -33,6 +33,9 @@ pub mod oauth2;
 pub mod observability;
 /// Plugin system for dynamic tool loading.
 pub mod plugins;
+/// `__rust_probestack` compatibility shim for wasmer on Linux x86_64 (no-op elsewhere).
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod probestack;
 /// JSON-RPC stdio handler and shared memory protocol loop.
 pub mod protocol;
 /// Token bucket rate limiter for MCP tool calls.

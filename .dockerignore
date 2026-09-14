@@ -1,0 +1,39 @@
+# Version control and CI
+.git
+.github
+
+# Local tooling and workspace metadata
+.qoder
+.vscode
+.idea
+
+# Build artifacts
+target
+**/target
+
+# Benchmarks, SDKs, and docs (not needed inside the image)
+# NOTE: benches must stay in the context — Cargo.toml declares [[bench]] targets
+# and cargo validates their paths at manifest parse time.
+bench_tools
+bench_nda
+bench_nodejs
+bench_results_core5.txt
+bench_nda_run.txt
+sdk
+docs
+tests
+examples
+deploy
+scripts
+
+# Test scratch directories
+test_nda_dir
+test_registry_search
+test_registry_tree
+test_registry_list_dir
+
+# Platform configs
+wasmer.toml
+app.yaml
+Dockerfile
+docker-compose.yml
