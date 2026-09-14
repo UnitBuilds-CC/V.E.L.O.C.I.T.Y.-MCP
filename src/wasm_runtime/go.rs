@@ -8,13 +8,17 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::path::PathBuf;
 use std::process::Command;
-use wasmer::{Instance, Module, Store};
+use wasmer::{FunctionEnv, Instance, Module, Store};
 
+use super::wasi::{build_wasi_imports, WasiEnv};
 use super::WasmRuntime;
 
-/// Cached compiled Go WASM modules per tool
+/// Cached compiled Go WASM modules per tool.
+/// The engine is kept so per-call Stores can share the module's engine
+/// (Wasmer rejects instantiation when they differ).
 struct CompiledGoTool {
     module: Module,
+    engine: wasmer::Engine,
 }
 
 pub struct GoWasmRuntime {
@@ -169,10 +173,15 @@ impl WasmRuntime for GoWasmRuntime {
             }
         }
 
-        // Compile Go source to WASM
-        let wasm_bytes = self
-            .compile_go_to_wasm(source, name)
-            .map_err(|e| format!("Compilation failed: {}", e))?;
+        // "source" can be either:
+        // 1. A file path to a pre-compiled .wasm module (like the Rust runtime)
+        // 2. Inline Go source, compiled to WASM via TinyGo at load time
+        let wasm_bytes = if std::path::Path::new(source).exists() {
+            std::fs::read(source)?
+        } else {
+            self.compile_go_to_wasm(source, name)
+                .map_err(|e| format!("Compilation failed: {}", e))?
+        };
 
         // Create WASM module
         let engine = wasmer::Engine::from(wasmer::Cranelift::default());
@@ -181,7 +190,7 @@ impl WasmRuntime for GoWasmRuntime {
 
         // Cache the compiled module
         self.compiled_tools
-            .insert(name.to_string(), CompiledGoTool { module });
+            .insert(name.to_string(), CompiledGoTool { module, engine });
         self.tools.insert(name.to_string(), source.to_string());
 
         Ok(())
@@ -194,45 +203,56 @@ impl WasmRuntime for GoWasmRuntime {
             .get(name)
             .ok_or_else(|| format!("Tool '{}' not registered or compilation failed", name))?;
 
-        // Create a fresh store and instance for each call (isolated execution)
-        let engine = wasmer::Engine::from(wasmer::Cranelift::default());
-        let mut store = Store::new(engine);
-
         // Clone the module for this execution
         let module = tool.module.clone();
 
-        // Create imports (minimal WASI stubs for now)
-        let imports = wasmer::imports! {};
+        // Create a fresh store and instance for each call (isolated execution).
+        // The store must share the module's engine or Wasmer rejects instantiation.
+        let mut store = Store::new(tool.engine.clone());
 
-        // Instantiate the module
+        // TinyGo WASI modules import wasi_snapshot_preview1 — instantiation
+        // fails without these imports.
+        let env = FunctionEnv::new(&mut store, WasiEnv::new());
+        let imports = build_wasi_imports(&mut store, &env);
         let instance = Instance::new(&mut store, &module, &imports)?;
 
-        // Get exported functions
-        let prepare_call = instance.exports.get_function("prepare_call")?;
-        let tool_execute = instance.exports.get_function("tool_execute")?;
-        let memory = instance.exports.get_memory("memory")?;
+        let memory = instance.exports.get_memory("memory")?.clone();
+        env.as_mut(&mut store).memory = Some(memory.clone());
 
-        // Call prepare_call (no-op for Go, but required for ABI compatibility)
-        prepare_call.call(&mut store, &[])?;
+        // _start initializes the TinyGo runtime (heap, GC) — required before malloc
+        if let Ok(start_fn) = instance.exports.get_function("_start") {
+            let _ = start_fn.call(&mut store, &[]);
+        }
 
-        // Allocate memory for input JSON in WASM memory
+        // No-op for Go, exported for ABI compatibility with the Rust tool
+        if let Ok(prepare_call) = instance.exports.get_function("prepare_call") {
+            let _ = prepare_call.call(&mut store, &[]);
+        }
+
+        // Allocate input JSON in guest memory: malloc when exported (TinyGo
+        // always exports it), else fall back to a fixed offset past the data
+        // segment for modules without malloc.
         let input_bytes = args_json.as_bytes();
         let input_len = input_bytes.len() as i32;
 
-        // Use a fixed offset in WASM memory (after first page)
-        let memory_offset = 65536u64;
-
-        // Ensure memory is large enough
-        let current_pages = memory.view(&store).size();
-        let needed_pages = ((memory_offset + input_bytes.len() as u64) / 65536 + 1) as u32;
-        if current_pages.0 < needed_pages {
-            memory.grow(&mut store, wasmer::Pages(needed_pages - current_pages.0))?;
-        }
+        let memory_offset: u64 = if let Ok(malloc_fn) = instance.exports.get_function("malloc") {
+            let results = malloc_fn.call(&mut store, &[wasmer::Value::I32(input_len)])?;
+            results[0].unwrap_i32() as u32 as u64
+        } else {
+            let offset = 65536u64;
+            let current_pages = memory.view(&store).size();
+            let needed_pages = ((offset + input_bytes.len() as u64) / 65536 + 1) as u32;
+            if current_pages.0 < needed_pages {
+                memory.grow(&mut store, wasmer::Pages(needed_pages - current_pages.0))?;
+            }
+            offset
+        };
 
         // Write input to WASM memory
         memory.view(&store).write(memory_offset, input_bytes)?;
 
         // Call tool_execute(ptr, length)
+        let tool_execute = instance.exports.get_function("tool_execute")?;
         let result_value = tool_execute.call(
             &mut store,
             &[

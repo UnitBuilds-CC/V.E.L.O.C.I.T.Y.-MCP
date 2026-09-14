@@ -18,7 +18,7 @@
       "executor": {
         "executor_type": "wasm",
         "language": "go",
-        "source_file": "bench_tools/tinygo_wasm/tool.wasm",
+        "source": "bench_tools/tinygo_wasm/tool.wasm",
         "timeout": 5
       }
     }

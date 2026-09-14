@@ -98,7 +98,7 @@ If TinyGo installation is not feasible, consider:
 
 1. **Use Python/Lua/JS for dynamic tools**: These runtimes compile source at runtime and support truly dynamic tool definitions without recompilation.
 
-2. **Pre-compile separate binaries**: Create separate `.wasm` files for each tool (e.g., `go_text_stats.wasm`, `analyze_logs_go.wasm`) and reference them via `source_file` in the plugin manifest.
+2. **Pre-compile separate binaries**: Create separate `.wasm` files for each tool (e.g., `go_text_stats.wasm`, `analyze_logs_go.wasm`) and reference them via `source` in the plugin manifest (a file path is detected and loaded directly, same as the Rust runtime).
 
 3. **Use native Rust tools**: For maximum performance and no compilation overhead, implement tools as native Rust functions.
 
