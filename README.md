@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/actions/workflows/ci.yml/badge.svg)](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/actions/workflows/ci.yml)
 [![Version](https://img.shields.io/badge/version-3.2.0-blue.svg)](https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/releases)
+[![crates.io](https://img.shields.io/crates/v/velocity_mcp.svg)](https://crates.io/crates/velocity_mcp)
 [![Edge Deploy](https://img.shields.io/badge/edge-ready-brightgreen.svg)](docs/edge_user_guide.md)
 [![License](https://img.shields.io/badge/license-MIT%20|%20Apache%202.0-green.svg)](LICENSE)
 
@@ -203,6 +204,14 @@ Zero-copy TLV parsing with SHA-256 Merkle integrity verification on every frame:
 ---
 
 ## Installation
+
+### From crates.io
+
+```bash
+cargo install velocity_mcp
+```
+
+Published crates: [velocity_mcp](https://crates.io/crates/velocity_mcp) (server) · [velocity-mcp-core](https://crates.io/crates/velocity-mcp-core) (protocol core, WASM-compatible) · [velocity_mcp_macros](https://crates.io/crates/velocity_mcp_macros) (`#[mcp_tool]` proc macros) · [velocity-mcp-client](https://crates.io/crates/velocity-mcp-client) (Rust client SDK) · [velocity-mcp-edge](https://crates.io/crates/velocity-mcp-edge) (Wasmer Edge target)
 
 ### From Binary
 
