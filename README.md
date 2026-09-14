@@ -33,30 +33,60 @@ Configure your MCP client to point at it. Done.
 
 ## Performance
 
-All numbers measured 2026-09-13 on i5-14400F, release build. Transport benchmark harness needs rebuilding for Core 5 210H comparison.
+All numbers measured 2026-09-13 on Core 5 210H, release build.
 
 ### NDA/shmem Transport
 
 | Method | Latency | Throughput | vs JSON/stdio |
 |--------|---------|------------|---------------|
-| ping | 2 µs | 445K req/s | 7.8x faster |
-| tools/list (17 tools) | 7 µs | 137K req/s | 46.5x faster |
-| tools/call (64B) | 3 µs | 314K req/s | 7.3x faster |
+| ping | 1 µs | 800K req/s | 57.1x faster |
+| tools/list (40 tools) | 7 µs | 138K req/s | 87.6x faster |
+| tools/call (64B) | 3 µs | 335K req/s | 15.2x faster |
 
-### 8-Pipeline Comparison
+### 8-Pipeline Comparison (warm avg / P50 / P95 / P99 / throughput)
 
-| Pipeline | Ping | tools/list | tools/call |
-|----------|------|------------|------------|
-| **NDA/shmem** | **2 µs** | **7 µs** | **3 µs** |
-| JSON/shmem | 3 µs | 59 µs | 8 µs |
-| NDA/stdio | 17 µs | 62 µs | 24 µs |
-| JSON/stdio | 17 µs | 202 µs | 23 µs |
-| Node/stdio | 29 µs | 80 µs | 29 µs |
-| JSON/HTTP | 62 µs | 172 µs | 58 µs |
-| Node/HTTP | 59 µs | 123 µs | 82 µs |
-| NDA/HTTP | 65 µs | 66 µs | 57 µs |
+#### Ping
 
-Transport is the dominant factor. Shared memory is an order of magnitude faster than stdio. Binary encoding (NDA) saves 1.4x-8.1x over JSON on the same transport.
+| Pipeline | Avg | P50 | P95 | P99 | Throughput |
+|----------|-----|-----|-----|-----|------------|
+| **NDA/shmem** | **1 µs** | **1 µs** | **1 µs** | **2 µs** | **800K r/s** |
+| JSON/shmem | 12 µs | 12 µs | 22 µs | 51 µs | 80K r/s |
+| NDA/stdio | 29 µs | 22 µs | 59 µs | 83 µs | 34K r/s |
+| JSON/stdio | 71 µs | 65 µs | 117 µs | 149 µs | 14K r/s |
+| Node/stdio | 55 µs | 37 µs | 119 µs | 220 µs | 18K r/s |
+| JSON/HTTP* | 134 µs | 103 µs | 283 µs | 403 µs | 7.4K r/s |
+| Node/HTTP | 92 µs | 79 µs | 169 µs | 261 µs | 11K r/s |
+| NDA/HTTP* | 119 µs | 96 µs | 245 µs | 377 µs | 8.4K r/s |
+
+#### tools/list (40 tools)
+
+| Pipeline | Avg | P50 | P95 | P99 | Throughput |
+|----------|-----|-----|-----|-----|------------|
+| **NDA/shmem** | **7 µs** | **7 µs** | **8 µs** | **10 µs** | **138K r/s** |
+| JSON/shmem | 304 µs | 274 µs | 568 µs | 709 µs | 3.3K r/s |
+| NDA/stdio | 167 µs | 139 µs | 302 µs | 364 µs | 6.0K r/s |
+| JSON/stdio | 635 µs | 593 µs | 973 µs | 1203 µs | 1.6K r/s |
+| Node/stdio | 117 µs | 100 µs | 196 µs | 296 µs | 8.6K r/s |
+| JSON/HTTP* | 606 µs | 548 µs | 1007 µs | 1378 µs | 1.7K r/s |
+| Node/HTTP | 106 µs | 91 µs | 177 µs | 268 µs | 9.4K r/s |
+| NDA/HTTP* | 113 µs | 94 µs | 234 µs | 357 µs | 8.8K r/s |
+
+#### tools/call (64B payload)
+
+| Pipeline | Avg | P50 | P95 | P99 | Throughput |
+|----------|-----|-----|-----|-----|------------|
+| **NDA/shmem** | **3 µs** | **3 µs** | **4 µs** | **7 µs** | **335K r/s** |
+| JSON/shmem | 18 µs | 15 µs | 34 µs | 86 µs | 55K r/s |
+| NDA/stdio | 30 µs | 24 µs | 58 µs | 76 µs | 33K r/s |
+| JSON/stdio | 45 µs | 38 µs | 83 µs | 125 µs | 22K r/s |
+| Node/stdio | 43 µs | 40 µs | 63 µs | 142 µs | 23K r/s |
+| JSON/HTTP* | 151 µs | 123 µs | 321 µs | 542 µs | 6.6K r/s |
+| Node/HTTP | 77 µs | 64 µs | 139 µs | 244 µs | 13K r/s |
+| NDA/HTTP* | 116 µs | 87 µs | 254 µs | 337 µs | 8.6K r/s |
+
+*Rust HTTP pipelines include 4 Axum middleware layers (auth, rate-limit, request-logger, request-validator) + CORS + body-limit. Node/HTTP is a bare `http.createServer` with no middleware. The ~25-40µs gap on ping between Node/HTTP and JSON/HTTP is entirely middleware overhead — server-side dispatch and TCP loopback are identical. On tools/list the gap nearly vanishes because response serialization dominates.
+
+Transport is the dominant factor. Shared memory is an order of magnitude faster than stdio. Binary encoding (NDA) saves 1.5x-41.9x over JSON on the same transport.
 
 ### WASM Runtime Latency
 
