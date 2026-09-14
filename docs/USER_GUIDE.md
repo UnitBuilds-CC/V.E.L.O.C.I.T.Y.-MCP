@@ -731,6 +731,14 @@ database_path = "/path/to/resources.db"
 
 [features]
 nda_merkle = true   # NDA frame Merkle integrity verification (disable for max throughput on trusted transports)
+
+[wasm_runtimes]
+# Per-call instruction limit for WASM plugin runtimes (metering middleware).
+# Default: 10,000,000 (~1-5 seconds of computation). Set to 0 to disable metering
+# entirely — NOT recommended for production since runaway tools would loop forever.
+# Note: interpreter bootstrap consumes metered instructions too, so very low
+# values trap during runtime creation. QuickJS needs >1,000,000 just to start.
+instruction_limit = 10_000_000
 ```
 
 ### CLI Options
@@ -763,6 +771,7 @@ Example: `cargo build --release --features http,oauth2,observability`
 |----------|-------------|---------|
 | `VELOCITY_CSHARP_PATH` | Path to C# NdaMcpServer.exe (for dynamic tool hosting) | — |
 | `VELOCITY_NDA_MERKLE` | NDA frame Merkle integrity verification (`0`/`false`/`no` to disable) | `1` |
+| `VELOCITY_WASM_INSTRUCTION_LIMIT` | Per-call WASM metering instruction limit (`0` disables metering) | `10000000` |
 | `RUST_LOG` | Log level (`error`, `warn`, `info`, `debug`, `trace`) | `info` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OpenTelemetry collector endpoint | — |
 

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **`VELOCITY_WASM_INSTRUCTION_LIMIT` env var**: Overrides `wasm_runtimes.instruction_limit` at startup (`0` disables metering — not recommended for production).
+
+### Changed
+
+- **WASM instruction limit now enforced**: The `instruction_limit` setting in `[wasm_runtimes]` config (default 10,000,000) was previously parsed but never applied. It now drives wasmer-middlewares metering on every plugin WASM runtime (all 12 languages), with a bypass for the internal benchmark harness. Metering traps are classified as resource-limit errors with actionable guidance, including at runtime creation (interpreter bootstrap consumes metered instructions too — QuickJS needs more than 1,000,000 instructions just to initialize).
+- **Per-call budget reset**: Metered instruction budgets deplete cumulatively across calls on persistent interpreter instances. Budgets are now reset before tool registration and before each tool call, so every call starts with a fresh allowance.
+- **Metering trap recovery**: A metering trap (e.g. an infinite loop hitting the limit) leaves the cached interpreter unusable for subsequent calls. The runtime is now evicted on such errors and rebuilt from the module cache on the next call — self-healing, no server restart needed.
+
+---
+
 ## [3.2.0-edge] — 2026-09-12
 
 ### Added
