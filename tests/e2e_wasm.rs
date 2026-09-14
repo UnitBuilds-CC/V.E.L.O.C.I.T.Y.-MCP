@@ -26,14 +26,20 @@ struct ServerProcess {
 
 impl ServerProcess {
     fn spawn() -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_velocity_mcp"))
-            .args(["--mode", "stdio"])
+        Self::spawn_with_env(&[])
+    }
+
+    fn spawn_with_env(extra_env: &[(&str, &str)]) -> Self {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_velocity_mcp"));
+        cmd.args(["--mode", "stdio"])
             .env("RUST_LOG", "error")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("failed to spawn velocity_mcp binary");
+            .stderr(Stdio::null());
+        for (key, value) in extra_env {
+            cmd.env(key, value);
+        }
+        let mut child = cmd.spawn().expect("failed to spawn velocity_mcp binary");
 
         let stdout = child.stdout.take().unwrap();
         let mut server = ServerProcess {
@@ -242,12 +248,9 @@ fn test_e2e_wasm_call_compiled_runtimes() {
     assert_eq!(result["line_count"], 1, "go result: {}", result);
 }
 
-/// Test that WASM tools exceeding instruction limits produce user-friendly errors.
-/// This verifies the metering error detection and feedback added in task #346.
-///
-/// Note: We can't easily trigger metering in E2E tests since it requires configuring
-/// a very low instruction_limit. Instead, this test verifies the error message format
-/// by checking that normal WASM tools work correctly and return proper error structures.
+/// Generic error-structure check: unknown tools surface execution errors in
+/// result.content (not JSON-RPC errors) with the tool name included.
+/// Metering-specific errors are covered by the two metering tests below.
 #[test]
 fn test_e2e_wasm_error_format() {
     let mut server = ServerProcess::spawn();
@@ -292,4 +295,69 @@ fn test_e2e_wasm_error_format() {
         "Normal WASM tools should still work: {}",
         result
     );
+}
+
+/// Proves VELOCITY_WASM_INSTRUCTION_LIMIT reaches the live server's metered
+/// engines: a limit of 1 is below even the QuickJS bootstrap cost, so the
+/// first tool call must fail with the classified resource-limit message
+/// (covering both the init-trap classification and env-var wiring).
+#[test]
+fn test_e2e_metering_env_var_wired() {
+    let mut server = ServerProcess::spawn_with_env(&[("VELOCITY_WASM_INSTRUCTION_LIMIT", "1")]);
+
+    let call_response = server.request(json!({
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+            "name": "js_string_transform",
+            "arguments": {"action": "upper", "input": "hello"},
+        },
+    }));
+
+    let result = &call_response["result"];
+    assert!(
+        result["isError"].as_bool().unwrap_or(false),
+        "tool call under a 1-instruction budget must fail: {}",
+        call_response
+    );
+
+    let content_text = result["content"][0]["text"].as_str().unwrap_or("");
+    assert!(
+        content_text.contains("exceeded resource limits"),
+        "error should classify as a resource-limit failure: {}",
+        content_text
+    );
+    assert!(
+        content_text.contains("instruction_limit"),
+        "error should point at the instruction_limit config: {}",
+        content_text
+    );
+}
+
+/// Proves per-call budget reset on the live server's cached runtime: at a
+/// 2M-instruction limit, QuickJS bootstrap alone costs between 1M and 2M
+/// (calibrated empirically), so without a per-call reset the cumulative
+/// budget would exhaust within the first few calls. 2000 successful calls
+/// can only happen if every call starts with a fresh budget.
+#[test]
+fn test_e2e_metering_budget_resets_across_calls() {
+    // VELOCITY_RATE_BURST lifts the server's token-bucket limiter (this is a
+    // rapid-fire burst, not a real client pattern).
+    let mut server = ServerProcess::spawn_with_env(&[
+        ("VELOCITY_WASM_INSTRUCTION_LIMIT", "2000000"),
+        ("VELOCITY_RATE_LIMIT", "1000000"),
+        ("VELOCITY_RATE_BURST", "100000"),
+    ]);
+
+    for i in 0..2000 {
+        let result = server.call_tool(
+            "js_string_transform",
+            json!({"action": "upper", "input": "hello"}),
+        );
+        assert_eq!(
+            result["result"], "HELLO",
+            "call {} failed — budget reset is not per-call: {}",
+            i, result
+        );
+    }
 }
