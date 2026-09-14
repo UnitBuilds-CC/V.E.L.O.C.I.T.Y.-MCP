@@ -98,17 +98,25 @@ pub struct WasmRuntimeConfig<'a> {
 
 /// Helper function to create a new WASM runtime instance with common bootstrap logic.
 /// Eliminates duplication across all 12 runtime implementations.
+/// Cache key for MODULE_CACHE. Must include the instruction limit: metering
+/// is baked into the compiled module, so a cached module from a different
+/// limit would silently disable (or misapply) metering on reuse.
+fn module_cache_key(wasm_bytes: &[u8], instruction_limit: Option<u64>) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    wasm_bytes.hash(&mut hasher);
+    instruction_limit.hash(&mut hasher);
+    hasher.finish()
+}
+
 pub fn create_wasm_instance(
     config: WasmRuntimeConfig,
 ) -> Result<(Store, Instance, Memory, FunctionEnv<WasiEnv>), Box<dyn Error>> {
     let engine = build_metered_engine(config.instruction_limit);
 
     // Check module cache first for faster cold starts
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    config.wasm_bytes.hash(&mut hasher);
-    let wasm_hash = hasher.finish();
+    let wasm_hash = module_cache_key(config.wasm_bytes, config.instruction_limit);
 
     let module = {
         let cache = MODULE_CACHE
@@ -587,5 +595,35 @@ mod tests {
             .call(&mut store, &[Value::I32(50)])
             .expect("call must succeed after budget reset");
         assert_eq!(result[0].unwrap_i32(), 1275); // sum(1..=50)
+    }
+
+    /// The cache key must distinguish modules compiled under different metering
+    /// limits — metering is baked in at compile time, so reusing a cached module
+    /// across limits would silently misapply (or drop) metering.
+    #[test]
+    fn test_module_cache_key_separates_instruction_limits() {
+        let bytes_a = b"wasm module bytes a";
+        let bytes_b = b"wasm module bytes b";
+
+        assert_ne!(
+            module_cache_key(bytes_a, None),
+            module_cache_key(bytes_a, Some(1_000_000)),
+            "None (metering off) and a finite limit must not share a cache entry"
+        );
+        assert_ne!(
+            module_cache_key(bytes_a, Some(1_000_000)),
+            module_cache_key(bytes_a, Some(10_000_000)),
+            "different limits must not share a cache entry"
+        );
+        assert_eq!(
+            module_cache_key(bytes_a, Some(1_000_000)),
+            module_cache_key(bytes_a, Some(1_000_000)),
+            "same inputs must yield a stable key"
+        );
+        assert_ne!(
+            module_cache_key(bytes_a, None),
+            module_cache_key(bytes_b, None),
+            "different bytecode must not share a cache entry"
+        );
     }
 }
