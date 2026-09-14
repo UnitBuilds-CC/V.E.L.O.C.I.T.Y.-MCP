@@ -593,7 +593,8 @@ mod tests {
             description: format!("{} description", name),
             documentation: String::new(),
             tags: tags.into_iter().map(|s| s.to_string()).collect(),
-            download_url: format!("https://example.com/{}.zip", id),
+            // Empty download_url: install() skips downloading, keeping tests offline
+            download_url: String::new(),
             checksum: String::new(),
             min_velocity_version: String::new(),
             dependencies: Vec::new(),
