@@ -53,7 +53,7 @@ impl QuickJsRuntime {
     /// Compiles the module, instantiates with WASI imports, but does NOT call
     /// `qjs_init` — that happens in `init()`.
     pub fn new(wasm_bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
-        let engine = wasmer::Engine::from(wasmer::Cranelift::default());
+        let engine = super::build_metered_engine(super::instruction_limit());
         let module = Module::new(&engine, wasm_bytes)?;
         let mut store = Store::new(engine);
 
@@ -643,6 +643,10 @@ impl WasmRuntime for QuickJsRuntime {
         let destroy_fn = self.instance.exports.get_function("qjs_destroy")?;
         destroy_fn.call(&mut self.store, &[])?;
         Ok(())
+    }
+
+    fn reset_instruction_budget(&mut self) {
+        super::reset_instruction_budget(&mut self.store, &self.instance);
     }
 
     fn language(&self) -> &str {

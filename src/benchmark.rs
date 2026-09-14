@@ -14,6 +14,8 @@ use std::time::Instant;
 use tracing::info;
 
 pub fn run_benchmarks() {
+    // Benchmarks measure raw WASM execution; metering overhead is profiled separately.
+    crate::wasm_runtime::set_instruction_limit(None);
     info!("Starting V.E.L.O.C.I.T.Y.-MCP v3.0.0 Performance Benchmark Suite");
     println!("================================================================");
     println!("     V.E.L.O.C.I.T.Y.-MCP v3.0.0 Performance Benchmark Suite");

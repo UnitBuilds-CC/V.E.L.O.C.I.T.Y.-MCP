@@ -180,6 +180,7 @@ pub struct WasmRuntimesConfig {
     /// Global instruction limit for all WASM runtimes (meters execution to prevent infinite loops).
     /// Set to None to disable metering (NOT recommended for production).
     /// Default: 10,000,000 instructions (~1-5 seconds of computation depending on workload).
+    /// Env override: VELOCITY_WASM_INSTRUCTION_LIMIT (set to 0 to disable metering).
     #[serde(default = "default_wasm_instruction_limit")]
     pub instruction_limit: Option<u64>,
 }
@@ -477,6 +478,12 @@ impl ServerConfig {
             self.features.nda_merkle = !matches!(merkle.as_str(), "0" | "false" | "no");
         }
 
+        if let Ok(limit) = std::env::var("VELOCITY_WASM_INSTRUCTION_LIMIT") {
+            if let Ok(n) = limit.trim().parse::<u64>() {
+                self.wasm_runtimes.instruction_limit = if n == 0 { None } else { Some(n) };
+            }
+        }
+
         self
     }
 
@@ -672,6 +679,24 @@ mod tests {
         let config = ServerConfig::default().apply_env_overrides();
         assert!(!config.http.enable_rate_limit);
         std::env::remove_var("VELOCITY_ENABLE_RATE_LIMIT");
+    }
+
+    // Single test (not three) so the shared env var can't race across parallel tests.
+    #[test]
+    fn test_apply_env_overrides_wasm_instruction_limit() {
+        std::env::set_var("VELOCITY_WASM_INSTRUCTION_LIMIT", "5000000");
+        let config = ServerConfig::default().apply_env_overrides();
+        assert_eq!(config.wasm_runtimes.instruction_limit, Some(5_000_000));
+
+        std::env::set_var("VELOCITY_WASM_INSTRUCTION_LIMIT", "0");
+        let config = ServerConfig::default().apply_env_overrides();
+        assert_eq!(config.wasm_runtimes.instruction_limit, None);
+
+        std::env::set_var("VELOCITY_WASM_INSTRUCTION_LIMIT", "not-a-number");
+        let config = ServerConfig::default().apply_env_overrides();
+        assert_eq!(config.wasm_runtimes.instruction_limit, Some(10_000_000));
+
+        std::env::remove_var("VELOCITY_WASM_INSTRUCTION_LIMIT");
     }
 
     #[test]

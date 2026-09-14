@@ -184,7 +184,7 @@ impl WasmRuntime for GoWasmRuntime {
         };
 
         // Create WASM module
-        let engine = wasmer::Engine::from(wasmer::Cranelift::default());
+        let engine = super::build_metered_engine(super::instruction_limit());
         let module = Module::new(&engine, &wasm_bytes)
             .map_err(|e| format!("Failed to compile WASM module: {}", e))?;
 

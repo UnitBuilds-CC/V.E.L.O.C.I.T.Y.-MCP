@@ -41,6 +41,49 @@ pub mod memory_layout {
 static MODULE_CACHE: LazyLock<Mutex<HashMap<u64, Arc<Vec<u8>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Global WASM instruction limit (0 = metering disabled). Mirrors
+/// `WasmRuntimesConfig.instruction_limit`; set once at startup from config.
+static WASM_INSTRUCTION_LIMIT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(10_000_000);
+
+/// Set the global instruction limit applied to every WASM runtime engine.
+/// `None` disables metering entirely.
+pub fn set_instruction_limit(limit: Option<u64>) {
+    let value = limit.unwrap_or(0);
+    WASM_INSTRUCTION_LIMIT.store(value, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Current global instruction limit, if metering is enabled.
+pub fn instruction_limit() -> Option<u64> {
+    match WASM_INSTRUCTION_LIMIT.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => None,
+        n => Some(n),
+    }
+}
+
+/// Build a Wasmer engine with optional metering middleware.
+///
+/// Metering must be applied at compile time; the limit is baked into the
+/// compiled module, so it must be set before any runtime is created.
+pub fn build_metered_engine(limit: Option<u64>) -> wasmer::Engine {
+    let mut cranelift = wasmer::Cranelift::default();
+    if let Some(limit) = limit {
+        let metering = wasmer_middlewares::metering::Metering::new(limit, |_operator| 1);
+        cranelift.push_middleware(std::sync::Arc::new(metering));
+    }
+    wasmer::Engine::from(cranelift)
+}
+
+/// Reset the metering budget on a store/instance pair to the global limit.
+///
+/// Wasmer metering budgets deplete cumulatively across calls on the same
+/// instance; without a reset, a long-lived server would eventually exhaust
+/// the budget for its cached runtimes. Call before each user-code execution.
+pub(crate) fn reset_instruction_budget(store: &mut Store, instance: &Instance) {
+    if let Some(limit) = instruction_limit() {
+        wasmer_middlewares::metering::set_remaining_points(store, instance, limit);
+    }
+}
+
 /// Configuration for building a WASM runtime instance.
 pub struct WasmRuntimeConfig<'a> {
     /// WASM module bytes
@@ -58,19 +101,7 @@ pub struct WasmRuntimeConfig<'a> {
 pub fn create_wasm_instance(
     config: WasmRuntimeConfig,
 ) -> Result<(Store, Instance, Memory, FunctionEnv<WasiEnv>), Box<dyn Error>> {
-    // Configure compiler with optional metering middleware
-    let mut cranelift = wasmer::Cranelift::default();
-
-    if let Some(limit) = config.instruction_limit {
-        // Create metering middleware with flat cost (1 point per operation)
-        let metering = wasmer_middlewares::metering::Metering::new(
-            limit,
-            |_operator| 1, // Flat cost: each WASM operation costs 1 point
-        );
-        cranelift.push_middleware(std::sync::Arc::new(metering));
-    }
-
-    let engine = wasmer::Engine::from(cranelift);
+    let engine = build_metered_engine(config.instruction_limit);
 
     // Check module cache first for faster cold starts
     use std::collections::hash_map::DefaultHasher;
@@ -254,6 +285,11 @@ pub trait WasmRuntime: Send {
     /// Destroy the runtime, freeing interpreter resources.
     fn destroy(&mut self) -> Result<(), Box<dyn Error>>;
 
+    /// Reset the metering instruction budget before a tool invocation.
+    /// Default no-op; implementations with persistent instances override this
+    /// so the global instruction limit applies per call, not per process.
+    fn reset_instruction_budget(&mut self) {}
+
     /// Language identifier (e.g., "javascript", "python", "lua").
     fn language(&self) -> &str;
 }
@@ -348,6 +384,7 @@ impl WasmRuntimeRegistry {
             .runtimes
             .get_mut(&lang)
             .ok_or_else(|| format!("Runtime missing for language: {}", lang))?;
+        entry.runtime.reset_instruction_budget();
         entry.runtime.call_tool(name, args_json)
     }
 
@@ -445,4 +482,110 @@ pub fn create_wasm_runtime_for_language(
 
     runtime.init()?;
     Ok(runtime)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasmer::{imports, Value};
+    use wasmer_middlewares::metering::{get_remaining_points, MeteringPoints};
+
+    /// Metering must trap infinite loops instead of hanging the host. The
+    /// trap text matters: plugins/mod.rs classifies limit errors by message,
+    /// and Wasmer 5 surfaces exhaustion as a plain "unreachable" trap.
+    #[test]
+    fn test_metering_traps_on_budget_exhaustion() {
+        let engine = build_metered_engine(Some(1_000));
+        let module = Module::new(
+            &engine,
+            r#"(module (func (export "spin") (loop (br 0))))"#,
+        )
+        .expect("WAT module should compile");
+        let mut store = Store::new(engine);
+        let instance = Instance::new(&mut store, &module, &imports! {}).expect("instantiate");
+        let spin = instance.exports.get_function("spin").expect("spin export");
+
+        let err = spin.call(&mut store, &[]).expect_err("infinite loop must trap under metering");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unreachable"),
+            "expected metering exhaustion to surface as 'unreachable', got: {}",
+            msg
+        );
+    }
+
+    /// Budgets deplete cumulatively across calls on one instance, so a cached
+    /// long-lived runtime would eventually brick without the per-call reset.
+    #[test]
+    fn test_metering_budget_resets_between_calls() {
+        // ~15 metered operators per loop iteration; n=50 ≈ 750+ ops per call.
+        let engine = build_metered_engine(Some(1_000));
+        let module = Module::new(
+            &engine,
+            r#"(module
+              (func (export "work") (param $n i32) (result i32)
+                (local $acc i32)
+                (loop $l
+                  local.get $n
+                  i32.eqz
+                  if
+                    local.get $acc
+                    return
+                  end
+                  local.get $acc
+                  local.get $n
+                  i32.add
+                  local.set $acc
+                  local.get $n
+                  i32.const 1
+                  i32.sub
+                  local.set $n
+                  br $l
+                )
+                local.get $acc))"#,
+        )
+        .expect("WAT module should compile");
+        let mut store = Store::new(engine);
+        let instance = Instance::new(&mut store, &module, &imports! {}).expect("instantiate");
+        let work = instance.exports.get_function("work").expect("work export");
+
+        let mut ok_calls = 0u32;
+        let trap = loop {
+            match work.call(&mut store, &[Value::I32(50)]) {
+                Ok(_) => {
+                    ok_calls += 1;
+                    assert!(
+                        ok_calls < 10,
+                        "metering budget should deplete cumulatively across calls"
+                    );
+                }
+                Err(trap) => break trap,
+            }
+        };
+        assert!(ok_calls >= 1, "a call within the budget must succeed");
+        assert!(
+            trap.to_string().contains("unreachable"),
+            "unexpected trap message: {}",
+            trap
+        );
+        assert!(
+            matches!(
+                get_remaining_points(&mut store, &instance),
+                MeteringPoints::Exhausted
+            ),
+            "instance should report an exhausted budget after the trap"
+        );
+
+        // The production reset path (global limit is the 10M default in tests,
+        // well above consumption) must restore execution on this instance.
+        reset_instruction_budget(&mut store, &instance);
+        assert!(matches!(
+            get_remaining_points(&mut store, &instance),
+            MeteringPoints::Remaining(_)
+        ));
+        let result = work
+            .call(&mut store, &[Value::I32(50)])
+            .expect("call must succeed after budget reset");
+        assert_eq!(result[0].unwrap_i32(), 1275); // sum(1..=50)
+    }
 }

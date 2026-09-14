@@ -29,8 +29,8 @@ impl LuaRuntime {
         let (store, instance, memory, env) = create_wasm_instance(WasmRuntimeConfig {
             wasm_bytes,
             import_builder: Box::new(build_wasi_imports),
-            extra_memory_pages: 1,   // 64KB beyond EXEC_SLOT
-            instruction_limit: None, // No metering by default
+            extra_memory_pages: 1, // 64KB beyond EXEC_SLOT
+            instruction_limit: super::instruction_limit(),
         })?;
 
         Ok(Self {
@@ -283,6 +283,10 @@ impl WasmRuntime for LuaRuntime {
         let destroy_fn = self.instance.exports.get_function("lua_wasi_destroy")?;
         destroy_fn.call(&mut self.store, &[])?;
         Ok(())
+    }
+
+    fn reset_instruction_budget(&mut self) {
+        super::reset_instruction_budget(&mut self.store, &self.instance);
     }
 
     fn language(&self) -> &str {

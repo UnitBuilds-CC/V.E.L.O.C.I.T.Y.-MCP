@@ -212,6 +212,10 @@ impl WasmRuntime for TypeScriptRuntime {
         self.inner.destroy()
     }
 
+    fn reset_instruction_budget(&mut self) {
+        self.inner.reset_instruction_budget();
+    }
+
     fn language(&self) -> &str {
         "typescript"
     }

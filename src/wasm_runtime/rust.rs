@@ -22,7 +22,7 @@ pub struct RustRuntime {
 
 impl RustRuntime {
     pub fn new(_wasm_bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
-        let engine = wasmer::Engine::from(wasmer::Cranelift::default());
+        let engine = super::build_metered_engine(super::instruction_limit());
         let mut store = Store::new(engine);
         let env = FunctionEnv::new(&mut store, WasiEnv::new());
 
@@ -97,6 +97,7 @@ impl WasmRuntime for RustRuntime {
         self.ensure_instantiated(name)?;
 
         let instance = self.instances.get(name).unwrap();
+        super::reset_instruction_budget(&mut self.store, instance);
 
         let get_input_ptr = instance.exports.get_function("get_input_ptr")?;
         let ptr_results = get_input_ptr.call(&mut self.store, &[])?;

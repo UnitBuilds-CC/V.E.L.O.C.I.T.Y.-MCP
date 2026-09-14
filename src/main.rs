@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
-use velocity_mcp::{audit, benchmark, config::ServerConfig, plugins, protocol, registry};
+use velocity_mcp::{audit, benchmark, config::ServerConfig, plugins, protocol, registry, wasm_runtime};
 
 /// Server version string, referenced by all protocol handlers and help text.
 pub const VERSION: &str = velocity_mcp::VERSION;
@@ -136,10 +136,15 @@ fn main() {
     }
 
     plugins::set_wasm_runtimes_config(config.wasm_runtimes.clone());
+    wasm_runtime::set_instruction_limit(config.wasm_runtimes.instruction_limit);
     protocol::nda_native::set_merkle_enabled(config.features.nda_merkle);
     info!(
         merkle = config.features.nda_merkle,
         "NDA frame Merkle integrity verification"
+    );
+    info!(
+        instruction_limit = ?config.wasm_runtimes.instruction_limit,
+        "WASM instruction limit (metering)"
     );
 
     let mode = cli_mode.unwrap_or(&config.mode);

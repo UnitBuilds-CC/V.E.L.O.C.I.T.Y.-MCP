@@ -383,6 +383,16 @@ static WASM_RUNTIME_CACHE: std::sync::LazyLock<
 static WASM_TOOL_METADATA: std::sync::LazyLock<Mutex<HashMap<String, String>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Wasmer 5's metering middleware signals budget exhaustion via an injected
+/// `unreachable` operator (TrapCode::UnreachableCodeReached → "unreachable"),
+/// so the surfaced message is generic — match it alongside legacy phrasings.
+fn is_metering_limit_error(err_msg: &str) -> bool {
+    err_msg.contains("unreachable")
+        || err_msg.contains("out of gas")
+        || err_msg.contains("instruction limit")
+        || err_msg.contains("metering")
+}
+
 fn execute_wasm_plugin_tool(tool: &PluginTool, arguments: &Value) -> Result<String, String> {
     let executor = &tool.executor;
     let language = executor
@@ -406,6 +416,9 @@ fn execute_wasm_plugin_tool(tool: &PluginTool, arguments: &Value) -> Result<Stri
         .get_mut(language)
         .ok_or_else(|| format!("No runtime for language: {}", language))?;
 
+    // Registration evals JS in the interpreter, so it consumes metered
+    // instructions too — reset before touching the runtime, not just the call.
+    runtime.reset_instruction_budget();
     runtime
         .register_tool(&tool.name, &source)
         .map_err(|e| format!("Failed to register WASM tool '{}': {}", tool.name, e))?;
@@ -424,19 +437,25 @@ fn execute_wasm_plugin_tool(tool: &PluginTool, arguments: &Value) -> Result<Stri
     // Note: Plugin-based WASM execution relies on metering middleware for timeout protection.
     // Wall-clock timeouts are not feasible here because the runtime is shared behind a Mutex.
     // Ensure metering is configured via WasmRuntimesConfig.instruction_limit.
-    runtime.call_tool(&tool.name, &args_json)
-        .map_err(|e| {
-            let err_msg = e.to_string();
-            // Detect metering limit exceeded errors from Wasmer
-            if err_msg.contains("out of gas") || err_msg.contains("instruction limit") || err_msg.contains("metering") {
-                format!(
+    runtime.reset_instruction_budget();
+    let result = runtime.call_tool(&tool.name, &args_json);
+    match result {
+        Ok(out) => Ok(out),
+        Err(e) => {
+            if is_metering_limit_error(&e.to_string()) {
+                // A metering trap unwinds the interpreter mid-execution; the
+                // cached instance can't be trusted again. Evict so the next
+                // call rebuilds a fresh runtime.
+                cache.remove(language);
+                Err(format!(
                     "WASM tool '{}' exceeded resource limits (instruction count). This usually means the tool has an infinite loop or is too computationally expensive. Consider optimizing the code or increasing the instruction_limit in your configuration.",
                     tool.name
-                )
+                ))
             } else {
-                format!("WASM tool '{}' execution failed: {}", tool.name, e)
+                Err(format!("WASM tool '{}' execution failed: {}", tool.name, e))
             }
-        })
+        }
+    }
 }
 
 fn resolve_wasm_source(executor: &PluginExecutor) -> Result<String, String> {
@@ -483,8 +502,18 @@ fn create_wasm_runtime(
         ));
     }
 
-    crate::wasm_runtime::create_wasm_runtime_for_language(language, &wasm_path)
-        .map_err(|e| format!("Failed to create WASM runtime for '{}': {}", language, e))
+    crate::wasm_runtime::create_wasm_runtime_for_language(language, &wasm_path).map_err(|e| {
+        if is_metering_limit_error(&e.to_string()) {
+            // Interpreter bootstrap itself burns metered instructions, so a
+            // too-low limit traps during creation, before any tool runs.
+            format!(
+                "WASM runtime '{}' exceeded resource limits (instruction count) during initialization. Increase instruction_limit in your configuration or VELOCITY_WASM_INSTRUCTION_LIMIT. Underlying error: {}",
+                language, e
+            )
+        } else {
+            format!("Failed to create WASM runtime for '{}': {}", language, e)
+        }
+    })
 }
 
 /// Call a WASM tool with binary TLV arguments (optimized path).
@@ -507,9 +536,24 @@ pub fn call_wasm_tool_binary(
         .ok_or_else(|| format!("No runtime for language: {}", language))?;
 
     // Use binary protocol - falls back to JSON if not supported
-    runtime
-        .call_tool_binary(name, args_tlv)
-        .map_err(|e| format!("WASM tool '{}' execution failed (binary): {}", name, e))
+    runtime.reset_instruction_budget();
+    let result = runtime.call_tool_binary(name, args_tlv);
+    match result {
+        Ok(out) => Ok(out),
+        Err(e) => {
+            if is_metering_limit_error(&e.to_string()) {
+                // Metering trap poisons the interpreter; evict so the next
+                // call rebuilds a fresh runtime.
+                cache.remove(language);
+                Err(format!(
+                    "WASM tool '{}' exceeded resource limits (instruction count). Consider optimizing the code or increasing the instruction_limit in your configuration.",
+                    name
+                ))
+            } else {
+                Err(format!("WASM tool '{}' execution failed (binary): {}", name, e))
+            }
+        }
+    }
 }
 
 /// Get the language runtime for a registered WASM tool.
