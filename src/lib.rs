@@ -56,8 +56,8 @@ pub mod transport;
 /// WASM runtime for cross-language tool execution (QuickJS, MicroPython, Lua via Wasmer).
 pub mod wasm_runtime;
 
-/// Server version string.
-pub const VERSION: &str = "3.1.0";
+/// Server version string (sourced from Cargo.toml so it can never drift).
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// MCP protocol version supported by this server.
 pub const PROTOCOL_VERSION: &str = "2024-11-05";
