@@ -200,7 +200,8 @@ pub fn dispatch_nda_request(raw: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
             nda_native::build_nda_response_frame(&payload)
         }
         nda_native::METHOD_TOOLS_CALL => {
-            let merkle_root = if raw.len() >= 36 {
+            // Audit provenance: only meaningful when frame integrity was verified
+            let merkle_root = if nda_native::merkle_enabled() && raw.len() >= 36 {
                 Some(hex_encode(&raw[4..36]))
             } else {
                 None

@@ -136,6 +136,11 @@ fn main() {
     }
 
     plugins::set_wasm_runtimes_config(config.wasm_runtimes.clone());
+    protocol::nda_native::set_merkle_enabled(config.features.nda_merkle);
+    info!(
+        merkle = config.features.nda_merkle,
+        "NDA frame Merkle integrity verification"
+    );
 
     let mode = cli_mode.unwrap_or(&config.mode);
     let buffer_path = cli_buffer_path.unwrap_or(&config.buffer_path);

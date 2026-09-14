@@ -92,7 +92,7 @@ pub struct LoggingConfig {
 }
 
 /// Feature flags configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeaturesConfig {
     /// Enable database resources
     #[serde(default)]
@@ -105,6 +105,21 @@ pub struct FeaturesConfig {
     /// Enable HTTP transport
     #[serde(default)]
     pub http: bool,
+
+    /// Enable NDA frame Merkle integrity verification (SHA-256 per frame)
+    #[serde(default = "default_true")]
+    pub nda_merkle: bool,
+}
+
+impl Default for FeaturesConfig {
+    fn default() -> Self {
+        Self {
+            database: false,
+            oauth2: false,
+            http: false,
+            nda_merkle: true,
+        }
+    }
 }
 
 /// WASM runtime configuration for cross-language tool execution.
@@ -456,6 +471,10 @@ impl ServerConfig {
 
         if let Ok(enable) = std::env::var("VELOCITY_ENABLE_RATE_LIMIT") {
             self.http.enable_rate_limit = enable.parse().unwrap_or(true);
+        }
+
+        if let Ok(merkle) = std::env::var("VELOCITY_NDA_MERKLE") {
+            self.features.nda_merkle = !matches!(merkle.as_str(), "0" | "false" | "no");
         }
 
         self

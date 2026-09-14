@@ -36,7 +36,18 @@
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::error::Error;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
+
+static NDA_MERKLE_ENABLED: AtomicBool = AtomicBool::new(true);
+
+pub fn set_merkle_enabled(enabled: bool) {
+    NDA_MERKLE_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+pub fn merkle_enabled() -> bool {
+    NDA_MERKLE_ENABLED.load(Ordering::Relaxed)
+}
 
 // E2E Encryption support (optional, enabled by oauth2 feature)
 #[cfg(feature = "oauth2")]
@@ -313,21 +324,25 @@ pub fn parse_nda_request(frame: &[u8]) -> Result<NdaRequest, Box<dyn Error>> {
         })?;
 
         // Verify Merkle root matches decrypted plaintext
-        let mut hasher = Sha256::new();
-        hasher.update(&plaintext);
-        let computed = hasher.finalize();
-        if stored_merkle != computed.as_slice() {
-            return Err("NDA frame Merkle root mismatch after decryption".into());
+        if merkle_enabled() {
+            let mut hasher = Sha256::new();
+            hasher.update(&plaintext);
+            let computed = hasher.finalize();
+            if stored_merkle != computed.as_slice() {
+                return Err("NDA frame Merkle root mismatch after decryption".into());
+            }
         }
         plaintext
     } else {
         // Plaintext frame
         let payload = &frame[FRAME_HEADER_SIZE..];
-        let mut hasher = Sha256::new();
-        hasher.update(payload);
-        let computed = hasher.finalize();
-        if stored_merkle != computed.as_slice() {
-            return Err("NDA frame Merkle root mismatch".into());
+        if merkle_enabled() {
+            let mut hasher = Sha256::new();
+            hasher.update(payload);
+            let computed = hasher.finalize();
+            if stored_merkle != computed.as_slice() {
+                return Err("NDA frame Merkle root mismatch".into());
+            }
         }
         payload.to_vec()
     };
@@ -335,11 +350,13 @@ pub fn parse_nda_request(frame: &[u8]) -> Result<NdaRequest, Box<dyn Error>> {
     #[cfg(not(feature = "oauth2"))]
     let payload = {
         let payload = &frame[FRAME_HEADER_SIZE..];
-        let mut hasher = Sha256::new();
-        hasher.update(payload);
-        let computed = hasher.finalize();
-        if stored_merkle != computed.as_slice() {
-            return Err("NDA frame Merkle root mismatch".into());
+        if merkle_enabled() {
+            let mut hasher = Sha256::new();
+            hasher.update(payload);
+            let computed = hasher.finalize();
+            if stored_merkle != computed.as_slice() {
+                return Err("NDA frame Merkle root mismatch".into());
+            }
         }
         payload.to_vec()
     };
@@ -511,11 +528,13 @@ pub fn parse_nda_request_inplace(frame: &[u8]) -> Result<NdaRequestRef<'_>, Box<
         })?;
 
         // Verify Merkle root over decrypted plaintext
-        let mut hasher = Sha256::new();
-        hasher.update(&plaintext);
-        let computed = hasher.finalize();
-        if stored_merkle != computed.as_slice() {
-            return Err("NDA frame Merkle root mismatch after decryption".into());
+        if merkle_enabled() {
+            let mut hasher = Sha256::new();
+            hasher.update(&plaintext);
+            let computed = hasher.finalize();
+            if stored_merkle != computed.as_slice() {
+                return Err("NDA frame Merkle root mismatch after decryption".into());
+            }
         }
 
         if plaintext.len() < 2 {
@@ -549,11 +568,13 @@ pub fn parse_nda_request_inplace(frame: &[u8]) -> Result<NdaRequestRef<'_>, Box<
     // Plaintext frame
     let payload = &frame[FRAME_HEADER_SIZE..];
 
-    let mut hasher = Sha256::new();
-    hasher.update(payload);
-    let computed = hasher.finalize();
-    if stored_merkle != computed.as_slice() {
-        return Err("NDA frame Merkle root mismatch".into());
+    if merkle_enabled() {
+        let mut hasher = Sha256::new();
+        hasher.update(payload);
+        let computed = hasher.finalize();
+        if stored_merkle != computed.as_slice() {
+            return Err("NDA frame Merkle root mismatch".into());
+        }
     }
 
     if payload.len() < 2 {
@@ -744,13 +765,16 @@ pub fn health_result_tlv() -> &'static [u8] {
 }
 
 pub fn build_nda_frame(payload: &[u8]) -> Vec<u8> {
-    let mut hasher = Sha256::new();
-    hasher.update(payload);
-    let merkle = hasher.finalize();
-
     let mut frame = Vec::with_capacity(FRAME_HEADER_SIZE + payload.len());
     frame.extend_from_slice(NDA_MAGIC);
-    frame.extend_from_slice(&merkle);
+    if merkle_enabled() {
+        let mut hasher = Sha256::new();
+        hasher.update(payload);
+        let merkle = hasher.finalize();
+        frame.extend_from_slice(&merkle);
+    } else {
+        frame.extend_from_slice(&[0u8; 32]);
+    }
     frame.extend_from_slice(payload);
     frame
 }
@@ -782,10 +806,14 @@ pub fn build_nda_encrypted_frame(
         encode_json_value(data, &mut plaintext)?;
     }
 
-    // Compute Merkle root over plaintext
-    let mut hasher = Sha256::new();
-    hasher.update(&plaintext);
-    let merkle = hasher.finalize();
+    // Compute Merkle root over plaintext (skipped when integrity verification is disabled)
+    let merkle: [u8; 32] = if merkle_enabled() {
+        let mut hasher = Sha256::new();
+        hasher.update(&plaintext);
+        hasher.finalize().into()
+    } else {
+        [0u8; 32]
+    };
 
     // Get session key
     let key_store = get_session_key()
@@ -1167,11 +1195,13 @@ pub fn parse_flat_request(frame: &[u8]) -> Result<FlatRequest, Box<dyn Error>> {
 
     let stored_merkle = &frame[4..36];
     let payload = &frame[FRAME_HEADER_SIZE..];
-    let mut hasher = Sha256::new();
-    hasher.update(payload);
-    let computed = hasher.finalize();
-    if stored_merkle != computed.as_slice() {
-        return Err("Flat frame Merkle root mismatch".into());
+    if merkle_enabled() {
+        let mut hasher = Sha256::new();
+        hasher.update(payload);
+        let computed = hasher.finalize();
+        if stored_merkle != computed.as_slice() {
+            return Err("Flat frame Merkle root mismatch".into());
+        }
     }
 
     if payload.is_empty() {
@@ -1252,11 +1282,13 @@ pub fn parse_flat_response(frame: &[u8]) -> Result<FlatResponse, Box<dyn Error>>
 
     let stored_merkle = &frame[4..36];
     let payload = &frame[FRAME_HEADER_SIZE..];
-    let mut hasher = Sha256::new();
-    hasher.update(payload);
-    let computed = hasher.finalize();
-    if stored_merkle != computed.as_slice() {
-        return Err("Flat response Merkle root mismatch".into());
+    if merkle_enabled() {
+        let mut hasher = Sha256::new();
+        hasher.update(payload);
+        let computed = hasher.finalize();
+        if stored_merkle != computed.as_slice() {
+            return Err("Flat response Merkle root mismatch".into());
+        }
     }
 
     if payload.is_empty() {
@@ -1401,6 +1433,105 @@ mod tests {
         let last = tampered.len() - 1;
         tampered[last] ^= 0xFF;
         assert!(parse_nda_request(&tampered).is_err());
+    }
+
+    // Tests that flip the global merkle toggle are serialized so they cannot
+    // interfere with each other or with tests that assume the default state.
+    static MERKLE_TOGGLE_LOCK: Mutex<()> = Mutex::new(());
+
+    struct MerkleDisabledGuard(bool);
+
+    impl MerkleDisabledGuard {
+        fn new() -> Self {
+            let prev = merkle_enabled();
+            set_merkle_enabled(false);
+            MerkleDisabledGuard(prev)
+        }
+    }
+
+    impl Drop for MerkleDisabledGuard {
+        fn drop(&mut self) {
+            set_merkle_enabled(self.0);
+        }
+    }
+
+    #[test]
+    fn test_merkle_disabled_build_writes_zero_header() {
+        let _t = test_timer("test_merkle_disabled_build_writes_zero_header");
+        let _lock = MERKLE_TOGGLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = MerkleDisabledGuard::new();
+
+        let frame = build_nda_frame(b"payload");
+        assert_eq!(&frame[0..4], NDA_MAGIC);
+        assert_eq!(&frame[4..36], &[0u8; 32]);
+
+        let req_frame = build_nda_request(METHOD_PING, &json!(1), &Value::Null).unwrap();
+        assert_eq!(&req_frame[4..36], &[0u8; 32]);
+    }
+
+    #[test]
+    fn test_merkle_disabled_parse_accepts_zeroed_hash() {
+        let _t = test_timer("test_merkle_disabled_parse_accepts_zeroed_hash");
+        let _lock = MERKLE_TOGGLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = MerkleDisabledGuard::new();
+
+        let req_id = json!(7);
+        let data = json!({"name": "bench_echo", "arguments": {"msg": "hi"}});
+        let frame = build_nda_request(METHOD_TOOLS_CALL, &req_id, &data).unwrap();
+        assert_eq!(&frame[4..36], &[0u8; 32]);
+
+        let parsed = parse_nda_request(&frame).unwrap();
+        assert_eq!(parsed.method, METHOD_TOOLS_CALL);
+        assert_eq!(parsed.request_id, req_id);
+
+        let parsed_ref = parse_nda_request_inplace(&frame).unwrap();
+        assert_eq!(parsed_ref.method, METHOD_TOOLS_CALL);
+    }
+
+    #[test]
+    fn test_merkle_disabled_parse_still_rejects_bad_magic() {
+        let _t = test_timer("test_merkle_disabled_parse_still_rejects_bad_magic");
+        let _lock = MERKLE_TOGGLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = MerkleDisabledGuard::new();
+
+        let frame = build_nda_request(METHOD_PING, &json!(1), &Value::Null).unwrap();
+        let mut corrupted = frame.clone();
+        corrupted[0..4].copy_from_slice(b"NOPE");
+        assert!(parse_nda_request(&corrupted).is_err());
+
+        let mut short = frame;
+        short.truncate(FRAME_HEADER_SIZE - 1);
+        assert!(parse_nda_request(&short).is_err());
+    }
+
+    #[test]
+    fn test_merkle_disabled_zeroed_frame_rejected_when_reenabled() {
+        let _t = test_timer("test_merkle_disabled_zeroed_frame_rejected_when_reenabled");
+        let _lock = MERKLE_TOGGLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let zeroed_frame = {
+            let _g = MerkleDisabledGuard::new();
+            build_nda_request(METHOD_PING, &json!(1), &Value::Null).unwrap()
+        };
+        // Guard restored the default (enabled) and we still hold the toggle lock,
+        // so the zeroed header must now fail verification.
+        let mut tampered = zeroed_frame.clone();
+        tampered[4..36].copy_from_slice(&[0xEEu8; 32]);
+        assert!(parse_nda_request(&tampered).is_err());
+        assert!(parse_nda_request(&zeroed_frame).is_err());
+    }
+
+    #[test]
+    fn test_flat_round_trip_merkle_disabled() {
+        let _t = test_timer("test_flat_round_trip_merkle_disabled");
+        let _lock = MERKLE_TOGGLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = MerkleDisabledGuard::new();
+
+        let frame = build_flat_response(STATUS_OK, 42, &json!({"ok": true}));
+        assert_eq!(&frame[4..36], &[0u8; 32]);
+
+        let resp = parse_flat_response(&frame).unwrap();
+        assert_eq!(resp.status, STATUS_OK);
+        assert_eq!(resp.request_id, 42);
     }
 
     #[test]
@@ -2664,6 +2795,15 @@ mod tests {
     mod encryption_tests {
         use super::*;
 
+        // All tests in this module mutate the shared global session key, so
+        // they are serialized to prevent cross-test interference under
+        // Rust's parallel test runner.
+        static SESSION_KEY_LOCK: Mutex<()> = Mutex::new(());
+
+        fn lock_session_key() -> std::sync::MutexGuard<'static, ()> {
+            SESSION_KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+        }
+
         fn setup_test_key() {
             let key = generate_session_key();
             set_session_encryption_key(key);
@@ -2671,6 +2811,7 @@ mod tests {
 
         #[test]
         fn test_encrypted_frame_round_trip() {
+            let _lock = lock_session_key();
             setup_test_key();
             let req_id = json!(42);
             let data = json!({"name": "test_tool", "arguments": {"size": 64}});
@@ -2690,6 +2831,7 @@ mod tests {
 
         #[test]
         fn test_encrypted_frame_wrong_key() {
+            let _lock = lock_session_key();
             setup_test_key();
             let req_id = json!(1);
             let data = json!({"test": "data"});
@@ -2710,6 +2852,7 @@ mod tests {
 
         #[test]
         fn test_encrypted_frame_no_key() {
+            let _lock = lock_session_key();
             clear_session_key();
             let req_id = json!(1);
             let data = Value::Null;
@@ -2721,6 +2864,7 @@ mod tests {
 
         #[test]
         fn test_encrypted_frame_tampered_ciphertext() {
+            let _lock = lock_session_key();
             setup_test_key();
             let req_id = json!(1);
             let data = json!({"test": "data"});
@@ -2738,6 +2882,7 @@ mod tests {
 
         #[test]
         fn test_encrypted_frame_no_plaintext_fallback() {
+            let _lock = lock_session_key();
             // This is the critical security test: encrypted frames that fail
             // decryption must be rejected, NOT silently processed as plaintext.
             setup_test_key();
@@ -2781,6 +2926,7 @@ mod tests {
 
         #[test]
         fn test_parse_nda_request_inplace_encrypted() {
+            let _lock = lock_session_key();
             setup_test_key();
             let req_id = json!(99);
             let data = json!({"name": "file_read", "arguments": {"path": "/test.txt"}});
@@ -2797,6 +2943,7 @@ mod tests {
 
         #[test]
         fn test_is_nda_frame_encrypted() {
+            let _lock = lock_session_key();
             let plaintext = build_nda_request(METHOD_PING, &json!(1), &Value::Null).unwrap();
             assert!(!is_nda_frame_encrypted(&plaintext));
 
@@ -2811,6 +2958,7 @@ mod tests {
 
         #[test]
         fn test_plaintext_frame_still_works_with_encryption_enabled() {
+            let _lock = lock_session_key();
             // When oauth2 feature is enabled, plaintext frames (NMCP magic)
             // should still work normally — no decryption attempted.
             setup_test_key();

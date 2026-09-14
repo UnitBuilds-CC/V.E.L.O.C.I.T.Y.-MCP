@@ -728,6 +728,9 @@ format = "json"
 
 [resources]
 database_path = "/path/to/resources.db"
+
+[features]
+nda_merkle = true   # NDA frame Merkle integrity verification (disable for max throughput on trusted transports)
 ```
 
 ### CLI Options
@@ -759,6 +762,7 @@ Example: `cargo build --release --features http,oauth2,observability`
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `VELOCITY_CSHARP_PATH` | Path to C# NdaMcpServer.exe (for dynamic tool hosting) | — |
+| `VELOCITY_NDA_MERKLE` | NDA frame Merkle integrity verification (`0`/`false`/`no` to disable) | `1` |
 | `RUST_LOG` | Log level (`error`, `warn`, `info`, `debug`, `trace`) | `info` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OpenTelemetry collector endpoint | — |
 
