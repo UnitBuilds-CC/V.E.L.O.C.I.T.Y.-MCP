@@ -29,7 +29,7 @@ runner = "https://webc.org/runner/wasi"
 env = ["PORT=80"]
 ```
 
-Verified live 2026-09-17 on the public default (`https://velocity-mcp-edge.wasmer.app`): health, `initialize`, `tools/list` (request `id` preserved, 10 tools), repeated echo calls, and malformed-JSON rejection all work with the approximately 1 MB WASIX binary. Activation is complete. Cold-start and latency figures remain unmeasured. See the [Edge User Guide](edge_user_guide.md) for preview steps.
+Verified live 2026-09-17 on the public default (`https://velocity-mcp-edge.wasmer.app`): health, `initialize`, `tools/list` (request `id` preserved, 10 tools), repeated echo calls, and malformed-JSON rejection all work with the approximately 1 MB WASIX binary. Activation is complete. Cold start and latency were subsequently measured the same day from a transatlantic client: 2150 ms cold vs ~740 ms warm (~1.4 s scale-from-zero penalty), warm totals 740–880 ms, and ~4 ms of server compute — see [Edge Nested-WASM vs Relay — Findings](edge_nested_relay_findings.md). See the [Edge User Guide](edge_user_guide.md) for preview steps.
 
 Plain WASI CGI remains separate. The earlier `wasm32-wasip1` CGI entrypoint failed in its deployed configuration; that does not establish that WCGI is globally broken.
 
@@ -46,7 +46,7 @@ Wasmer Edge is Wasmer's serverless platform designed for WebAssembly workloads. 
 ## Key Features (Historical)
 
 ### Performance
-- **Cold Start Time**: Not measured for this build; earlier sub-millisecond estimates were speculative.
+- **Cold Start Time**: The earlier sub-millisecond estimates were speculative and are withdrawn. Measured 2026-09-17 from a transatlantic client: 2150 ms cold vs ~740 ms warm (≈1.4 s scale-from-zero penalty, location-independent); see [Edge Nested-WASM vs Relay — Findings](edge_nested_relay_findings.md).
 - **Auto-scaling**: Scales to zero when idle, scales up automatically under load
 - **Global CDN**: Deployments distributed across edge locations worldwide
 
@@ -209,10 +209,10 @@ instruction_limit = 10_000_000  # 10M instructions per request
 ```
 
 ### Phase 5: Benchmarking & Validation
-Compare performance:
-- Local NDA/shmem: ~7µs baseline
-- Local WASM (Wasmer): ~4.1x overhead vs native
-- Wasmer Edge: Expected <1ms cold start + network latency (~10-50ms depending on region)
+Measured comparison (not targets):
+- Local NDA/shmem: ~7µs baseline (`tools/list`, `bench_results_core5.txt`)
+- Local WASM vs native (`wasm_vs_native`, 2026-09-17): WASM is **faster**, not slower — QuickJS 15.7 µs/call vs Node.js 68.3 µs/call on `text_analyze` (printed as 4.4x; 4.36x in the summary table). Lua 3.69x and MicroPython 3.16x over their native CLIs. An earlier "~4.1x overhead vs native" figure in this document was a misread of the Node-vs-Rust tools/list p99 in the core5 transport run and has been removed.
+- Wasmer Edge (measured 2026-09-17 from a transatlantic client, see [Edge Nested-WASM vs Relay — Findings](edge_nested_relay_findings.md)): 2150 ms cold vs ~740 ms warm — a **~1.4 s scale-from-zero penalty**; warm totals **740–880 ms**, which is ~3 WAN round-trips and not backend work; **server compute ≈ 4 ms** (ttfb minus network). Edge latency is network-bound from this vantage point, so sub-millisecond cold-start expectations from the original planning notes are replaced by these measurements.
 
 ## Limitations & Constraints
 

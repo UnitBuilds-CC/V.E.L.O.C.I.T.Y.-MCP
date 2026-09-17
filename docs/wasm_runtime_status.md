@@ -6,37 +6,42 @@ VELOCITY-MCP supports **7 production-ready WASM runtimes** using real language e
 
 ## Production-Ready Runtimes (7)
 
-These runtimes use real language engines compiled to WASM and pass all correctness tests:
+These runtimes use real language engines compiled to WASM and pass the `text_analyze` correctness check in `wasm_vs_native` (JavaScript, Python, Lua all report OK there). One caveat from the 2026-09-17 `comprehensive_benchmark` pass: JavaScript and TypeScript cleared the one-shot correctness check but then failed all 500 repeated calls of that harness's regex workload, and Python and Lua failed 481/500 and 436/500 of them — see [WASM Runtime Benchmark Analysis](benchmark_analysis_wasm_runtimes.md) before relying on a regex-heavy tool in those engines.
 
-| # | Language | Engine | WASM Size | Hot Call (P50) | Cold Start | Notes |
-|---|----------|--------|-----------|-----------------|------------|-------|
-| 1 | JavaScript | QuickJS | ~200 KB | 118.0 µs | 487.1 ms | Full ES2023 support |
-| 2 | TypeScript | QuickJS + TS transpiler | ~200 KB | 118.0 µs | 373.0 ms | Type-checked via tsc |
-| 3 | Python | MicroPython | ~400 KB | — | 181.5 ms | Python 3.8 subset; no repeated calls |
-| 4 | Lua | Lua 5.4 | ~150 KB | 15.1 µs | 10.8 ms | Full Lua 5.4 |
-| 5 | Ruby | mruby | ~500 KB | ~5 µs | ~10 ms | Ruby 3.x subset; custom WASM build |
-| 6 | Rust | wasm32-wasi (native) | varies | 3.3 µs | 30.8 ms | Native compilation, fastest runtime |
-| 7 | Go | TinyGo/WASM | ~300 KB | 240.3 µs* | 378.5 ms | *cached module instantiation |
+| # | Language | Engine | WASM Size (bytes on disk) | Hot Call, `text_analyze` (µs) | Cold Start (ms) | Notes |
+|---|----------|--------|---------------------------|--------------------------------|-----------------|-------|
+| 1 | JavaScript | QuickJS | 754,433 (`quickjs_wasm/quickjs.wasm`) | **15.7** | 149.9 | ES feature set is whatever upstream QuickJS provides; no conformance suite is run here |
+| 2 | TypeScript | QuickJS + line-based type stripper | 754,433 (shares `quickjs.wasm`) | not currently measured | not currently measured | `transpile_ts_to_js` deletes annotations/interfaces; no `tsc`, so no type checking happens |
+| 3 | Python | MicroPython | 587,776 (`micropython.wasm`) | **15.1** | 80.5 | Python 3.8 subset; repeated calls on a persistent instance work (top-level GC collect fix) |
+| 4 | Lua | Lua 5.4 | 680,094 (`lua.wasm`) | **11.1** | 82.5 | Full Lua 5.4 |
+| 5 | Ruby | mruby | 1,583,417 (`ruby.wasm`) | not currently measured | not currently measured | Ruby 3.x subset; custom WASM build |
+| 6 | Rust | wasm32-wasi | 56,310 (`rust_wasm/example_tool.wasm`) | not currently measured | not currently measured | Smallest module and cheapest compile (11,378 µs, `metering_cache_bench` Part A) |
+| 7 | Go | TinyGo/WASM | 909,213 (`tool.wasm`) | 257.3 cached (191,575.0 uncached) | 184.7 | Instantiated per call; no persistent instance |
+
+Hot-call and cold-start figures come from `cargo bench --bench wasm_vs_native` on 2026-09-17 (Core 5 210H, wasmer 5.0.6), which runs the same `text_analyze` tool in WASM and in the native CLI. "not currently measured" means exactly that — no fresh number exists for that runtime, and the figures from earlier runs were dropped rather than reused.
 
 ### Key Characteristics
 
-- **Fastest**: Rust at 3.3 µs P50 hot call latency
-- **Smallest cold start**: Lua at 10.8 ms
-- **Most compatible**: JavaScript/TypeScript with full ES2023
-- **Best throughput**: Rust at 228K+ calls/sec
+- **Fastest measured WASM hot path**: Lua at 11.1 µs/call (90.3K calls/s), ahead of MicroPython (15.1 µs) and QuickJS (15.7 µs)
+- **Largest gain over native**: JavaScript, 4.36x vs Node.js (15.7 vs 68.3 µs)
+- **Only runtime that beat native on cold start**: Python, 80.5 ms vs 249.4 ms CPython
+- **Smallest module**: Rust at 56,310 bytes; largest is mruby at 1,583,417 bytes
+- **Go pays per-call instantiation**: 257.3 µs even with the compiled module cached
 
 ## Future Feature: Real Language Engines (6 Planned)
 
 These languages currently have placeholder implementations using a shared tree-walk interpreter (`interp_core`). They are **not production-ready** and cannot execute real language syntax. Full engine integration is planned.
 
-| Language | Current State | Planned Engine | Estimated Effort | Binary Size (est.) | Feasibility |
-|----------|--------------|----------------|------------------|---------------------|-------------|
-| PHP | Toy interpreter | php-wasm (Emscripten, WordPress Playground) | 1-2 weeks | 50-200 MB | High - battle-tested in production |
-| Perl | Toy interpreter | zeroperl (Emscripten) | ~1 week | ~9 MB | High - WASI reactor already exists |
-| C#/.NET | Toy interpreter | componentize-dotnet (NativeAOT) | 1-3 weeks | 5-20 MB | Medium - Component Model, not raw WASI |
-| R | Toy interpreter | WebR fork (Emscripten) | 4-8 weeks | 40-100 MB | Low - deeply browser-coupled |
-| Java | Toy interpreter | Kotlin/Wasm or TeaVM | 1-8 weeks | 3-50 MB | Low - only Kotlin targets WASI |
-| Julia | Toy interpreter | None available | 12-24+ weeks | 50-100+ MB | Not feasible - research problem |
+| Language | Current State | Planned Engine | Estimated Effort | Binary Size | Feasibility |
+|----------|--------------|----------------|------------------|-------------|-------------|
+| PHP | Toy interpreter | php-wasm (Emscripten, WordPress Playground) | 1-2 weeks | 11.6–18.7 MiB — the vendored `bench_tools/php_wasm/node_modules/php-wasm` dist builds measure 12,151,768 to 19,573,213 bytes | High - battle-tested in production |
+| Perl | Toy interpreter | zeroperl (Emscripten) | ~1 week | est. ~9 MB (not built here) | High - WASI reactor already exists |
+| C#/.NET | Toy interpreter | componentize-dotnet (NativeAOT) | 1-3 weeks | est. 5-20 MB (not built here) | Medium - Component Model, not raw WASI |
+| R | Toy interpreter | WebR fork (Emscripten) | 4-8 weeks | 17.2 MiB — `bench_tools/r_wasm/webr.wasm` is 18,062,845 bytes | Low - deeply browser-coupled |
+| Java | Toy interpreter | Kotlin/Wasm or TeaVM | 1-8 weeks | est. 3-50 MB (not built here) | Low - only Kotlin targets WASI |
+| Julia | Toy interpreter | None available | 12-24+ weeks | est. 50-100+ MB (no engine exists to build) | Not feasible - research problem |
+
+Sizes marked "est." are unverified guesses about an engine that has not been built here; the PHP and R figures are byte counts of builds already vendored under `bench_tools/`.
 
 ### Why These Aren't Production Yet
 
@@ -72,21 +77,20 @@ When tested with real language syntax, all 6 return empty results (`wc=0 cc=0`).
 | Browser coupling | R (WebR) | SharedArrayBuffer, Web Workers, JS I/O proxies |
 | GC model mismatch | Java, C# | JVM/.NET GC doesn't map cleanly to Wasm GC |
 | JIT dependency | Julia | Core value prop is runtime JIT; static compilation defeats purpose |
-| Binary size | All | Real engines are 50-200 MB vs 272 KB toy interpreters |
-| Cold start | All | Real engines take 100-500 ms vs 33-40 ms toy interpreters |
+| Binary size | All | Candidate real engines measured so far are 11.6–18.7 MiB (PHP, R) vs 277,630–277,747 bytes for the current toy-interpreter modules |
+| Cold start | All | Real-engine cold start is not measured. The 2026-09-17 toy-interpreter run gives no usable timing either: every call failed the regex tool, so only the failure counts are reported |
 
 ## Benchmark Methodology
 
-All benchmarks run on i5-14400F, release build, Windows 10 x64, Wasmer Cranelift backend.
+Latest run: 2026-09-17 on an Intel Core 5 210H (12 cores), Windows 10 x64, release build, Wasmer 5.0.6 with the Cranelift backend.
 
-- **Cold start**: Fresh WASM module instantiation + initialization + first tool call
-- **Hot call**: 500 repeated `call_tool()` invocations on persistent runtime instance
-- **Correctness**: Verify output matches expected JSON `{word_count: 29, char_count: 159}`
-- **Tool**: `text_analyze` function counting words, chars, lines in sample text
-- **Percentiles**: P50, P95, P99 from sorted latency distribution
-- **Runs**: 3 rounds, median reported
+- **Hot call / cold start vs native** (`cargo bench --bench wasm_vs_native`): same `text_analyze` tool and input run against the WASM engine and the native CLI; cold start is compile + instantiate + register + first call, hot call repeats `call_tool()` on a persistent instance
+- **Module compile / metered compile / cached deserialize, runtime create** (`cargo bench --bench metering_cache_bench`)
+- **Correctness across all 12 modules** (`cargo bench --bench comprehensive_benchmark`)
+- **Correctness check**: output must match the expected `{word_count: 29, char_count: 159}` for the sample text
+- **Percentiles**: P50/P95/P99 where the benchmark prints them; the 2026-09-17 WASM-vs-native run prints a single per-call figure with no percentile breakdown
 
-Run benchmarks: `cargo bench --bench comprehensive_benchmark`
+Run benchmarks: `cargo bench --bench wasm_vs_native` and `cargo bench --bench metering_cache_bench` (plus `cargo bench --bench comprehensive_benchmark` for the correctness pass over all 12 modules).
 
 ## Architecture Notes
 
@@ -105,14 +109,14 @@ pub trait WasmRuntime {
 
 ### Toy Interpreter Architecture
 
-The 6 future-feature runtimes share `interp_core/interp.c` (~176 KB WASM each), which provides:
+The 6 future-feature runtimes share `interp_core/interp.c`, compiled into modules of 277,630–277,747 bytes each (the extra `*_wasi.wasm` builds sitting in the same directories measure 179,282–179,658 bytes but are not what the server loads). The implementation provides:
 - Arena-based memory management with per-call reset
 - TLV binary protocol for argument passing
 - Basic tokenizer/parser/evaluator for shared DSL
 - WASI stubs for host communication
 
-This architecture is fast (7-10 µs hot calls) but fundamentally limited to the shared DSL.
+The architecture is limited to the shared DSL. Its hot-call latency is not currently measured: in the 2026-09-17 correctness pass every one of these modules failed the regex tool (364–390 failed calls out of 500 attempts, `wc=0 cc=0`), so any mean the benchmark printed for them is an average over a failing run and is not usable.
 
 ---
 
-*Last updated: 2026-09-13*
+*Last updated: 2026-09-17. Numbers from `wasm_vs_native`, `metering_cache_bench` and `comprehensive_benchmark` run that day on a Core 5 210H with wasmer 5.0.6; sizes are `ls` byte counts of the modules under `bench_tools/`. Earlier figures were dropped rather than reused.*

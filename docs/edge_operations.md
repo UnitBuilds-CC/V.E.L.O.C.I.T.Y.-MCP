@@ -195,7 +195,7 @@ curl -X POST https://events.pagerduty.com/v2/enqueue \
 
 **Set `min_instances = 0`** when:
 - Cost is the primary concern
-- Occasional cold starts (100-500ms) are acceptable
+- Occasional cold start is acceptable (measured 2026-09-17: ~1.4 s scale-from-zero penalty — 2150 ms cold vs ~740 ms warm from a transatlantic client; see [Edge Nested-WASM vs Relay — Findings](edge_nested_relay_findings.md))
 - Traffic is sporadic
 
 ### Scaling Decision Matrix

@@ -56,7 +56,7 @@ Prototype wired into the edge `ToolExecutor`: a process-global `NestedRuntime` (
 - **Module cache eliminated the ~15 ms recompile**: warm server-side compute is now sub-millisecond (client ~766 ms is ~740 ms WAN from Namibia + ~26 ms everything-else).
 - **Fuel metering contained a runaway loop**: `while True: x+=1` → `resource limit exceeded … all fuel consumed by WebAssembly` in ~1.4 s (no hang). FUEL_LIMIT=2e9, enforced per call.
 
-So the three P0/P1 roadmap items (module cache, instruction metering, dynamic no-restart registration) are each demonstrated working on Wasmer Edge. Flagship `velocity-mcp-edge` (3.19.4) remains the clean static-tools build; the prototype lives in `velocity-nested-poc` and in `velocity-mcp-edge/src/tools.rs` under the `nested` cfg-gated code for this PoC branch.
+So the three P0/P1 roadmap items (module cache, instruction metering, dynamic no-restart registration) are each demonstrated working on Wasmer Edge. Flagship `velocity-mcp-edge` (crate v3.2.0; its deployed Edge *package* was 3.19.4) remains the clean 10-tool static build; the prototype lives in `velocity-nested-poc` and in `velocity-mcp-edge/src/tools.rs` under the `nested` cfg-gated code for this PoC branch.
 
 ## Dynamic-registration prototype — benchmark (2026-09-17)
 

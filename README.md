@@ -85,31 +85,28 @@ All numbers measured 2026-09-13 on Core 5 210H, release build.
 | Node/HTTP | 77 µs | 64 µs | 139 µs | 244 µs | 13K r/s |
 | NDA/HTTP* | 116 µs | 87 µs | 254 µs | 337 µs | 8.6K r/s |
 
-*Rust HTTP pipelines include 4 Axum middleware layers (auth, rate-limit, request-logger, request-validator) + CORS + body-limit. Node/HTTP is a bare `http.createServer` with no middleware. The ~25-40µs gap on ping between Node/HTTP and JSON/HTTP is entirely middleware overhead — server-side dispatch and TCP loopback are identical. On tools/list the gap nearly vanishes because response serialization dominates.
+*Rust HTTP pipelines include 4 Axum middleware layers (auth, rate-limit, request-logger, request-validator) + CORS + body-limit. Node/HTTP is a bare `http.createServer` with no middleware. The gap on ping between Node/HTTP and JSON/HTTP is 42 µs on warm avg (134 vs 92) and 24 µs on warm p50 (103 vs 79) — attributed to the middleware stack, since server-side dispatch and TCP loopback are the same for both pipelines. On tools/list the gap nearly vanishes because response serialization dominates.
 
 Transport is the dominant factor. Shared memory is an order of magnitude faster than stdio. Binary encoding (NDA) saves 1.5x-41.9x over JSON on the same transport.
 
 ### WASM Runtime Latency
 
-All numbers measured 2026-09-15 on Core 5 210H, release build, `text_analyze` tool via pre-compiled `call_tool` path:
+Measured 2026-09-17 on Core 5 210H, wasmer 5.0.6, release build, `cargo bench --bench wasm_vs_native` — same `text_analyze` tool and same input compiled for each language, WASM on a persistent instance vs the native CLI:
 
-| Language | Engine | Cold Start | Hot Call (avg) | Notes |
-|----------|--------|------------|-----------------|-------|
-| **Rust** | wasm32-wasi | 42.1 ms | **4.4 µs** | batched path |
-| **JavaScript** | QuickJS | 519.1 ms | **116.9 µs** | 8.6K calls/s |
-| **TypeScript** | QuickJS+TS | 142.7 ms | **~117 µs** | inherits QuickJS engine |
-| **PHP** | php-wasm | 117.1 ms | **16.5 µs** | batched path |
-| **Java** | Wasmtime | 98.8 ms | **16.8 µs** | |
-| **Julia** | Wasmtime | 102.1 ms | **18.0 µs** | |
-| **Perl** | zeroperl | 121.1 ms | **18.4 µs** | |
-| **C#** | Wasmtime | 96.5 ms | **18.6 µs** | |
-| **R** | Wasmtime | 106.4 ms | **18.7 µs** | |
-| **Lua** | Lua 5.4 | 257.5 ms | **47.9 µs** | 20.9K calls/s |
-| **Python** | MicroPython | 282.5 ms | **43.6 µs** | 23.0K calls/s |
-| **Go** | TinyGo | 695.8 ms | 328.4 µs* | cached module |
+| Language | WASM hot (µs/call) | Native hot (µs/call) | WASM vs native | WASM cold (ms) | Native cold (ms) |
+|----------|--------------------|----------------------|----------------|----------------|------------------|
+| **JavaScript** (QuickJS) | **15.7** (63.8K calls/s) | 68.3 (Node.js) | **4.36x** | 149.9 | 70.6 |
+| **Python** (MicroPython) | **15.1** (66.0K calls/s) | 47.8 (CPython) | **3.16x** | 80.5 | 249.4 |
+| **Lua** | **11.1** (90.3K calls/s) | 40.8 (Lua 5.4) | **3.69x** | 82.5 | 45.7 |
+| **Go** (TinyGo) | 257.3 cached (3.9K calls/s) | not measured | — | 184.7 | not measured |
 
-*Go uses cached module instantiation per call. All three in-process runtimes (QuickJS, MicroPython, Lua) use pre-compiled wrappers — tool source is compiled once at registration, then called via `call_tool` with JSON arg parsing.
-Ruby/mruby runs on Wasmer with stubbed setjmp/longjmp (no WASM EH).
+Go has no persistent instance — the module is instantiated per call. Reusing the compiled module drops the per-call cost from 191,575.0 µs to 257.3 µs, a **744.5x** cache speedup. Native Go was not installed on this machine, so no Go WASM-vs-native ratio exists.
+
+Cold start is WASM *slower* for JavaScript (149.9 vs 70.6 ms) and Lua (82.5 vs 45.7 ms), and WASM *faster* for Python (80.5 vs 249.4 ms).
+
+**Not re-measured this run** (no fresh numbers, so the previous table rows were dropped rather than carried over): Rust, TypeScript, Ruby, PHP, C#, Java, R, Julia, Perl.
+
+*The in-process runtimes (QuickJS, MicroPython, Lua) use pre-compiled wrappers — tool source is compiled once at registration, then called via `call_tool` with JSON arg parsing. Ruby/mruby runs on Wasmer with stubbed setjmp/longjmp (no WASM EH).
 
 6 additional languages use tree-walk interpreters sharing a common C core with full control flow, functions, data structures, and JSON I/O. See [WASM Runtime Status](docs/wasm_runtime_status.md) for details.
 
@@ -178,7 +175,7 @@ Zero-copy TLV parsing with SHA-256 Merkle integrity verification on every frame:
 - 7 WASM language runtimes (JavaScript, TypeScript, Python, Lua, Ruby, Rust, Go)
 - Client SDKs in 4 languages (Rust, Python, TypeScript, Go)
 - Type-safe tool registration via proc macros
-- Wasmer-powered execution: metering middleware (configurable instruction limit), module caching (~15x faster cold starts, measured on the Lua cache path)
+- Wasmer-powered execution: metering middleware (configurable instruction limit), module caching for every runtime (measured 2026-09-17: first create vs cache hit ranges from 1.2x (TypeScript) to 29.8x (Go), 13.8x for Lua, 12.3x for QuickJS)
 
 ### Built-in Tools
 
