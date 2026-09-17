@@ -88,14 +88,14 @@ Returns real-time performance metrics.
   },
   "throughput": {
     "total_requests": 15234,
-    "requests_per_second": 4.23,
+    "requests_per_second": "4.2",
     "successful_requests": 15200,
     "failed_requests": 34
   },
   "latency": {
-    "average_us": 164.5,
-    "average_ms": 0.1645,
-    "total_processing_ms": 2503.2
+    "average_us": "164.5",
+    "average_ms": "0.165",
+    "total_processing_ms": "2503.2"
   },
   "connections": {
     "active_sse": 5,
