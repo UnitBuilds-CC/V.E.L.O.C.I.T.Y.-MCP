@@ -6,7 +6,7 @@ Deploy VELOCITY-MCP as a serverless WebAssembly application on Wasmer Edge. Zero
 
 ## Table of Contents
 
-1. [Quick Start: Deploy in 5 Minutes](#1-quick-start-deploy-in-5-minutes)
+1. [Quick Start: WASIX HTTP Preview](#1-quick-start-wasix-http-preview)
 2. [Architecture Overview](#2-architecture-overview)
 3. [Configuration Reference](#3-configuration-reference)
 4. [API Reference](#4-api-reference)
@@ -18,63 +18,61 @@ Deploy VELOCITY-MCP as a serverless WebAssembly application on Wasmer Edge. Zero
 
 ---
 
-## 1. Quick Start: Deploy in 5 Minutes
+## 1. Quick Start: WASIX HTTP Preview
+
+**Verified live 2026-09-17 on the public default** (`https://velocity-mcp-edge.wasmer.app`): the WASIX Hyper/Tokio MCP server (~1 MB binary) serves `/health` (200), `initialize`, `tools/list` with request `id` preserved and 10 tools, repeated `echo` calls, and rejects malformed JSON. The steps below rebuild from source and deploy a preview before you activate a public default.
 
 ### Prerequisites
 
-- Rust toolchain with `wasm32-wasip1` target installed
-- Wasmer CLI v7+ installed and authenticated
-- Git (to clone the repository)
+- Python 3 (`python` below; use `python3` if required by your installation)
+- `cargo-wasix` 0.1.34 and an already installed rustup `+wasix` toolchain
+- Wasmer CLI, authenticated for preview deployment
+- A local checkout of this repository
 
-### Step 1: Install Prerequisites
+### Step 1: Check Prerequisites
 
 ```bash
-# Install Rust (if not already installed)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Add WASM target
-rustup target add wasm32-wasip1
-
-# Install Wasmer CLI
-curl -sSf https://get.wasmer.io | sh
-
-# Authenticate with Wasmer
+python --version
+cargo wasix --version
+rustup run wasix rustc --version
+wasmer --version
 wasmer login
 ```
 
-### Step 2: Clone and Build
+Use the WASIX toolchain, not a standard Rust `wasm32-wasip1` target installation, for Edge HTTP.
+
+### Step 2: Build from the Repository Root
 
 ```bash
-git clone https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP.git
-cd V.E.L.O.C.I.T.Y.-MCP
-
-# Build the WASM binary (optimized for Edge)
-cargo build --target wasm32-wasip1 --release --bin velocity-edge
+python deploy/build-edge.py
+# Output: target/wasm32-wasmer-wasi/release/velocity-edge.wasm
 ```
 
-### Step 3: Deploy
+The entrypoint copies current `velocity-mcp-core` and `velocity-mcp-edge` sources into an isolated temporary workspace, uses `deploy/edge-wasix.lock` and the official sparse registry `https://cargo-registry.wasix.org/`, and sets `CARGO_HTTP_MULTIPLEXING=false`. The native root `Cargo.lock` and `.cargo/config.toml` remain untouched.
+
+### Step 3: Run Locally, Then Create a Preview
+
+Use the [manifest below](#wasmertoml-configuration): `[[module]]` points to the WASIX artifact, `[[command]]` uses `https://webc.org/runner/wasi`, and `[command.annotations.wasi]` sets `env = ["PORT=80"]`.
 
 ```bash
-# One-command deploy (builds, validates, deploys, and verifies)
-# On Linux/macOS:
-./deploy-edge.sh
-
-# On Windows:
-deploy-edge.bat
+wasmer run .
+# In another terminal, check the local HTTP listener:
+curl http://localhost:80/health
 ```
 
-### Step 4: Verify
+After local checks, create a preview without activating the public default:
 
 ```bash
-# Replace with your actual Edge endpoint URL
-curl https://<your-app>.wasmer.app/health
-# Expected: {"status":"healthy","version":"3.2.0"}
+wasmer deploy --no-activate
 ```
 
-### Step 5: Send Your First MCP Request
+### Step 4: Verify the Preview
+
+Use the preview URL returned by the CLI, not an assumed public-default URL:
 
 ```bash
-curl -X POST https://<your-app>.wasmer.app/mcp \
+curl https://<preview-host>/health
+curl -X POST https://<preview-host>/mcp \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
@@ -88,11 +86,13 @@ curl -X POST https://<your-app>.wasmer.app/mcp \
   }'
 ```
 
-That is it. Your VELOCITY-MCP server is running on Wasmer Edge.
+Also check `tools/list` (the response must preserve your request `id`) and `tools/call` with `echo`, using the API examples below. Supply `X-API-Key` if authentication is configured. Complete regression and auth/limits/CORS checks before activation.
 
 ---
 
 ## 2. Architecture Overview
+
+The HTTP implementation is enabled with `cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))`, retaining the existing Hyper/Tokio server and its auth, request/rate limits and CORS on WASIX. `deploy/build-edge.py` compiles the module with a shared linear memory (`+atomics,+bulk-memory,+mutable-globals`), so tokio's `rt-multi-thread` runs a real worker pool (measured `available_parallelism()` = 2 on Edge). Plain WASI CGI is a separate entrypoint. The earlier `wasm32-wasip1` CGI artifact failed in its deployed configuration; this does not establish a general WCGI failure. Note the shared-memory binary does not run under the local `wasmer` 7.4.1 CLI (bind fails with `ENOTSUP`); only Edge's newer runtime serves it, so use a preview/live endpoint — not local `wasmer run` — to smoke-test the multi-threaded build.
 
 ### Edge vs Native Deployment
 
@@ -170,7 +170,7 @@ Client Request
 
 ## 3. Configuration Reference
 
-All configuration is managed through `wasmer.toml` at the project root. Environment variables can override defaults at deploy time.
+`wasmer.toml` packages the WASIX HTTP command. Configure Edge application settings separately through the supported Wasmer deployment configuration; legacy `[edge]` examples are not a substitute for runner/port configuration.
 
 ### wasmer.toml Configuration
 
@@ -178,57 +178,23 @@ All configuration is managed through `wasmer.toml` at the project root. Environm
 [package]
 name = "velocity-mcp-edge"
 version = "3.2.0"
-description = "VELOCITY-MCP serverless deployment on Wasmer Edge"
+description = "VELOCITY-MCP WASIX HTTP server"
 
-[module]
-# Path to the compiled WASM binary
-main = "target/wasm32-wasip1/release/velocity_edge.wasm"
+[[module]]
+name = "velocity-edge"
+source = "target/wasm32-wasmer-wasi/release/velocity-edge.wasm"
+abi = "wasi"
 
-[edge]
-# Memory allocation per instance (MB)
-# Free tier: max 128MB. Production: up to 2048MB
-memory_mb = 128
+[[command]]
+name = "velocity-edge"
+module = "velocity-edge"
+runner = "https://webc.org/runner/wasi"
 
-# Maximum WASM instructions per single request
-# 5M instructions ~= 50ms compute budget at typical throughput
-# Increase for complex tool executions; decrease for stricter cost control
-instruction_limit = 5_000_000
-
-# Minimum instances to keep warm (0 = scale to zero when idle)
-# Setting to 1 eliminates cold starts at the cost of idle billing
-min_instances = 0
-
-# Maximum concurrent instances before rejecting new requests
-# Free tier: keep at 3. Production: increase to 10-50
-max_instances = 3
-
-[edge.env]
-# Logging verbosity: "error", "warn", "info", "debug", "trace"
-# Use "warn" on free tier to minimize overhead
-RUST_LOG = "warn"
-
-# Optional: API key for request authentication
-# VELOCITY_API_KEY = "your-secret-key-here"
-
-# Optional: Maximum request body size in bytes (default: 1MB)
-# MAX_BODY_SIZE = "1048576"
-
-# Optional: Allowed CORS origins (comma-separated, or "*" for all)
-# ALLOWED_ORIGINS = "*"
-
-# Optional: Rate limit per minute per IP (default: 100, 0 to disable)
-# RATE_LIMIT_PER_MINUTE = "100"
-
-[edge.healthcheck]
-# Health check endpoint path
-path = "/health"
-
-# How often Wasmer checks instance health (seconds)
-interval_seconds = 30
-
-# Number of consecutive failures before marking unhealthy
-# A lower value detects failures faster but may cause false positives
+[command.annotations.wasi]
+env = ["PORT=80"]
 ```
+
+Use `[[module]]` with `source`, not the old `[module] main` layout. Keep `PORT=80` for Edge's HTTP listener. Supply other variables through the command environment or deployment-time environment/secrets, rather than `[edge.env]`.
 
 ### Environment Variables Reference
 
@@ -239,40 +205,24 @@ interval_seconds = 30
 | `MAX_BODY_SIZE` | `1048576` | Maximum request body in bytes (1MB default) |
 | `ALLOWED_ORIGINS` | (none) | Comma-separated CORS origins, or "*" for all |
 | `RATE_LIMIT_PER_MINUTE` | `100` | Max requests per minute per IP (0 to disable) |
-| `PORT` | `8080` | HTTP listen port (overridden by Edge platform) |
+| `PORT` | `8080` | HTTP listen port; explicitly set to `80` in the Edge command annotations |
 
 ### Configuration Examples
 
-**Minimal free-tier deployment:**
+For request limits and CORS, replace the manifest's existing annotation table (do not append a duplicate):
 
 ```toml
-[edge]
-memory_mb = 128
-instruction_limit = 5_000_000
-min_instances = 0
-max_instances = 3
-
-[edge.env]
-RUST_LOG = "warn"
-VELOCITY_API_KEY = "sk-your-secret-key-here"
+[command.annotations.wasi]
+env = [
+  "PORT=80",
+  "RUST_LOG=warn",
+  "MAX_BODY_SIZE=1048576",
+  "ALLOWED_ORIGINS=https://your-client.example",
+  "RATE_LIMIT_PER_MINUTE=100",
+]
 ```
 
-**Production deployment with authentication:**
-
-```toml
-[edge]
-memory_mb = 512
-instruction_limit = 10_000_000
-min_instances = 1
-max_instances = 20
-
-[edge.env]
-RUST_LOG = "info"
-VELOCITY_API_KEY = "sk-..."
-MAX_BODY_SIZE = "4194304"  # 4MB
-ALLOWED_ORIGINS = "*"
-RATE_LIMIT_PER_MINUTE = "200"
-```
+Inject `VELOCITY_API_KEY` through deployment-time environment/secrets rather than committing a key. These settings configure the existing HTTP middleware; verify them on the preview before activation.
 
 ---
 
@@ -504,7 +454,7 @@ The WASM edge deployment uses 10 pure-Rust tools that compile to WebAssembly wit
 | base64_decode | Decode Base64 to text |
 | hash_text | Compute SHA-256/SHA-1/MD5 hash |
 
-**Why not WASM language runtimes on Edge?** Wasmer's Cranelift backend JIT-compiles WASM to native machine code. Inside a WASM/WASIX environment, there is no native execution environment — you cannot JIT to code you cannot run. WASM modules also cannot be loaded or instantiated from within a WASM sandbox. The edge deployment therefore uses pure Rust implementations instead.
+**Why not WASM language runtimes in this Edge artifact?** The current build includes the pure-Rust tools, not the native Wasmer/Cranelift plugin subsystem. WASIX HTTP support does not automatically port that subsystem; nested interpreters or runtime integrations require separate implementation and validation. This is a limitation of this build, not a general prohibition on nested WASM execution.
 
 ### Native Deployment: Full WASM Language Runtime Support
 
@@ -512,7 +462,7 @@ The native build supports 7 production WASM language runtimes (QuickJS/JavaScrip
 
 ---
 
-### Example Plugin Manifest (Edge-Compatible)
+### Example Plugin Manifest (Native Only; Not in the Current Edge Artifact)
 
 ```json
 {
@@ -543,12 +493,7 @@ The native build supports 7 production WASM language runtimes (QuickJS/JavaScrip
 
 ### API Key Authentication
 
-Enable API key authentication by setting the `VELOCITY_API_KEY` environment variable:
-
-```toml
-[edge.env]
-VELOCITY_API_KEY = "sk-your-secret-key-here"
-```
+Enable API key authentication by injecting `VELOCITY_API_KEY` into the command environment through deployment-time environment/secrets. Do not commit keys to `wasmer.toml` or use the legacy `[edge.env]` layout.
 
 Clients must include the key in the X-API-Key header:
 
@@ -563,28 +508,11 @@ Without a valid key, requests receive a `401 Unauthorized` response.
 
 ### Request Size Limits
 
-Prevent abuse by limiting request body size:
-
-```toml
-[edge.env]
-MAX_BODY_SIZE = "1048576"  # 1MB default
-ALLOWED_ORIGINS = "*"      # CORS origins
-RATE_LIMIT_PER_MINUTE = "100"  # Rate limit per IP
-```
+Set `MAX_BODY_SIZE`, `ALLOWED_ORIGINS` and `RATE_LIMIT_PER_MINUTE` in the command environment, as shown in [Configuration Examples](#configuration-examples). The WASIX HTTP path uses the existing body-size, rate-limit and CORS middleware; test rejection and preflight behavior on the preview.
 
 ### Instruction Limits (Metering)
 
-The instruction limit prevents runaway computations and controls costs:
-
-```toml
-[edge]
-instruction_limit = 5_000_000  # ~50ms compute budget
-```
-
-When a tool execution exceeds this limit, the request is terminated and an error is returned to the client. This protects against:
-- Infinite loops in plugin code
-- Excessive resource consumption
-- Unexpected cost spikes
+Native plugin metering is separate from the WASIX HTTP server's request/rate limits. The legacy `[edge] instruction_limit` snippets do not establish per-request metering for this build. Validate supported platform resource controls separately; do not convert instruction counts into assumed execution times.
 
 ### Security Warnings
 
@@ -598,63 +526,27 @@ When a tool execution exceeds this limit, the request is terminated and an error
 
 ## 7. Performance Tuning
 
+The verified WASIX artifact is approximately 1.3 MB. Cold-start latency, warm-request latency and throughput have not been established for this build; the earlier timing estimates and instruction-to-time conversions were not measurements.
+
 ### Free Tier Optimization
 
-The free tier has strict limits. These settings maximize throughput within those constraints:
-
-```toml
-[edge]
-memory_mb = 128          # Minimum viable memory
-instruction_limit = 5_000_000  # Keep low to stay within free invocation budget
-min_instances = 0        # Scale to zero when idle (no idle charges)
-max_instances = 3        # Conservative scaling
-
-[edge.env]
-RUST_LOG = "warn"       # Minimal logging reduces CPU overhead
-```
+Check current plan limits and supported application settings before choosing scaling or resource budgets. Legacy `[edge]` templates are not validated tuning instructions for the WASIX runner.
 
 ### Latency Optimization
 
-To minimize latency at the cost of higher billing:
-
-```toml
-[edge]
-min_instances = 1        # Keep at least one instance warm (eliminates cold starts)
-max_instances = 10       # Allow more concurrent instances
-
-[edge.env]
-RUST_LOG = "error"      # Only log errors to minimize I/O
-```
+Measure health and MCP calls against the preview, recording client location, payload and concurrency. Do not infer latency from artifact size or successful smoke checks.
 
 ### Cold Start Behavior
 
-- **min_instances = 0**: First request after idle may take 100-500ms (cold start). Subsequent requests are fast (<10ms).
-- **min_instances = 1**: One instance is always warm. No cold starts, but you are billed for idle time.
+Measure first-call and subsequent-call behavior separately; no cold-start elimination guarantee is established here.
 
 ### Memory Tuning
 
-If you see out-of-memory errors:
-
-```toml
-[edge]
-memory_mb = 256  # Increase from 128
-```
-
-If you want to minimize cost and memory footprint:
-
-```toml
-[edge]
-memory_mb = 64  # Tight but possible for simple workloads
-```
+Use observed memory usage and out-of-memory logs to choose supported platform limits, then repeat representative tool calls.
 
 ### Instruction Budget Tuning
 
-| Budget | Approximate Time | Use Case |
-|--------|-----------------|----------|
-| 1,000,000 | ~10ms | Simple echo, ping, health checks |
-| 5,000,000 | ~50ms | Standard tool execution |
-| 10,000,000 | ~100ms | Complex data transformation |
-| 50,000,000 | ~500ms | Heavy computation, large data processing |
+Validate any platform instruction budget independently of native plugin metering and HTTP request limits. Instruction counts alone do not specify wall-clock time.
 
 ---
 
@@ -662,23 +554,23 @@ memory_mb = 64  # Tight but possible for simple workloads
 
 ### Build Errors
 
-**Error: `target not found: wasm32-wasip1`**
+**Missing `cargo wasix` or `wasm32-wasmer-wasi` support**
+
+Check `cargo wasix --version` (verified with 0.1.34) and `rustup run wasix rustc --version`. The Edge build requires the installed `+wasix` toolchain; installing a standard `wasm32-wasip1` target does not provide WASIX HTTP support.
+
+**Registry download or HTTP/2 errors**
+
+Use `python deploy/build-edge.py`, which selects the official sparse registry `https://cargo-registry.wasix.org/` with `CARGO_HTTP_MULTIPLEXING=false`. Check network access to that registry; do not work around this by replacing the native root `Cargo.lock` or `.cargo/config.toml`.
+
+**Missing core crate, dependency resolution or linker errors**
+
+Run the entrypoint from the repository root with current core/edge sources and `deploy/edge-wasix.lock` present:
 
 ```bash
-rustup target add wasm32-wasip1
+python deploy/build-edge.py
 ```
 
-**Error: `cannot find crate 'velocity_mcp_core'`**
-
-Ensure you are building from the workspace root:
-
-```bash
-cargo build --target wasm32-wasip1 --release --bin velocity-edge
-```
-
-**Error: linker errors or undefined references**
-
-The `velocity-mcp-core` crate must compile for `wasm32-wasip1`. It has no OS-specific dependencies. If you added dependencies to the core crate, verify they support WASM targets.
+Check any new dependencies for WASIX compatibility. Building the plain WASI CGI entrypoint or using an old copied workspace does not validate the current HTTP server.
 
 ### Deployment Errors
 
@@ -690,49 +582,37 @@ wasmer login
 
 **Error: `binary too large` or `exceeds maximum module size`**
 
-Check binary size:
+Check the artifact referenced by the manifest:
 
 ```bash
-ls -lh target/wasm32-wasip1/release/velocity_edge.wasm
+ls -lh target/wasm32-wasmer-wasi/release/velocity-edge.wasm
 ```
 
-If over 5MB, check your dependency tree for heavy crates. The Edge binary should only depend on `velocity-mcp-core`, `hyper`, `tokio`, and `serde_json`.
+The verified build was approximately 1.3 MB. If yours differs substantially, check the release build and dependency changes against current platform limits; size alone does not verify HTTP behavior.
 
 **Error: `deployment rejected: memory exceeds limit`**
 
-Reduce `memory_mb` in `wasmer.toml` to match your plan limits.
+Check the supported Edge application resource settings against your plan limits, rather than adding legacy `[edge]` fields to the package manifest.
 
 ### Runtime Errors
 
-**Health check returns `503`**
+**Health check returns `503`, or the server does not listen**
 
-The instance is still initializing. Wait 10-30 seconds and retry. If it persists, check logs:
+Check that `[[module]].source` references the new WASIX artifact, `[[command]].runner` is `https://webc.org/runner/wasi`, and `[command.annotations.wasi]` includes `env = ["PORT=80"]`. Inspect startup logs and test the preview URL returned by the CLI. A stale public-default URL may still refer to an older deployment.
 
-```bash
-wasmer edge logs <app-name>
-```
+The earlier plain `wasm32-wasip1` CGI entrypoint failed in its deployed configuration. Diagnose the artifact, runner and port together; do not infer that WCGI is globally broken.
 
-**Tool execution returns instruction limit error**
+**Tool execution returns a resource-limit error or runs out of memory**
 
-Increase the instruction limit in `wasmer.toml`:
-
-```toml
-[edge]
-instruction_limit = 10_000_000
-```
-
-**Out of memory during tool execution**
-
-Increase memory allocation:
-
-```toml
-[edge]
-memory_mb = 256
-```
+Inspect the actual error and supported platform limits before changing resource allocations. Native plugin metering and HTTP body/rate limits are distinct; a legacy `[edge] instruction_limit` entry is not a verified fix for this build.
 
 **Requests timing out**
 
-Check the instruction limit in `wasmer.toml` and increase if needed. Complex tools may need more than the default 5M instructions. Also verify the tool being called is not hitting an infinite loop or excessive computation.
+First verify health and the runner/port configuration, then inspect logs and the tool's input and computation. Repeat against the same preview to avoid testing a different public-default version.
+
+**`tools/list` returns the wrong JSON-RPC `id`**
+
+Rebuild from current sources using `python deploy/build-edge.py` and retest with distinct numeric and string IDs. A request-ID preservation regression fix is under test; confirm the response retains the exact request ID before activation.
 
 **`401 Unauthorized` on all requests**
 

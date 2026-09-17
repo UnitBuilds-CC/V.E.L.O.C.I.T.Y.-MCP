@@ -1,13 +1,52 @@
 # Wasmer Edge Deployment Strategy for VELOCITY-MCP
 
-## Overview
+## Current Supported Path: WASIX HTTP (2026-09-17)
 
-Wasmer Edge is Wasmer's serverless platform designed for WebAssembly workloads. It provides automatic scaling, persistent volumes, and cronjob support with sub-millisecond cold starts.
+The full existing Hyper/Tokio MCP HTTP server builds for `wasm32-wasmer-wasi` using `cargo-wasix` 0.1.34 and the installed rustup `+wasix` toolchain. HTTP is enabled by `cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))`, including the existing auth, request/rate limits and CORS. No replacement HTTP adapter is required. The build compiles with a shared linear memory (`+atomics,+bulk-memory,+mutable-globals`), so tokio `rt-multi-thread` runs a genuine multi-threaded worker pool (measured `available_parallelism()` = 2 on the live Edge instance; Edge caps an instance at 2 CPUs). This is a multi-threaded, not single-threaded, deployment.
 
-## Key Features
+Prerequisites: Python 3, `cargo-wasix`, the installed `+wasix` toolchain and Wasmer CLI. From the repository root:
+
+```bash
+python deploy/build-edge.py
+```
+
+This reproducible entrypoint builds current core/edge sources in an isolated temporary workspace using `deploy/edge-wasix.lock`, the official sparse registry `https://cargo-registry.wasix.org/`, and `CARGO_HTTP_MULTIPLEXING=false`. It leaves the native root `Cargo.lock` and `.cargo/config.toml` untouched. The artifact is `target/wasm32-wasmer-wasi/release/velocity-edge.wasm`.
+
+The package manifest uses the WASI runner, not the old `[module] main` layout:
+
+```toml
+[[module]]
+name = "velocity-edge"
+source = "target/wasm32-wasmer-wasi/release/velocity-edge.wasm"
+abi = "wasi"
+
+[[command]]
+name = "velocity-edge"
+module = "velocity-edge"
+runner = "https://webc.org/runner/wasi"
+
+[command.annotations.wasi]
+env = ["PORT=80"]
+```
+
+Verified live 2026-09-17 on the public default (`https://velocity-mcp-edge.wasmer.app`): health, `initialize`, `tools/list` (request `id` preserved, 10 tools), repeated echo calls, and malformed-JSON rejection all work with the approximately 1 MB WASIX binary. Activation is complete. Cold-start and latency figures remain unmeasured. See the [Edge User Guide](edge_user_guide.md) for preview steps.
+
+Plain WASI CGI remains separate. The earlier `wasm32-wasip1` CGI entrypoint failed in its deployed configuration; that does not establish that WCGI is globally broken.
+
+For getting language runtimes (WASM plugins) onto Edge — nested interpreter vs relay, with measured latency and the shmem/VCTP analysis — see [Edge Nested-WASM vs Relay — Findings](edge_nested_relay_findings.md).
+
+## Historical Strategy Notes — Not Current Deployment Instructions
+
+The remaining options, roadmap and platform assumptions are retained as historical proposals, not validated capabilities or recommendations for the current artifact. The supported path above supersedes the proposed HTTP adapter and build pipeline. Pricing, limits and runtime integrations require separate validation.
+
+## Overview (Historical)
+
+Wasmer Edge is Wasmer's serverless platform designed for WebAssembly workloads. The following platform features were considered during planning; they are not performance guarantees for this server.
+
+## Key Features (Historical)
 
 ### Performance
-- **Cold Start Time**: <1ms (WASM modules load instantly without container overhead)
+- **Cold Start Time**: Not measured for this build; earlier sub-millisecond estimates were speculative.
 - **Auto-scaling**: Scales to zero when idle, scales up automatically under load
 - **Global CDN**: Deployments distributed across edge locations worldwide
 
@@ -29,9 +68,9 @@ VELOCITY-MCP's 7 production language runtimes (and 6 planned runtimes) must be c
 - Export `_start` or HTTP handler function
 - Maximum module size: ~50MB per runtime
 
-### Current Compatibility Assessment
+### Historical Runtime Candidates (Not Validated Edge Support)
 
-**Production Runtimes (7, production-ready)**:
+**Native Runtimes (7; not included in the current Edge artifact)**:
 - Rust/WASM (wasm32-wasi target)
 - Lua/WASI reactor
 - MicroPython/WASI reactor
@@ -48,14 +87,14 @@ VELOCITY-MCP's 7 production language runtimes (and 6 planned runtimes) must be c
 - Julia/WASI
 - C#/.NET (with WASI runtime)
 
-All runtimes already use WASI imports via `build_wasi_imports()`, making them compatible with Wasmer Edge.
+WASI imports alone do not establish Edge compatibility. The current artifact does not embed the native Wasmer/Cranelift plugin subsystem. Nested interpreters or runtime integrations require separate implementation and testing; they are neither automatically supported nor categorically impossible.
 
-## Deployment Architecture Options
+## Deployment Architecture Options (Historical)
 
-### Option 1: Full Server Migration (Recommended for Cloud Mode)
-Deploy entire VELOCITY-MCP server as WASM module on Wasmer Edge:
-- Compile Rust binary to `wasm32-wasip1` target
-- Replace Axum HTTP server with WASI-HTTP handler
+### Option 1: Full Server Migration (Historical Proposal)
+The original proposal was to deploy the entire native server as a WASM module:
+- Compile the Rust binary to a plain WASI target (superseded by the WASIX HTTP build above)
+- Replace Axum with a WASI-HTTP handler (not needed for the existing Hyper/Tokio Edge server)
 - Use Wasmer Edge volumes for plugin storage and audit logs
 - Leverage built-in metering for resource limits
 

@@ -233,10 +233,10 @@ git clone --branch v3.2.0 https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP.
 cd V.E.L.O.C.I.T.Y.-MCP
 
 # 2. Build
-cargo build --target wasm32-wasip1 --release --bin velocity-edge
+python deploy/build-edge.py
 
 # 3. Verify binary
-ls -lh target/wasm32-wasip1/release/velocity_edge.wasm
+ls -lh target/wasm32-wasmer-wasi/release/velocity-edge.wasm
 
 # 4. Deploy
 wasmer deploy
@@ -252,7 +252,7 @@ curl https://<your-app>.wasmer.app/health
 git checkout v3.1.0  # or the previous known-good tag
 
 # 2. Rebuild
-cargo build --target wasm32-wasip1 --release --bin velocity-edge
+python deploy/build-edge.py
 
 # 3. Redeploy (overwrites current deployment)
 wasmer deploy
@@ -323,7 +323,7 @@ wasmer edge logs <app-name> --tail 50
 ```bash
 # Step 6: Try rolling back to previous version
 git checkout <previous-known-good-tag>
-cargo build --target wasm32-wasip1 --release --bin velocity-edge
+python deploy/build-edge.py
 wasmer deploy
 
 # Step 7: If still failing, activate failover
@@ -347,12 +347,12 @@ wasmer edge logs <app-name> --tail 100 | grep -i "error\|oom\|instruction"
 
 # Step 2: If OOM errors, increase memory and redeploy
 # Edit wasmer.toml: memory_mb = 256
-cargo build --target wasm32-wasip1 --release --bin velocity-edge
+python deploy/build-edge.py
 wasmer deploy
 
 # Step 3: If instruction limit errors, increase limit and redeploy
 # Edit wasmer.toml: instruction_limit = 10_000_000
-cargo build --target wasm32-wasip1 --release --bin velocity-edge
+python deploy/build-edge.py
 wasmer deploy
 ```
 
@@ -496,7 +496,7 @@ cargo update
 cargo test --all-features
 
 # 4. Build WASM binary
-cargo build --target wasm32-wasip1 --release --bin velocity-edge
+python deploy/build-edge.py
 
 # 5. Deploy
 wasmer deploy
@@ -549,7 +549,7 @@ wasmer edge metrics <app-name>
 | View metrics | `wasmer edge metrics <app-name>` |
 | List deployments | `wasmer edge list` |
 | Redeploy | `./deploy-edge.sh` |
-| Rollback | `git checkout <tag> && cargo build --target wasm32-wasip1 --release --bin velocity-edge && wasmer deploy` |
+| Rollback | `git checkout <tag> && python deploy/build-edge.py && wasmer deploy` |
 | Increase memory | Edit `wasmer.toml`, set `memory_mb`, redeploy |
 | Increase instances | Edit `wasmer.toml`, set `max_instances`, redeploy |
 | Check platform status | Visit `wasmer.io/status` |

@@ -91,25 +91,25 @@ Transport is the dominant factor. Shared memory is an order of magnitude faster 
 
 ### WASM Runtime Latency
 
-All numbers measured 2026-09-13 on Core 5 210H, release build, `text_analyze` tool:
+All numbers measured 2026-09-15 on Core 5 210H, release build, `text_analyze` tool via pre-compiled `call_tool` path:
 
-| Language | Engine | Cold Start | Hot Call (P50) | P95 | P99 |
-|----------|--------|------------|-----------------|-----|-----|
-| **Rust** | wasm32-wasi | 42.1 ms | **4.4 µs** | 4.6 µs | 5.0 µs |
-| **JavaScript** | QuickJS | 197.7 ms | **59.5 µs** | 70.0 µs | 125.9 µs |
-| **TypeScript** | QuickJS+TS | 142.7 ms | **60.1 µs** | 138.7 µs | 150.3 µs |
-| **PHP** | php-wasm | 117.1 ms | **16.5 µs** | 26.7 µs | 41.5 µs |
-| **Java** | Wasmtime | 98.8 ms | **16.8 µs** | 25.0 µs | 36.2 µs |
-| **Julia** | Wasmtime | 102.1 ms | **18.0 µs** | 32.5 µs | 145.0 µs |
-| **Perl** | zeroperl | 121.1 ms | **18.4 µs** | 28.6 µs | 84.7 µs |
-| **C#** | Wasmtime | 96.5 ms | **18.6 µs** | 25.7 µs | 31.6 µs |
-| **R** | Wasmtime | 106.4 ms | **18.7 µs** | 29.2 µs | 60.3 µs |
-| **Lua** | Lua 5.4 | 10.9 ms | **22.0 µs** | 36.0 µs | 52.4 µs |
-| **Go** | TinyGo | 695.8 ms | 328.4 µs* | 504.8 µs | 1996.0 µs |
-| **Python** | MicroPython | 113.3 ms | — | — | — |
+| Language | Engine | Cold Start | Hot Call (avg) | Notes |
+|----------|--------|------------|-----------------|-------|
+| **Rust** | wasm32-wasi | 42.1 ms | **4.4 µs** | batched path |
+| **JavaScript** | QuickJS | 519.1 ms | **116.9 µs** | 8.6K calls/s |
+| **TypeScript** | QuickJS+TS | 142.7 ms | **~117 µs** | inherits QuickJS engine |
+| **PHP** | php-wasm | 117.1 ms | **16.5 µs** | batched path |
+| **Java** | Wasmtime | 98.8 ms | **16.8 µs** | |
+| **Julia** | Wasmtime | 102.1 ms | **18.0 µs** | |
+| **Perl** | zeroperl | 121.1 ms | **18.4 µs** | |
+| **C#** | Wasmtime | 96.5 ms | **18.6 µs** | |
+| **R** | Wasmtime | 106.4 ms | **18.7 µs** | |
+| **Lua** | Lua 5.4 | 257.5 ms | **47.9 µs** | 20.9K calls/s |
+| **Python** | MicroPython | 282.5 ms | **43.6 µs** | 23.0K calls/s |
+| **Go** | TinyGo | 695.8 ms | 328.4 µs* | cached module |
 
-*Go uses cached module instantiation per call. Python fails on sustained hot calls (state pollution after ~10 calls).
-Ruby/mruby skipped (WASM EH incompatibility with Wasmer).
+*Go uses cached module instantiation per call. All three in-process runtimes (QuickJS, MicroPython, Lua) use pre-compiled wrappers — tool source is compiled once at registration, then called via `call_tool` with JSON arg parsing.
+Ruby/mruby runs on Wasmer with stubbed setjmp/longjmp (no WASM EH).
 
 6 additional languages use tree-walk interpreters sharing a common C core with full control flow, functions, data structures, and JSON I/O. See [WASM Runtime Status](docs/wasm_runtime_status.md) for details.
 
@@ -328,17 +328,22 @@ tools, err := client.ListTools()
 
 ## Wasmer Edge Deployment
 
-Deploy as a serverless WebAssembly application on Wasmer Edge. Zero infrastructure, automatic scaling, global CDN.
+The existing Hyper/Tokio MCP HTTP server runs on Wasmer Edge as WASIX (`wasm32-wasmer-wasi`), including its auth, request/rate limits and CORS handling. It is built with a shared linear memory (`+atomics`), so tokio runs a genuine multi-threaded worker pool — `available_parallelism()` returns 2 on the live Edge instance (Edge caps an instance at 2 CPUs). Verified live 2026-09-17 on the public default (`https://velocity-mcp-edge.wasmer.app`): the approximately 1 MB binary serves `/health` (200), `initialize`, `tools/list` (request `id` preserved, 10 tools), repeated `echo` calls, 24–30 concurrent requests, and rejects malformed JSON. Activation is complete.
+
+Prerequisites: Python 3, `cargo-wasix` 0.1.34, an installed rustup `+wasix` toolchain, and Wasmer CLI. From the repository root:
 
 ```bash
-./deploy-edge.sh       # Linux/macOS
-deploy-edge.bat        # Windows
+python deploy/build-edge.py
+# Output: target/wasm32-wasmer-wasi/release/velocity-edge.wasm
 ```
+
+The reproducible build uses current core/edge sources in an isolated temporary workspace, `deploy/edge-wasix.lock`, the official registry `https://cargo-registry.wasix.org/`, and `CARGO_HTTP_MULTIPLEXING=false`. It leaves the native root `Cargo.lock` and `.cargo/config.toml` untouched. Package with runner `https://webc.org/runner/wasi` and `[command.annotations.wasi]` setting `env = ["PORT=80"]`; see the guide for the full manifest and preview steps.
+
+Plain WASI CGI remains a separate path, not the Edge HTTP build. Its earlier `wasm32-wasip1` entrypoint failed in the deployed configuration; that is not evidence that WCGI is globally broken.
 
 | Feature | Native Binary | Wasmer Edge |
 |---------|--------------|-------------|
 | Transport | stdio, HTTP, shmem, NDA | HTTP only |
-| Cold start | Instant | 100-500ms (min_instances=1 eliminates) |
 | Scaling | Manual | Automatic (0 to N) |
 | Built-in tools (10 pure-Rust) | Yes | Yes |
 | WASM plugin runtimes (7 langs) | Yes | No |

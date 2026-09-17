@@ -1,0 +1,222 @@
+# Wasmer Edge MCP Deployment Test Report
+
+## Correction — 2026-09-17
+
+The historical conclusions below are superseded. The deployed 3.17.0 WASM artifact contains real tool dispatch: direct CGI tests passed health, initialize, tools/list, echo and malformed-JSON handling. These are not successful live MCP tests.
+
+On Edge, the official prebuilt `wasmer-examples/rust-wcgi-starter@=0.1.23` also failed with missing `REQUEST_METHOD`. A separate TCP HTTP control, deliberately retaining the same WCGI runner annotation, returned repeated HTTP 200 responses with `x-edge-request-outcome: success` at https://lnh8imc0le5l.id.wasmer.app/ (version `dav_R8EIJtWu1rY3`). This demonstrates socket-proxy behavior for that deployment, not a working CGI request environment. It does not prove a platform-wide outage or explain the internal runner selection.
+
+Wasmer Edge is therefore not categorically unusable; adapting and verifying the MCP HTTP server remains necessary. Neither production readiness nor a successful live MCP deployment has been established. The observations below refer to older artifacts and must not be used as the current status.
+
+## Historical report
+
+**Date:** 2026-09-16  
+**Tested Version:** v3.2.35 (deployed), v3.2.38 (source)  
+**Endpoint:** https://velocity-mcp-edge.wasmer.app/mcp
+
+## Executive Summary
+
+**CRITICAL FINDING:** The Wasmer Edge deployment is **NOT VIABLE** for production MCP use. The deployed WASM binary uses a stub implementation that does not support tool execution. Only `initialize` and `tools/list` methods work; `tools/call` returns "Method not found".
+
+## Test Results
+
+### 1. Latency Benchmark
+
+**First Call (Cold Start):**
+- initialize: 2020ms
+- tools/list: 809ms
+- tool call: 769ms (failed - method not supported)
+
+**Warm Calls:**
+- initialize: 845ms
+- tools/list: 787ms
+- tool call: 787ms (failed - method not supported)
+
+**Sustained Load (20 calls):**
+- Average: 875ms
+- Range: 785ms - 1082ms
+- Total: 17.5s for 20 calls
+
+**Analysis:**
+- ~800ms latency is dominated by network round-trip (Namibia → US Ashburn)
+- Cold start penalty: ~1.2s for first initialize call
+- No significant warm-up benefit after first call
+- **This is moot** - the deployment doesn't support actual tool execution
+
+### 2. Tool Execution
+
+**Status:** ❌ NOT WORKING
+
+**Test:**
+```bash
+curl -X POST https://velocity-mcp-edge.wasmer.app/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"edge_ping","arguments":{}}}'
+```
+
+**Response:**
+```json
+{"error":{"code":-32601,"message":"Method not found: tools/call"},"id":1,"jsonrpc":"2.0"}
+```
+
+**Root Cause:**
+The WASM32 build path (`crates/velocity-mcp-edge/src/main.rs:1015-1072`) implements a hardcoded stub:
+- Only handles `initialize` and `tools/list`
+- `tools/list` returns hardcoded list with single `edge_ping` tool
+- All other methods fall through to generic "ok" response
+- No actual tool execution logic
+
+**Code Evidence:**
+```rust
+#[cfg(target_arch = "wasm32")]
+fn handle_request(method: &str, body: &[u8]) -> (u16, &'static str, String) {
+    match method {
+        "GET" => (200, "OK", r#"{"status":"healthy","version":"3.2.0"}"#.into()),
+        "POST" => {
+            // ... parse JSON ...
+            match method_name {
+                "initialize" => (200, "OK", /* hardcoded response */),
+                "tools/list" => (200, "OK", /* hardcoded empty tools */),
+                _ => (200, "OK", r#"{"jsonrpc":"2.0","result":{"status":"ok"},"id":0}"#.into()),
+            }
+        }
+        _ => (405, "Method Not Allowed", /* ... */),
+    }
+}
+```
+
+### 3. Audit Log Functionality
+
+**Status:** ❌ CANNOT TEST
+
+**Reason:** The Edge deployment is a stateless stub that doesn't execute tools or maintain any state. Audit logging requires:
+- Tool execution (not implemented)
+- Persistent storage (not available in stateless Edge)
+- Session tracking (not implemented in stub)
+
+### 4. User Isolation
+
+**Status:** ❌ CANNOT TEST
+
+**Reason:** Same as audit logs - the deployment is stateless and doesn't support actual MCP operations.
+
+### 5. Dynamic Tool Registration
+
+**Status:** ❌ CANNOT TEST
+
+**Reason:** The tool list is hardcoded in the WASM binary. No mechanism for dynamic registration exists in the stub implementation.
+
+## Comparison: Native vs Edge
+
+| Feature | Native (Rust/Docker) | Wasmer Edge |
+|---------|---------------------|-------------|
+| **Tool Execution** | ✅ Full support | ❌ Not implemented |
+| **Latency** | ~4-50µs (local) | ~800ms (network) |
+| **Audit Logging** | ✅ Full support | ❌ Stateless stub |
+| **User Isolation** | ✅ Session-based | ❌ Not implemented |
+| **Dynamic Tools** | ✅ Plugin system | ❌ Hardcoded list |
+| **Resources** | ✅ Full support | ❌ Not implemented |
+| **Prompts** | ✅ Full support | ❌ Not implemented |
+| **Sampling** | ✅ Full support | ❌ Not implemented |
+| **Streaming** | ✅ SSE support | ❌ Not implemented |
+| **WASM Runtimes** | ✅ 13 languages | ❌ Not available |
+
+## Root Cause Analysis
+
+The Edge deployment was built with two code paths:
+
+1. **Native path** (`#[cfg(not(target_arch = "wasm32"))]`):
+   - Full hyper/tokio HTTP server
+   - Complete MCP protocol implementation
+   - Tool executor with EdgeToolExecutor
+   - Security layers (rate limiting, auth, CORS)
+   - Audit logging and session management
+
+2. **WASM32 path** (`#[cfg(target_arch = "wasm32")]`):
+   - Raw WCGI stdin/stdout handler
+   - Hardcoded stub responses
+   - No tool execution
+   - No state management
+   - No security layers
+
+**Why this happened:**
+- Wasmer Edge WCGI runner doesn't provide standard CGI environment variables
+- The `cgi` crate panics when `REQUEST_METHOD` is missing
+- Workaround was to bypass the cgi crate and write raw WCGI
+- This resulted in a minimal stub rather than porting the full implementation
+
+## Viability Assessment
+
+### Wasmer Edge is NOT viable for:
+- ❌ Production MCP servers
+- ❌ Tool execution workloads
+- ❌ Multi-tenant deployments
+- ❌ Audit/compliance requirements
+- ❌ Dynamic tool registration
+- ❌ Any real MCP client interactions
+
+### Wasmer Edge might be viable for:
+- ✅ Health check endpoints
+- ✅ Static tool discovery (read-only)
+- ✅ Demo/showcase purposes (with major limitations)
+
+## Recommendations
+
+### Short-term:
+1. **Do NOT deploy to Wasmer Edge** for production use
+2. Use Docker/Kubernetes deployment instead (proven, fully functional)
+3. Document the limitation clearly in all deployment guides
+
+### Long-term options:
+1. **Port full implementation to WASM32:**
+   - Rewrite WCGI handler to support all MCP methods
+   - Implement stateless tool execution (no persistent state)
+   - Add session tracking via cookies/headers
+   - Estimated effort: 2-3 weeks
+
+2. **Use WASIX HTTP server approach:**
+   - The native hyper server might work on Wasmer Edge with WASIX
+   - Requires multi-threading support (currently broken in wasmer 7.4.1)
+   - Monitor Wasmer runtime updates
+
+3. **Alternative edge platforms:**
+   - Cloudflare Workers (WASM-based, better HTTP support)
+   - Fastly Compute@Edge (WASM-based)
+   - AWS Lambda (native Rust support)
+
+## Conclusion
+
+The Wasmer Edge deployment is a **non-functional stub** that cannot execute tools or support real MCP workflows. The ~800ms latency is irrelevant since the deployment doesn't work. 
+
+**Native deployment (Docker/Kubernetes) is 100x better in every metric** because it actually works, while Edge deployment doesn't support the core MCP functionality.
+
+**Verdict:** Wasmer Edge is not a viable solution for VELOCITY-MCP. Stick with native deployments.
+
+## Final Benchmark Comparison (2026-09-16)
+
+**Native (localhost:3000):**
+- initialize: 598ms (cold), ~5ms (warm)
+- tools/list: 5ms
+- tools/call (bench_echo): 5ms (actual execution)
+
+**Wasmer Edge (us-ashburn):**
+- initialize: 1400ms (cold), 845ms (warm)
+- tools/list: 1871ms
+- tools/call: NOT SUPPORTED
+
+**Performance Gap:**
+- Native tools/call: 5ms
+- Edge tools/list: 1164ms
+- **Speedup: 231x** (native vs edge)
+
+**Critical Context:**
+This comparison is misleading because:
+1. Native actually executes tools (5ms includes full execution)
+2. Edge only returns a hardcoded list (no execution)
+3. Edge cannot execute tools at all - the comparison is invalid
+
+**True Comparison:**
+- Native: Works, 5ms per tool call
+- Edge: Doesn't work, ∞ms per tool call (impossible)
+
+**Verdict:** Native is infinitely better because it actually functions.

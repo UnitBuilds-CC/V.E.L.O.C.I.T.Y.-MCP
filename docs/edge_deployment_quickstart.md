@@ -21,7 +21,7 @@ deploy-edge.bat
 
 Or manually:
 ```bash
-cargo build --target wasm32-wasip1 --release --bin velocity-edge
+python deploy/build-edge.py
 wasmer deploy
 ```
 
@@ -82,9 +82,11 @@ For typical MCP usage (100-1000 requests/day), you should stay within free tier 
 
 ## Troubleshooting
 
-**Build fails**: Ensure `wasm32-wasip1` target is installed:
+**Build fails**: Ensure WASIX toolchain is installed:
 ```bash
-rustup target add wasm32-wasip1
+rustup toolchain install wasix
+cargo install cargo-wasix
+python --version  # Python 3 required
 ```
 
 **Deployment rejected**: Check file size (<50MB) and memory config (128MB)

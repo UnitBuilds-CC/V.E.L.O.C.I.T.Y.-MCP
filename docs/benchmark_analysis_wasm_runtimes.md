@@ -11,22 +11,22 @@ All pass correctness validation with real language syntax:
 | Language | Engine | Cold Start | Hot Call (avg) | P50 | P95 | P99 | Throughput |
 |----------|--------|------------|-----------------|-----|-----|-----|------------|
 | **Rust** | wasm32-wasi | 30.8 ms | 4.4 µs | 3.3 µs | 5.5 µs | 37.7 µs | 228K calls/s |
-| **Lua** | Lua 5.4 | 10.8 ms | 17.7 µs | 15.1 µs | 32.1 µs | 83.0 µs | 56K calls/s |
-| **JavaScript** | QuickJS | 487.1 ms | 132.9 µs | 118.0 µs | — | — | 7.5K calls/s |
-| **TypeScript** | QuickJS+TS | 373.0 ms | 146.0 µs | 118.0 µs | 304.0 µs | 503.4 µs | 6.9K calls/s |
+| **Lua** | Lua 5.4 | 257.5 ms | 47.9 µs | — | — | — | 20.9K calls/s |
+| **JavaScript** | QuickJS | 519.1 ms | 116.9 µs | — | — | — | 8.6K calls/s |
+| **TypeScript** | QuickJS+TS | 142.7 ms | ~117 µs | — | — | — | ~8.6K calls/s |
 | **Go** | TinyGo | 378.5 ms | 240.3 µs* | — | — | — | 4.2K calls/s |
-| **Python** | MicroPython | 181.5 ms | SKIP | — | — | — | — |
+| **Python** | MicroPython | 282.5 ms | 43.6 µs | — | — | — | 23.0K calls/s |
 | **Ruby** | mruby | ~10 ms | ~5 µs | — | — | — | — |
 
 *Go uses cached module instantiation per call (no persistent instance).
-
-Python (MicroPython) does not support repeated calls due to state pollution; cold start includes first call only.
+All three in-process runtimes (QuickJS, MicroPython, Lua) use pre-compiled wrappers via `call_tool`.
 
 ### Key Findings
 
 - **Rust is fastest**: 3.3 µs P50 hot call, 228K calls/sec throughput
-- **Lua has best cold start**: 10.8 ms, excellent for serverless/edge
-- **JavaScript/TypeScript have highest cold starts**: 373-487 ms due to QuickJS initialization
+- **MicroPython is fastest scripting runtime**: 43.6 µs/call, 23K calls/s — GC root fix resolved state pollution
+- **Lua stable at 47.9 µs/call**: pre-compiled wrapper path, 20.9K calls/s
+- **JavaScript/TypeScript have highest cold starts**: 142-519 ms due to QuickJS initialization
 - **Go pays per-call instantiation cost**: 240 µs even with cached module compilation
 
 ## Toy Interpreters - FAILING Correctness (6/13)
@@ -56,11 +56,11 @@ For NDA/shmem transport benchmarks, see [Performance Comparison](COMPARISON.md).
 
 ## Recommendations
 
-- **Low-latency tools (<20 µs)**: Rust or Lua
+- **Low-latency tools (<50 µs)**: Rust, MicroPython, or Lua
 - **Complex computations**: Rust WASI or TinyGo
 - **Maximum compatibility**: JavaScript/TypeScript via QuickJS
 - **Highest throughput**: NDA binary protocol with shmem transport
-- **Edge/serverless**: Lua (10.8 ms cold start) or Rust (30.8 ms)
+- **Edge/serverless**: Rust (30.8 ms cold start) or MicroPython (282.5 ms)
 
 ## Benchmark Methodology
 
@@ -75,4 +75,4 @@ Run: `cargo bench --bench comprehensive_benchmark`
 
 ---
 
-*Measured 2026-09-13*
+*Measured 2026-09-13, updated 2026-09-15 (MicroPython/Lua/QuickJS hot call numbers)*
