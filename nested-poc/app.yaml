@@ -1,0 +1,13 @@
+name: velocity-nested-poc
+owner: unitbuilds
+package: .
+kind: wasmer.io/App.v0
+
+volumes:
+  - name: velocity-nested-poc-data
+    mount: /data
+
+capabilities:
+  database:
+    engine: postgres
+app_id: da_R8EIJtNU7Ndp

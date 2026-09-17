@@ -1,0 +1,14 @@
+[package]
+name = "unitbuilds/velocity-nested-poc"
+version = "1.0.14"
+description = "Dynamic-registration PoC: MicroPython-via-wasmi with module cache + fuel metering on Wasmer Edge."
+[[module]]
+name = "poc"
+source = "poc.wasm"
+abi = "wasi"
+[[command]]
+name = "poc"
+module = "poc"
+runner = "https://webc.org/runner/wasi"
+[command.annotations.wasi]
+env = ["PORT=80"]
