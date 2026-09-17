@@ -24,19 +24,23 @@ path = "src/main.rs"
 velocity-mcp-core = { version = "3.2.0", path = "../velocity-mcp-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0"
-
-# Server dependencies - available for both native and WASIX targets.
-# WASIX provides full POSIX socket/thread support, so hyper+tokio work natively.
-hyper = { version = "1", features = ["server", "http1"] }
-http = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "io-util", "time"] }
-http-body-util = "0.1"
-hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
-subtle = "2.5"
 
-[dev-dependencies]
+# Native and WASIX socket HTTP server.
+[target.'cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))'.dependencies]
+hyper = { version = "1", features = ["server", "http1"] }
+http = "1"
+http-body-util = "0.1"
+hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
+subtle = "2.5"
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "macros", "io-util", "time"] }
+
+# Plain WASI CGI builds do not include the socket server.
+[target.'cfg(all(target_arch = "wasm32", not(target_vendor = "wasmer")))'.dependencies]
+cgi = "0.6.0"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json"] }
 proptest = "1"
@@ -49,3 +53,6 @@ hyper-util = { version = "0.1", features = ["server-auto", "tokio", "client-lega
 [[bench]]
 name = "load_test"
 harness = false
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_vendor, values("wasmer"))'] }

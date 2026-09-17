@@ -48,26 +48,37 @@
 //! | `VELOCITY_API_KEY` | _(unset = no auth)_ | Required API key for MCP endpoints |
 //! | `RATE_LIMIT_PER_MINUTE` | `100` | Max requests per minute per IP (0 = disabled) |
 
-// ---------------------------------------------------------------------------
-// Server code (compiled for both native and WASIX targets)
-// ---------------------------------------------------------------------------
+// Native and WASIX socket HTTP server.
 
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 use std::collections::HashMap;
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 use std::convert::Infallible;
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 use std::net::{IpAddr, SocketAddr};
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 use std::sync::{Arc, Mutex};
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 use std::time::{Duration, Instant};
 
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 use http_body_util::{BodyExt, Full};
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 use hyper::body::Bytes;
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 use hyper::service::service_fn;
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 use hyper::{Request, Response, StatusCode};
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 use hyper_util::rt::TokioIo;
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 use subtle::ConstantTimeEq;
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 use tracing::{info, warn};
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 use velocity_mcp_core::{handle_mcp_request_with_executor, parse_request, serialize_response};
 
-// Tools module - available for all targets
+// Tools module — pure Rust, compiles for both native and wasm32 Edge.
 mod tools;
 
 // ---------------------------------------------------------------------------
@@ -75,30 +86,38 @@ mod tools;
 // ---------------------------------------------------------------------------
 
 /// Default maximum request body size: 1 MB.
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 const DEFAULT_MAX_BODY_SIZE: usize = 1_048_576;
 
 /// Default rate limit: 100 requests per minute per IP.
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 const DEFAULT_RATE_LIMIT: u32 = 100;
 
 /// How often to sweep expired entries from the rate limiter map.
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 const RATE_LIMIT_CLEANUP_INTERVAL_SECS: u64 = 60;
 
 /// Pre-serialized health-check response (avoids allocation on every probe).
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 const HEALTH_RESPONSE: &[u8] = b"{\"status\":\"healthy\",\"version\":\"3.2.0\"}";
 
 /// Pre-serialized 404 error (used when no route matches).
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 const NOT_FOUND_BODY: &[u8] =
     b"{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32601,\"message\":\"Not Found\"},\"id\":null}";
 
 /// Pre-serialized 413 error body.
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 const PAYLOAD_TOO_LARGE_BODY: &[u8] =
     b"{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,\"message\":\"Payload too large\"},\"id\":null}";
 
 /// Pre-serialized 401 error body.
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 const UNAUTHORIZED_BODY: &[u8] =
     b"{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,\"message\":\"Unauthorized\"},\"id\":null}";
 
 /// Pre-serialized 429 error body.
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 const RATE_LIMITED_BODY: &[u8] =
     b"{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,\"message\":\"Rate limit exceeded\"},\"id\":null}";
 
@@ -111,6 +130,7 @@ const RATE_LIMITED_BODY: &[u8] =
 /// All fields are resolved once at startup and shared (via `Arc`) across all
 /// connection handlers. Changing env vars at runtime has no effect.
 #[derive(Clone)]
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 struct ServerConfig {
     /// Maximum allowed request body in bytes.
     max_body_size: usize,
@@ -123,6 +143,7 @@ struct ServerConfig {
     rate_limit_per_minute: u32,
 }
 
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 impl ServerConfig {
     /// Load configuration from environment variables with safe defaults.
     fn from_env() -> Self {
@@ -191,12 +212,14 @@ impl ServerConfig {
 /// token. Tokens refill at `capacity` per 60 seconds, computed lazily on each
 /// check via elapsed-time interpolation.
 #[derive(Clone)]
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 struct TokenBucket {
     tokens: f64,
     capacity: f64,
     last_refill: Instant,
 }
 
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 impl TokenBucket {
     fn new(capacity: u32) -> Self {
         Self {
@@ -239,11 +262,13 @@ impl TokenBucket {
 ///
 /// The mutex is held only for the duration of a hash lookup + float arithmetic
 /// (< 1 microsecond), so contention is negligible even under heavy load.
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 struct RateLimiter {
     buckets: Mutex<HashMap<IpAddr, TokenBucket>>,
     capacity: u32,
 }
 
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 impl RateLimiter {
     fn new(capacity: u32) -> Self {
         Self {
@@ -306,6 +331,7 @@ impl RateLimiter {
 /// Wrapped in `Arc` and cloned (cheaply) into each connection task. The
 /// `RateLimiter` internally uses a `Mutex<HashMap>` so all connections share
 /// the same rate-limit state.
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 struct ServerState {
     config: ServerConfig,
     rate_limiter: RateLimiter,
@@ -320,6 +346,7 @@ struct ServerState {
 /// Uses the `subtle` crate's ConstantTimeEq trait for guaranteed constant-time comparison.
 /// Both inputs are padded to a fixed maximum length before comparison to avoid leaking
 /// the expected key length via early return on length mismatch.
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 fn timing_safe_eq(a: &[u8], b: &[u8]) -> bool {
     const MAX_KEY_LEN: usize = 256;
 
@@ -349,15 +376,18 @@ fn timing_safe_eq(a: &[u8], b: &[u8]) -> bool {
 /// Uses `Relaxed` ordering: we only need uniqueness, not sequencing guarantees.
 /// Combined with process start time to produce IDs that are unique within a
 /// server instance and globally unique across restarts.
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 static REQUEST_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Server start time, captured once at first use for correlation-ID prefix.
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 static START_TIME: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 
 /// Generate a unique, opaque correlation ID for request tracing.
 ///
 /// Format: `<epoch_offset>-<monotonic_counter>` where `epoch_offset` is seconds
 /// since server start and `monotonic_counter` is a per-process atomic counter.
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 fn generate_correlation_id() -> String {
     let start = START_TIME.get_or_init(Instant::now);
     let counter = REQUEST_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -375,6 +405,7 @@ fn generate_correlation_id() -> String {
 /// prevent header spoofing attacks. When multiple IPs are present in XFF, uses
 /// the rightmost untrusted IP (closest to the actual client) rather than the
 /// leftmost (which can be forged by the client).
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 fn extract_client_ip(req: &Request<impl hyper::body::Body>, peer_addr: SocketAddr) -> IpAddr {
     // If the direct peer is not a trusted proxy, ignore X-Forwarded-For entirely
     if !is_trusted_proxy(peer_addr) {
@@ -398,6 +429,7 @@ fn extract_client_ip(req: &Request<impl hyper::body::Body>, peer_addr: SocketAdd
 }
 
 /// Check if an address is a trusted proxy (localhost or private network).
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 fn is_trusted_proxy(addr: SocketAddr) -> bool {
     let ip = addr.ip();
     ip.is_loopback()
@@ -413,6 +445,7 @@ fn is_trusted_proxy(addr: SocketAddr) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Check whether `origin` is allowed by the server configuration.
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 fn is_origin_allowed(origin: &str, config: &ServerConfig) -> bool {
     match &config.allowed_origins {
         None => false,                               // CORS disabled entirely
@@ -426,6 +459,7 @@ fn is_origin_allowed(origin: &str, config: &ServerConfig) -> bool {
 /// Called on every response from the MCP endpoint so that browsers enforce the
 /// same-origin policy correctly. Takes the origin string directly so that it
 /// can be extracted from the request before the request is consumed.
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 fn apply_cors_headers(
     builder: http::response::Builder,
     origin: Option<&str>,
@@ -457,6 +491,7 @@ fn apply_cors_headers(
 // ---------------------------------------------------------------------------
 
 /// Build a JSON response with the given status code and pre-serialized body.
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 fn build_response(status: StatusCode, body: &'static [u8]) -> Response<Full<Bytes>> {
     Response::builder()
         .status(status)
@@ -480,6 +515,7 @@ fn build_response(status: StatusCode, body: &'static [u8]) -> Response<Full<Byte
 /// The `public_message` is what the client sees. The `detail` is logged
 /// server-side only and never transmitted. This prevents leaking stack traces,
 /// file paths, or other implementation details.
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 fn sanitized_error(
     status: StatusCode,
     public_message: &str,
@@ -520,6 +556,7 @@ fn sanitized_error(
 /// 3. Routing
 /// 4. CORS headers on response
 /// 5. Request logging
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 async fn handle_request(
     req: Request<hyper::body::Incoming>,
     state: Arc<ServerState>,
@@ -636,6 +673,7 @@ async fn handle_request(
 ///
 /// Accepts a pre-extracted origin string (since the request may have been consumed
 /// by body collection). Pass `None` to skip CORS (no Origin header or CORS disabled).
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 fn with_cors(
     mut resp: Response<Full<Bytes>>,
     origin: Option<&str>,
@@ -676,6 +714,7 @@ fn with_cors(
 /// Adds X-RateLimit-Limit, X-RateLimit-Remaining, and X-RateLimit-Reset headers
 /// when rate limiting is enabled. These headers help clients understand their
 /// current rate limit status and plan accordingly.
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 fn with_rate_limit_headers(
     mut resp: Response<Full<Bytes>>,
     state: &Arc<ServerState>,
@@ -718,6 +757,7 @@ fn with_rate_limit_headers(
 /// Applies request size limits (P0) and API key authentication (P1) before
 /// delegating to `velocity_mcp_core` for JSON-RPC processing.
 /// CORS headers are applied to all responses via `with_cors`.
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 async fn handle_mcp_post(
     req: Request<hyper::body::Incoming>,
     state: &Arc<ServerState>,
@@ -828,6 +868,7 @@ async fn handle_mcp_post(
 ///
 /// All errors from the core protocol are sanitized before being returned to
 /// the client (Layer 5: Error Sanitization).
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 fn process_mcp_request(request_body: &[u8]) -> Response<Full<Bytes>> {
     match parse_request(request_body) {
         Ok(request) => {
@@ -845,11 +886,19 @@ fn process_mcp_request(request_body: &[u8]) -> Response<Full<Bytes>> {
         Err(e) => {
             // Log the parse error detail server-side; return sanitized message.
             warn!(error = %e, "MCP request parse error");
-            sanitized_error(
-                StatusCode::BAD_REQUEST,
-                "Invalid JSON-RPC request",
-                Some(&e),
-            )
+            let error_json = serde_json::json!({
+                "jsonrpc": "2.0",
+                "error": { "code": -32700, "message": "Parse error" },
+                "id": null
+            });
+            let bytes = serde_json::to_vec(&error_json).unwrap_or_default();
+            Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header("content-type", "application/json")
+                .body(Full::new(Bytes::from(bytes)))
+                .unwrap_or_else(|_| {
+                    build_response(StatusCode::INTERNAL_SERVER_ERROR, NOT_FOUND_BODY)
+                })
         }
     }
 }
@@ -863,6 +912,7 @@ fn process_mcp_request(request_body: &[u8]) -> Response<Full<Bytes>> {
 /// Outputs: method, path, HTTP status, duration (ms), correlation ID, and
 /// client IP. This data can be consumed by structured logging collectors
 /// (e.g., JSON fmt subscriber, OpenTelemetry, etc.).
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 fn log_request(
     method: &hyper::Method,
     path: &str,
@@ -884,9 +934,10 @@ fn log_request(
 }
 
 // ---------------------------------------------------------------------------
-// Entry point (native + WASIX — same hyper/tokio HTTP server)
+// Entry point — native: hyper/tokio HTTP server
 // ---------------------------------------------------------------------------
 
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing (structured logging).
@@ -961,56 +1012,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 // ---------------------------------------------------------------------------
-// Legacy C ABI exports (fallback for non-WASIX WASM hosts)
+// Entry point — wasm32: raw WCGI via stdin/stdout (RFC 3875)
+// The Wasmer Edge WCGI runner maps stdin/stdout to HTTP request/response.
+// CGI env vars are provided as WASI environment variables.
 // ---------------------------------------------------------------------------
 
-/// Legacy handler for non-WASIX WASM environments.
-/// The primary entry point for Wasmer Edge is now the `_start` function
-/// generated by `#[tokio::main]`, which runs a full hyper HTTP server with
-/// multi-threaded tokio via WASIX.
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub extern "C" fn handle_http_request(input_ptr: *const u8, input_len: usize) -> *mut u8 {
-    use std::slice;
-
-    // SAFETY: Called from WASM host with valid pointer/length
-    let input_bytes = unsafe { slice::from_raw_parts(input_ptr, input_len) };
-
-    // Process MCP request using the core protocol logic
-    let response_bytes = match velocity_mcp_core::parse_request(input_bytes) {
-        Ok(request) => {
-            let executor = tools::EdgeToolExecutor::new();
-            let response = velocity_mcp_core::handle_mcp_request_with_executor(&request, &executor);
-            velocity_mcp_core::serialize_response(&response)
-        }
-        Err(_) => {
-            // Sanitize: never leak internal parse errors to clients
-            let error_response = serde_json::json!({
-                "jsonrpc": "2.0",
-                "error": {
-                    "code": -32700,
-                    "message": "Parse error"
-                },
-                "id": null
-            });
-            serde_json::to_vec(&error_response).unwrap_or_else(|_| {
-                // This should never fail for a simple static JSON object
-                b"{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Internal error\"},\"id\":null}".to_vec()
-            })
-        }
-    };
-
-    // Return pointer as Box<Vec<u8>> so wasmer_free can reconstruct correctly
-    let boxed = Box::new(response_bytes);
-    Box::into_raw(boxed) as *mut u8
+#[cfg(all(target_arch = "wasm32", not(target_vendor = "wasmer")))]
+fn main() {
+    cgi::handle(handler);
 }
 
-/// Free memory allocated by handle_http_request
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub unsafe extern "C" fn wasmer_free(ptr: *mut u8) {
-    if !ptr.is_null() {
-        drop(Box::from_raw(ptr as *mut Vec<u8>));
+#[cfg(all(target_arch = "wasm32", not(target_vendor = "wasmer")))]
+fn handler(request: cgi::Request) -> cgi::Response {
+    use cgi::http::StatusCode;
+
+    let method = request.method().clone();
+    let body = request.body();
+
+    match method.as_str() {
+        "GET" => {
+            let json = r#"{"status":"healthy","version":"3.16.0"}"#;
+            cgi::binary_response(StatusCode::OK, "application/json", json.as_bytes().to_vec())
+        }
+        "POST" => {
+            match velocity_mcp_core::parse_request(body) {
+                Ok(request) => {
+                    let executor = tools::EdgeToolExecutor::new();
+                    let response =
+                        velocity_mcp_core::handle_mcp_request_with_executor(&request, &executor);
+                    let response_bytes = velocity_mcp_core::serialize_response(&response);
+                    cgi::binary_response(StatusCode::OK, "application/json", response_bytes)
+                }
+                Err(_) => {
+                    let json = r#"{"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"},"id":null}"#;
+                    cgi::binary_response(StatusCode::BAD_REQUEST, "application/json", json.as_bytes().to_vec())
+                }
+            }
+        }
+        _ => {
+            let json = r#"{"error":"Method Not Allowed"}"#;
+            cgi::binary_response(StatusCode::METHOD_NOT_ALLOWED, "application/json", json.as_bytes().to_vec())
+        }
     }
 }
 
@@ -1018,6 +1060,7 @@ pub unsafe extern "C" fn wasmer_free(ptr: *mut u8) {
 // Tests
 // ---------------------------------------------------------------------------
 
+#[cfg(any(not(target_arch = "wasm32"), target_vendor = "wasmer"))]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1226,6 +1269,99 @@ mod tests {
         // Create a payload that exceeds a 1-byte limit.
         let body = br#"{"jsonrpc":"2.0","method":"ping","id":1}"#;
         assert!(body.len() > 1); // sanity: the body is > 1 byte
+    }
+
+    // -- wasm32 Edge handler logic (same code path, tested natively) --
+
+    #[test]
+    fn edge_handler_initialize() {
+        let body = br#"{"jsonrpc":"2.0","method":"initialize","params":{},"id":1}"#;
+        let request = velocity_mcp_core::parse_request(body).unwrap();
+        let executor = tools::EdgeToolExecutor::new();
+        let response = velocity_mcp_core::handle_mcp_request_with_executor(&request, &executor);
+        let response_bytes = velocity_mcp_core::serialize_response(&response);
+        let response_str = String::from_utf8(response_bytes).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+        assert_eq!(parsed["jsonrpc"], "2.0");
+        assert!(parsed["result"]["protocolVersion"].is_string());
+        assert_eq!(parsed["result"]["serverInfo"]["name"], "velocity-mcp-edge");
+    }
+
+    #[test]
+    fn edge_handler_tools_list() {
+        let body = br#"{"jsonrpc":"2.0","method":"tools/list","params":{},"id":2}"#;
+        let request = velocity_mcp_core::parse_request(body).unwrap();
+        let executor = tools::EdgeToolExecutor::new();
+        let response = velocity_mcp_core::handle_mcp_request_with_executor(&request, &executor);
+        let response_bytes = velocity_mcp_core::serialize_response(&response);
+        let response_str = String::from_utf8(response_bytes).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+        let tools = parsed["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 10, "Edge should expose 10 pure-Rust tools");
+    }
+
+    #[test]
+    fn edge_handler_tool_call_echo() {
+        let body = br#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"echo","arguments":{"message":"hello edge"}},"id":3}"#;
+        let request = velocity_mcp_core::parse_request(body).unwrap();
+        let executor = tools::EdgeToolExecutor::new();
+        let response = velocity_mcp_core::handle_mcp_request_with_executor(&request, &executor);
+        let response_bytes = velocity_mcp_core::serialize_response(&response);
+        let response_str = String::from_utf8(response_bytes).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+        let content = parsed["result"]["content"].as_array().unwrap();
+        assert!(!content.is_empty());
+        let text = content[0]["text"].as_str().unwrap();
+        assert!(text.contains("hello edge"), "echo tool should return input message");
+    }
+
+    #[test]
+    fn edge_handler_tool_call_timestamp() {
+        let body = br#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"timestamp","arguments":{}},"id":4}"#;
+        let request = velocity_mcp_core::parse_request(body).unwrap();
+        let executor = tools::EdgeToolExecutor::new();
+        let response = velocity_mcp_core::handle_mcp_request_with_executor(&request, &executor);
+        let response_bytes = velocity_mcp_core::serialize_response(&response);
+        let response_str = String::from_utf8(response_bytes).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+        let content = parsed["result"]["content"].as_array().unwrap();
+        assert!(!content.is_empty());
+    }
+
+    #[test]
+    fn edge_handler_tool_call_math_eval() {
+        let body = br#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"math_eval","arguments":{"expression":"2 + 3 * 4"}},"id":5}"#;
+        let request = velocity_mcp_core::parse_request(body).unwrap();
+        let executor = tools::EdgeToolExecutor::new();
+        let response = velocity_mcp_core::handle_mcp_request_with_executor(&request, &executor);
+        let response_bytes = velocity_mcp_core::serialize_response(&response);
+        let response_str = String::from_utf8(response_bytes).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+        let content = parsed["result"]["content"].as_array().unwrap();
+        let text = content[0]["text"].as_str().unwrap();
+        assert!(text.contains("14"), "math_eval should compute 2 + 3 * 4 = 14");
+    }
+
+    #[test]
+    fn edge_handler_invalid_json() {
+        let body = b"not valid json";
+        let result = velocity_mcp_core::parse_request(body);
+        assert!(result.is_err(), "Invalid JSON should fail to parse");
+    }
+
+    #[test]
+    fn edge_handler_unknown_tool() {
+        let body = br#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"nonexistent","arguments":{}},"id":6}"#;
+        let request = velocity_mcp_core::parse_request(body).unwrap();
+        let executor = tools::EdgeToolExecutor::new();
+        let response = velocity_mcp_core::handle_mcp_request_with_executor(&request, &executor);
+        let response_bytes = velocity_mcp_core::serialize_response(&response);
+        let response_str = String::from_utf8(response_bytes).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+        let result = parsed["result"].as_object().unwrap();
+        assert_eq!(result["isError"], true, "Unknown tool should return isError=true");
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("Unknown tool"), "Error message should mention unknown tool");
     }
 
     // -- Pre-serialized constants --

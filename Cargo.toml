@@ -161,6 +161,10 @@ harness = false
 name = "metering_cache_bench"
 harness = false
 
+[[bench]]
+name = "tool_compatibility_test"
+harness = false
+
 [profile.release]
 opt-level = 3
 lto = true

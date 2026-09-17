@@ -105,6 +105,21 @@ pub fn handle_mcp_request_with_executor(
 }
 
 fn dispatch(request: &McpRequest, executor: Option<&dyn ToolExecutor>) -> McpResponse {
+    // JSON-RPC 2.0 structural validation (Invalid Request → -32600).
+    if request.jsonrpc != "2.0" {
+        return error_response(
+            request.id.clone(),
+            -32600,
+            "Invalid Request: jsonrpc must be \"2.0\"",
+        );
+    }
+    if request.method.is_empty() {
+        return error_response(
+            request.id.clone(),
+            -32600,
+            "Invalid Request: missing required member 'method'",
+        );
+    }
     match request.method.as_str() {
         "initialize" => handle_initialize(request),
         "notifications/initialized" => handle_notification(request),
@@ -213,11 +228,11 @@ fn handle_ping(request: &McpRequest) -> McpResponse {
 // tools/list
 // ---------------------------------------------------------------------------
 
-fn handle_tools_list_stub(_request: &McpRequest) -> McpResponse {
-    ok_response(None, serde_json::json!({ "tools": [] }))
+fn handle_tools_list_stub(request: &McpRequest) -> McpResponse {
+    ok_response(request.id.clone(), serde_json::json!({ "tools": [] }))
 }
 
-fn handle_tools_list(_request: &McpRequest, executor: &dyn ToolExecutor) -> McpResponse {
+fn handle_tools_list(request: &McpRequest, executor: &dyn ToolExecutor) -> McpResponse {
     let tools = executor.list_tools();
     let tools_json: Vec<Value> = tools
         .iter()
@@ -230,7 +245,7 @@ fn handle_tools_list(_request: &McpRequest, executor: &dyn ToolExecutor) -> McpR
         })
         .collect();
 
-    ok_response(None, serde_json::json!({ "tools": tools_json }))
+    ok_response(request.id.clone(), serde_json::json!({ "tools": tools_json }))
 }
 
 // ---------------------------------------------------------------------------
@@ -640,6 +655,27 @@ mod tests {
         assert!(text.contains("test"));
     }
 
+    #[test]
+    fn test_tools_list_preserves_request_ids() {
+        for id in [serde_json::json!(1), serde_json::json!("tool-list")] {
+            let request = req(
+                &serde_json::to_vec(&serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "tools/list"
+                }))
+                .unwrap(),
+            );
+            for response in [
+                handle_mcp_request(&request),
+                handle_mcp_request_with_executor(&request, &MockExecutor),
+            ] {
+                let serialized: Value = serde_json::from_slice(&serialize_response(&response)).unwrap();
+                assert_eq!(serialized["id"], id);
+            }
+        }
+    }
+
     // -- tools (executor path) --
 
     #[test]
@@ -896,6 +932,23 @@ mod tests {
         let resp = handle_mcp_request(&r);
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().code, -32601);
+    }
+
+    // -- invalid request (JSON-RPC 2.0 structural validation) --
+
+    #[test]
+    fn test_missing_method_is_invalid_request() {
+        let r = req(br#"{"jsonrpc":"2.0","id":1}"#);
+        let resp = handle_mcp_request(&r);
+        assert_eq!(resp.error.as_ref().map(|e| e.code), Some(-32600));
+    }
+
+    #[test]
+    fn test_bad_jsonrpc_version_is_invalid_request() {
+        let r = req(br#"{"jsonrpc":"1.0","method":"ping","id":7}"#);
+        let resp = handle_mcp_request(&r);
+        assert_eq!(resp.error.as_ref().map(|e| e.code), Some(-32600));
+        assert_eq!(resp.id, Some(Value::from(7)));
     }
 
     // -- serialization round-trip --

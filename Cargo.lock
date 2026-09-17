@@ -493,6 +493,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
+name = "cgi"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a71d44b66aa4d9229907c0126271215210037fc179437a2e92746ba6bc6e0a00"
+dependencies = [
+ "http 0.2.12",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4207,6 +4216,7 @@ dependencies = [
 name = "velocity-mcp-edge"
 version = "3.2.0"
 dependencies = [
+ "cgi",
  "criterion",
  "http 1.5.0",
  "http-body-util",
