@@ -9,7 +9,7 @@ use std::error::Error;
 use wasmer::{FunctionEnv, Instance, Module, Store, Value as WasmValue};
 
 use super::wasi::{build_wasi_imports, WasiEnv};
-use super::WasmRuntime;
+use super::{compile_module_cached, WasmRuntime};
 
 pub struct RustRuntime {
     store: Store,
@@ -37,7 +37,7 @@ impl RustRuntime {
     /// Load a pre-compiled Rust WASM module as a tool.
     /// The WASM module must export: prepare_call(), tool_execute(ptr, len), malloc(size)
     pub fn load_tool(&mut self, name: &str, wasm_bytes: &[u8]) -> Result<(), Box<dyn Error>> {
-        let module = Module::new(&self.store, wasm_bytes)?;
+        let module = compile_module_cached(self.store.engine(), wasm_bytes, super::instruction_limit())?;
         self.modules.insert(name.to_string(), module);
         Ok(())
     }

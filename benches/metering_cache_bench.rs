@@ -2,9 +2,9 @@
 //!
 //! Measures the two Wasmer 5 features shipped with the WASM runtime:
 //!
-//!   A. Module primitives (quickjs.wasm, lua.wasm):
+//!   A. Module primitives (all 12 WASM modules):
 //!        compile unmetered vs compile metered vs deserialize cached artifact
-//!   B. Runtime cold start via create_wasm_runtime_for_language:
+//!   B. Runtime cold start for ALL 12 languages:
 //!        first creation (compile) vs later creation (cache hit) per language
 //!   C. Per-call metering overhead through the real dispatch path
 //!        (WasmRuntimeRegistry::call_tool, includes reset_instruction_budget)
@@ -21,11 +21,40 @@ use std::time::Instant;
 use serde_json::json;
 use velocity_mcp::wasm_runtime::{
     build_metered_engine, create_wasm_runtime_for_language, lua::LuaRuntime,
-    quickjs::QuickJsRuntime, set_instruction_limit, WasmRuntimeRegistry,
+    quickjs::QuickJsRuntime, set_instruction_limit, WasmRuntime, WasmRuntimeRegistry,
 };
+
+// ── WASM module paths for all 12 runtimes ──
 
 const QUICKJS_WASM: &str = "bench_tools/quickjs_wasm/quickjs.wasm";
 const LUA_WASM: &str = "bench_tools/lua_wasm/lua.wasm";
+const MICROPYTHON_WASM: &str = "bench_tools/micropython_wasm/wasi-reactor/build/micropython.wasm";
+const RUBY_WASM: &str = "bench_tools/mruby_wasm/ruby.wasm";
+const PHP_WASM: &str = "bench_tools/php_wasm/php.wasm";
+const CSHARP_WASM: &str = "bench_tools/csharp_wasm/dotnet.wasm";
+const JAVA_WASM: &str = "bench_tools/java_wasm/java.wasm";
+const R_WASM: &str = "bench_tools/r_wasm/r.wasm";
+const JULIA_WASM: &str = "bench_tools/julia_wasm/julia.wasm";
+const PERL_WASM: &str = "bench_tools/perl_wasm/perl.wasm";
+const RUST_WASM: &str = "bench_tools/rust_wasm/example_tool.wasm";
+const GO_WASM: &str = "bench_tools/tinygo_wasm/tool.wasm";
+
+/// All (language_key, display_name, wasm_path) for the 10 runtimes that
+/// compile during construction via create_wasm_instance.
+/// Rust and Go are handled separately (they compile in register_tool).
+const STANDARD_RUNTIMES: &[(&str, &str, &str)] = &[
+    ("javascript", "JavaScript (QuickJS)", QUICKJS_WASM),
+    ("typescript", "TypeScript", QUICKJS_WASM),
+    ("python", "Python (MicroPython)", MICROPYTHON_WASM),
+    ("lua", "Lua", LUA_WASM),
+    ("ruby", "Ruby (mruby)", RUBY_WASM),
+    ("php", "PHP", PHP_WASM),
+    ("csharp", "C# (.NET)", CSHARP_WASM),
+    ("java", "Java (TeaVM)", JAVA_WASM),
+    ("r", "R (WebR)", R_WASM),
+    ("julia", "Julia", JULIA_WASM),
+    ("perl", "Perl", PERL_WASM),
+];
 
 /// Production default limit (WASM_INSTRUCTION_LIMIT initial value).
 const LIMIT: u64 = 10_000_000;
@@ -55,65 +84,83 @@ fn percentiles(ns: &[f64]) -> (f64, f64, f64) {
     (mean, pick(0.5), pick(0.99))
 }
 
-fn us(us_val: f64) -> String {
-    format!("{:>10.1}", us_val)
-}
-
 // ─────────────────────────────────────────────────────────────────────────
-// Part A: Module primitives
+// Part A: Module primitives — compile vs deserialize for all WASM modules
 // ─────────────────────────────────────────────────────────────────────────
 
-fn part_a_module_primitives(label: &str, wasm_bytes: &[u8], iters: usize) {
-    println!("\n─── Part A: Module primitives ({}) ────────────────────", label);
+/// All WASM modules to benchmark in Part A (label, path).
+const PART_A_MODULES: &[(&str, &str)] = &[
+    ("quickjs.wasm (736KB)", QUICKJS_WASM),
+    ("lua.wasm (664KB)", LUA_WASM),
+    ("micropython.wasm (572KB)", MICROPYTHON_WASM),
+    ("ruby.wasm (1.5MB)", RUBY_WASM),
+    ("php.wasm (271KB)", PHP_WASM),
+    ("dotnet.wasm (271KB)", CSHARP_WASM),
+    ("java.wasm (271KB)", JAVA_WASM),
+    ("r.wasm (271KB)", R_WASM),
+    ("julia.wasm (271KB)", JULIA_WASM),
+    ("perl.wasm (271KB)", PERL_WASM),
+    ("rust_tool.wasm (55KB)", RUST_WASM),
+    ("tinygo.wasm (888KB)", GO_WASM),
+];
 
-    let t = Instant::now();
-    for _ in 0..iters {
-        let engine = wasmer::Engine::from(wasmer::Cranelift::default());
-        black_box(wasmer::Module::new(&engine, wasm_bytes).expect("compile unmetered"));
-    }
-    let compile_unmetered_us = t.elapsed().as_secs_f64() * 1e6 / iters as f64;
+fn part_a_module_primitives() {
+    println!("\n─── Part A: Module primitives (all 12 WASM modules) ─────");
+    println!(
+        "  {:<28} {:>10} {:>10} {:>10} {:>8}",
+        "Module", "Compile", "Metered", "Deserialize", "Speedup"
+    );
+    println!("  {}", "─".repeat(70));
 
-    let t = Instant::now();
-    for _ in 0..iters {
-        let engine = build_metered_engine(Some(LIMIT));
-        black_box(wasmer::Module::new(&engine, wasm_bytes).expect("compile metered"));
-    }
-    let compile_metered_us = t.elapsed().as_secs_f64() * 1e6 / iters as f64;
+    for (label, path) in PART_A_MODULES {
+        let wasm_bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(_) => {
+                println!("  {:<28} MISSING", label);
+                continue;
+            }
+        };
+        let iters = 5;
 
-    // Deserialize path, engine rebuilt per iteration exactly as
-    // create_wasm_instance does in production (artifact materialized to
-    // Vec<u8> once, then handed over as &[u8] like MODULE_CACHE does).
-    let artifact = {
-        let engine = build_metered_engine(Some(LIMIT));
-        let module = wasmer::Module::new(&engine, wasm_bytes).expect("compile for serialize");
-        module.serialize().expect("serialize module").to_vec()
-    };
-    let t = Instant::now();
-    for _ in 0..iters {
-        let engine = build_metered_engine(Some(LIMIT));
-        black_box(
-            unsafe { wasmer::Module::deserialize(&engine, artifact.as_slice()) }
-                .expect("deserialize cached module"),
+        let t = Instant::now();
+        for _ in 0..iters {
+            let engine = wasmer::Engine::from(wasmer::Cranelift::default());
+            black_box(wasmer::Module::new(&engine, &wasm_bytes).expect("compile unmetered"));
+        }
+        let compile_us = t.elapsed().as_secs_f64() * 1e6 / iters as f64;
+
+        let t = Instant::now();
+        for _ in 0..iters {
+            let engine = build_metered_engine(Some(LIMIT));
+            black_box(wasmer::Module::new(&engine, &wasm_bytes).expect("compile metered"));
+        }
+        let metered_us = t.elapsed().as_secs_f64() * 1e6 / iters as f64;
+
+        let artifact = {
+            let engine = build_metered_engine(Some(LIMIT));
+            let module = wasmer::Module::new(&engine, &wasm_bytes).expect("compile for serialize");
+            module.serialize().expect("serialize module").to_vec()
+        };
+        let t = Instant::now();
+        for _ in 0..iters {
+            let engine = build_metered_engine(Some(LIMIT));
+            black_box(
+                unsafe { wasmer::Module::deserialize(&engine, artifact.as_slice()) }
+                    .expect("deserialize cached module"),
+            );
+        }
+        let deserialize_us = t.elapsed().as_secs_f64() * 1e6 / iters as f64;
+
+        let speedup = compile_us / deserialize_us;
+        println!(
+            "  {:<28} {:>8.0}µs {:>8.0}µs {:>8.0}µs {:>6.1}x",
+            label, compile_us, metered_us, deserialize_us, speedup
         );
     }
-    let deserialize_us = t.elapsed().as_secs_f64() * 1e6 / iters as f64;
-
-    let metered_overhead_pct = (compile_metered_us / compile_unmetered_us - 1.0) * 100.0;
-    println!("  compile (unmetered):   {} µs", us(compile_unmetered_us));
-    println!(
-        "  compile (metered):     {} µs  ({:+.1}% metering instrumentation)",
-        us(compile_metered_us),
-        metered_overhead_pct
-    );
-    println!(
-        "  deserialize (cached):  {} µs  ({:.1}x faster than compile)",
-        us(deserialize_us),
-        compile_unmetered_us / deserialize_us
-    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Part B: Runtime cold start (create + init), first vs cache-hit
+// Part B: Runtime cold start (create + init), first vs cache-hit — ALL 12
 // ─────────────────────────────────────────────────────────────────────────
 
 fn cold_start(language: &str, path: &str) -> f64 {
@@ -125,31 +172,138 @@ fn cold_start(language: &str, path: &str) -> f64 {
     t.elapsed().as_secs_f64() * 1e6
 }
 
-fn part_b_runtime_cold_start() {
-    println!("\n─── Part B: Runtime cold start (create + init) ────────");
-    // Unmetered so the cache comparison isolates compile-vs-deserialize.
+/// Cold start for Rust runtime: measures register_tool (which calls compile_module_cached).
+fn cold_start_rust() -> (f64, f64) {
+    use velocity_mcp::wasm_runtime::rust::RustRuntime;
+    let wasm_bytes = std::fs::read(RUST_WASM).expect("rust wasm not found");
+
+    // First call: compile
+    let t = Instant::now();
+    let mut rt = RustRuntime::new(&wasm_bytes).expect("RustRuntime::new");
+    rt.register_tool("bench_tool", RUST_WASM)
+        .expect("rust register_tool");
+    let first_us = t.elapsed().as_secs_f64() * 1e6;
+    drop(rt);
+
+    // Second call: cache hit
+    let t = Instant::now();
+    let mut rt = RustRuntime::new(&wasm_bytes).expect("RustRuntime::new");
+    rt.register_tool("bench_tool", RUST_WASM)
+        .expect("rust register_tool cached");
+    let cached_us = t.elapsed().as_secs_f64() * 1e6;
+    drop(rt);
+
+    (first_us, cached_us)
+}
+
+/// Cold start for Go runtime: measures register_tool with a prebuilt .wasm path.
+fn cold_start_go() -> (f64, f64) {
+    use velocity_mcp::wasm_runtime::go::GoWasmRuntime;
+
+    // First call: compile
+    let t = Instant::now();
+    let mut rt = GoWasmRuntime::new(GO_WASM);
+    rt.register_tool("bench_tool", GO_WASM)
+        .expect("go register_tool");
+    let first_us = t.elapsed().as_secs_f64() * 1e6;
+    drop(rt);
+
+    // Second call: cache hit (module already cached from first)
+    let t = Instant::now();
+    let mut rt = GoWasmRuntime::new(GO_WASM);
+    rt.register_tool("bench_tool", GO_WASM)
+        .expect("go register_tool cached");
+    let cached_us = t.elapsed().as_secs_f64() * 1e6;
+    drop(rt);
+
+    (first_us, cached_us)
+}
+
+struct CacheResult {
+    name: &'static str,
+    first_us: f64,
+    cached_us: f64,
+}
+
+fn part_b_runtime_cold_start() -> Vec<CacheResult> {
+    println!("\n─── Part B: Runtime cold start — ALL 12 runtimes ────────");
+    println!("  Unmetered so the cache comparison isolates compile-vs-deserialize.\n");
     set_instruction_limit(None);
 
-    // Lua: the only runtime wired through create_wasm_instance (module cache).
-    let lua_first = cold_start("lua", LUA_WASM);
-    let lua_second = cold_start("lua", LUA_WASM);
-    let lua_third = cold_start("lua", LUA_WASM);
-    let lua_cache_hit = lua_second.min(lua_third);
+    let mut results: Vec<CacheResult> = Vec::new();
 
-    // QuickJS: compiles directly via Module::new, module cache not consulted.
-    let qjs_first = cold_start("javascript", QUICKJS_WASM);
-    let qjs_second = cold_start("javascript", QUICKJS_WASM);
+    // 10 standard runtimes (compile in constructor via create_wasm_instance)
+    for (lang_key, display_name, path) in STANDARD_RUNTIMES {
+        if !std::path::Path::new(path).exists() {
+            println!("  {:<24} MISSING", display_name);
+            continue;
+        }
 
-    println!("  Lua (cache-backed path):");
-    println!("    first (compile):     {} µs", us(lua_first));
-    println!(
-        "    cache hit:           {} µs  ({:.1}x faster cold start)",
-        us(lua_cache_hit),
-        lua_first / lua_cache_hit
-    );
-    println!("  QuickJS (no cache path — both runs compile):");
-    println!("    first:               {} µs", us(qjs_first));
-    println!("    second:              {} µs", us(qjs_second));
+        let first = cold_start(lang_key, path);
+        let second = cold_start(lang_key, path);
+        let third = cold_start(lang_key, path);
+        let cached = second.min(third);
+        let speedup = first / cached;
+
+        println!(
+            "  {:<24} first {:>10.0}µs  cache {:>10.0}µs  ({:.1}x faster)",
+            display_name, first, cached, speedup
+        );
+        results.push(CacheResult {
+            name: display_name,
+            first_us: first,
+            cached_us: cached,
+        });
+    }
+
+    // Rust (compiles in register_tool, not constructor)
+    if std::path::Path::new(RUST_WASM).exists() {
+        let (first, cached) = cold_start_rust();
+        let speedup = first / cached;
+        println!(
+            "  {:<24} first {:>10.0}µs  cache {:>10.0}µs  ({:.1}x faster)",
+            "Rust (WASI)", first, cached, speedup
+        );
+        results.push(CacheResult {
+            name: "Rust (WASI)",
+            first_us: first,
+            cached_us: cached,
+        });
+    } else {
+        println!("  {:<24} MISSING", "Rust (WASI)");
+    }
+
+    // Go (compiles in register_tool, not constructor)
+    if std::path::Path::new(GO_WASM).exists() {
+        let (first, cached) = cold_start_go();
+        let speedup = first / cached;
+        println!(
+            "  {:<24} first {:>10.0}µs  cache {:>10.0}µs  ({:.1}x faster)",
+            "Go (TinyGo)", first, cached, speedup
+        );
+        results.push(CacheResult {
+            name: "Go (TinyGo)",
+            first_us: first,
+            cached_us: cached,
+        });
+    } else {
+        println!("  {:<24} MISSING", "Go (TinyGo)");
+    }
+
+    // Summary table
+    println!("\n  ┌──────────────────────────┬────────────┬────────────┬─────────┐");
+    println!("  │ {:<24} │ {:>10} │ {:>10} │ {:>7} │", "Language", "First (µs)", "Cache (µs)", "Speedup");
+    println!("  ├──────────────────────────┼────────────┼────────────┼─────────┤");
+    for r in &results {
+        let speedup = r.first_us / r.cached_us;
+        println!(
+            "  │ {:<24} │ {:>10.0} │ {:>10.0} │ {:>5.1}x  │",
+            r.name, r.first_us, r.cached_us, speedup
+        );
+    }
+    println!("  └──────────────────────────┴────────────┴────────────┴─────────┘");
+
+    results
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -388,12 +542,11 @@ fn main() {
     println!("   Metering & Module-Cache Benchmark");
     println!("================================================================");
 
+    part_a_module_primitives();
+    part_b_runtime_cold_start();
+
     let js_bytes = load_wasm(QUICKJS_WASM);
     let lua_bytes = load_wasm(LUA_WASM);
-
-    part_a_module_primitives("quickjs.wasm", &js_bytes, 5);
-    part_a_module_primitives("lua.wasm", &lua_bytes, 10);
-    part_b_runtime_cold_start();
     part_c_metering_overhead(&js_bytes, &lua_bytes);
     part_d_e2e_sanity();
 

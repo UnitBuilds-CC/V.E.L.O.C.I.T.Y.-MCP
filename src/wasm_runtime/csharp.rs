@@ -5,10 +5,10 @@
 
 use std::collections::HashMap;
 use std::error::Error;
-use wasmer::{Function, FunctionEnv, Instance, Memory, Module, Store, Value};
+use wasmer::{Function, FunctionEnv, Instance, Memory, Store, Value};
 
 use super::wasi::{build_wasi_imports, WasiEnv};
-use super::WasmRuntime;
+use super::{create_wasm_instance, WasmRuntime, WasmRuntimeConfig};
 
 const EXEC_SLOT: u64 = 512 * 1024;
 const ARGS_SLOT: u64 = 4 * 1024;
@@ -27,22 +27,12 @@ pub struct CSharpRuntime {
 
 impl CSharpRuntime {
     pub fn new(wasm_bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
-        let engine = super::build_metered_engine(super::instruction_limit());
-        let module = Module::new(&engine, wasm_bytes)?;
-        let mut store = Store::new(engine);
-
-        let env = FunctionEnv::new(&mut store, WasiEnv::new());
-        let imports = build_wasi_imports(&mut store, &env);
-        let instance = Instance::new(&mut store, &module, &imports)?;
-
-        let memory = instance.exports.get_memory("memory")?.clone();
-        env.as_mut(&mut store).memory = Some(memory.clone());
-
-        let current_pages = memory.view(&store).size();
-        let needed_pages = ((EXEC_SLOT + 64 * 1024) / 65536 + 1) as u32;
-        if current_pages.0 < needed_pages {
-            memory.grow(&mut store, wasmer::Pages(needed_pages - current_pages.0))?;
-        }
+        let (store, instance, memory, env) = create_wasm_instance(WasmRuntimeConfig {
+            wasm_bytes,
+            import_builder: Box::new(build_wasi_imports),
+            extra_memory_pages: 1,
+            instruction_limit: super::instruction_limit(),
+        })?;
 
         Ok(Self {
             store,

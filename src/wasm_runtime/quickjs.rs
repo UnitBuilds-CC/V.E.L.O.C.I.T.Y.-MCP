@@ -8,7 +8,7 @@ use std::error::Error;
 use wasmer::{Function, FunctionEnv, Instance, Memory, Module, Store, Value};
 
 use super::wasi::{build_quickjs_imports, WasiEnv};
-use super::WasmRuntime;
+use super::{create_wasm_instance, WasmRuntime, WasmRuntimeConfig};
 
 /// QuickJS runtime compiled to WASM, running in Wasmer.
 pub struct QuickJsRuntime {
@@ -53,22 +53,12 @@ impl QuickJsRuntime {
     /// Compiles the module, instantiates with WASI imports, but does NOT call
     /// `qjs_init` — that happens in `init()`.
     pub fn new(wasm_bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
-        let engine = super::build_metered_engine(super::instruction_limit());
-        let module = Module::new(&engine, wasm_bytes)?;
-        let mut store = Store::new(engine);
-
-        let env = FunctionEnv::new(&mut store, WasiEnv::new());
-        let imports = build_quickjs_imports(&mut store, &env);
-        let instance = Instance::new(&mut store, &module, &imports)?;
-
-        let memory = instance.exports.get_memory("memory")?.clone();
-        env.as_mut(&mut store).memory = Some(memory.clone());
-
-        let current_pages = memory.view(&store).size();
-        let needed_pages = ((EXEC_SLOT + 64 * 1024) / 65536 + 1) as u32;
-        if current_pages.0 < needed_pages {
-            memory.grow(&mut store, wasmer::Pages(needed_pages - current_pages.0))?;
-        }
+        let (store, instance, memory, env) = create_wasm_instance(WasmRuntimeConfig {
+            wasm_bytes,
+            import_builder: Box::new(build_quickjs_imports),
+            extra_memory_pages: 1,
+            instruction_limit: super::instruction_limit(),
+        })?;
 
         Ok(Self {
             store,

@@ -147,9 +147,10 @@ mp_uint_t mp_hal_stdout_tx_strn(const char *str, size_t len) {
     return len;
 }
 
-/* GC: deferred collection — gc_collect() just sets a flag; actual collection
- * happens at the top level (in mp_wasi_exec) where there are no stack roots. */
-static bool gc_collect_pending = false;
+/* GC: gc_collect() is called by the allocator when memory is low.
+ * We defer to top-level to avoid scanning live C stack roots, but always
+ * run the collection (not gated on a flag) so the allocator actually gets
+ * memory back. Without this, sustained tool calls degrade as the heap fills. */
 
 /* Forward declarations for tool registry (defined below) — needed so
  * gc_collect_top_level can scan compiled wrappers as GC roots. */
@@ -165,18 +166,22 @@ size_t gc_get_max_new_split(void) {
 }
 
 void gc_collect(void) {
-    gc_collect_pending = true;
+    /* Called from allocator — actual collection deferred to top level.
+     * No flag needed: gc_collect_top_level() always runs. */
 }
 
+/* Static holder for TLV-decoded args — needs to be a GC root */
+static mp_obj_t s_tlv_decoded_args = NULL;
+
 static void gc_collect_top_level(void) {
-    if (gc_collect_pending) {
-        gc_collect_pending = false;
-        gc_collect_start();
-        for (int i = 0; i < tool_count; i++) {
-            gc_collect_root((void **)&tool_registry[i].compiled_wrapper, 1);
-        }
-        gc_collect_end();
+    gc_collect_start();
+    for (int i = 0; i < tool_count; i++) {
+        gc_collect_root((void **)&tool_registry[i].compiled_wrapper, 1);
     }
+    if (s_tlv_decoded_args != NULL) {
+        gc_collect_root((void **)&s_tlv_decoded_args, 1);
+    }
+    gc_collect_end();
 }
 
 /* NLR jump fail — should never be reached. */
@@ -369,9 +374,8 @@ static mp_obj_t mjp_parse_value(MpJsonParser *p) {
 /* get_tool_args() builtin — parses args_buf JSON, returns dict */
 static mp_obj_t mp_wasi_get_tool_args(void) {
     /* Check if binary protocol already decoded args */
-    mp_obj_t tlv_args = mp_load_global(qstr_from_str("_tlv_decoded_args"));
-    if (tlv_args != MP_OBJ_NULL && tlv_args != mp_const_none) {
-        return tlv_args;
+    if (s_tlv_decoded_args != NULL && s_tlv_decoded_args != mp_const_none) {
+        return s_tlv_decoded_args;
     }
     
     /* Fall back to JSON parsing from args_buf */
@@ -495,12 +499,14 @@ int mp_wasi_register_tool(const char *name_ptr, size_t name_len,
         mp_parse_tree_t parse_tree = mp_parse(lex, MP_PARSE_FILE_INPUT);
         mp_obj_t module_fun = mp_compile(&parse_tree, source_name, false);
         nlr_pop();
-        gc_collect_top_level();
 
+        /* Register BEFORE gc_collect_top_level so the new wrapper is a GC root */
         memcpy(tool_registry[tool_count].name, name_ptr, name_len);
         tool_registry[tool_count].name[name_len] = '\0';
         tool_registry[tool_count].compiled_wrapper = module_fun;
         tool_count++;
+
+        gc_collect_top_level();
         return 0;
     } else {
         mp_obj_print_exception(&stdout_print, (mp_obj_t)nlr.ret_val);
@@ -522,6 +528,7 @@ int mp_wasi_call_tool(const char *args_ptr, size_t args_n,
     args_len = args_n;
 
     output_reset();
+    s_tlv_decoded_args = mp_const_none;
 
     /* Find tool in registry */
     mp_obj_t wrapper = NULL;
@@ -673,7 +680,7 @@ static mp_obj_t tlv_decode_object(TlvParser* parser) {
         
         /* Read key length and key string */
         uint16_t key_len = read_u16_be(parser);
-        if (key_len > TLV_MAX_STRING_LEN || parser->pos + key_len > parser->len) {
+        if (parser->pos + key_len > parser->len) {
             return dict;
         }
         mp_obj_t key = mp_obj_new_str((const char*)(parser->data + parser->pos), key_len);
@@ -720,11 +727,14 @@ static mp_obj_t tlv_decode_value(TlvParser* parser) {
         
         case TLV_TAG_FLOAT: {
             double val = read_f64_be(parser);
-            return mp_obj_new_float_from_d(val);
+            return mp_obj_new_float(val);
         }
         
-        default:
-            return mp_obj_new_str_from_fmt("Unknown TLV tag: 0x%02x", tag);
+        default: {
+            char errbuf[32];
+            snprintf(errbuf, sizeof(errbuf), "Unknown TLV tag: 0x%02x", tag);
+            return mp_obj_new_str(errbuf, strlen(errbuf));
+        }
     }
 }
 
@@ -781,7 +791,7 @@ int mp_wasi_call_tool_binary(const char *tlv_ptr, size_t tlv_len,
     };
     
     mp_obj_t args_obj = tlv_decode_value(&parser);
-    mp_store_global(qstr_from_str("_tlv_decoded_args"), args_obj);
+    s_tlv_decoded_args = args_obj;
     
     mp_print_t stdout_print = {NULL, stdout_print_strn};
     nlr_buf_t nlr;

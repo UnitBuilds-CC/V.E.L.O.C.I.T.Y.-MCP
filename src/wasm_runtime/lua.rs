@@ -113,6 +113,7 @@ impl LuaRuntime {
         let start = std::time::Instant::now();
         let mut checksum: u32 = 0;
         for _ in 0..iters {
+            super::reset_instruction_budget(&mut self.store, &self.instance);
             let rc = exec_fn
                 .call(&mut self.store, &[Value::I32(ptr), Value::I32(len)])
                 .unwrap();
@@ -376,5 +377,162 @@ mod tests {
         assert!(result2.contains("30"), "Expected 30 in result: {}", result2);
 
         rt.destroy().unwrap();
+    }
+
+    #[test]
+    #[ignore]
+    fn test_lua_exec_stress() {
+        let wasm = std::fs::read(wasm_path()).expect("Lua WASM not found");
+
+        // Measure actual instruction consumption per call
+        eprintln!("=== Instruction consumption ===");
+        {
+            use wasmer_middlewares::metering::{get_remaining_points, MeteringPoints};
+            let mut rt = LuaRuntime::cold_start(&wasm).expect("cold start failed");
+            let source = "print('hello')";
+            for _ in 0..5 {
+                rt.reset_instruction_budget();
+                let before = match get_remaining_points(&mut rt.store, &rt.instance) {
+                    MeteringPoints::Remaining(n) => n,
+                    MeteringPoints::Exhausted => panic!("budget exhausted before call"),
+                };
+                let _ = rt.exec_and_get_output(source);
+                let after = match get_remaining_points(&mut rt.store, &rt.instance) {
+                    MeteringPoints::Remaining(n) => n,
+                    MeteringPoints::Exhausted => 0,
+                };
+                eprintln!("  print('hello'): consumed {} instructions", before - after);
+            }
+            // Also measure string concat
+            let source2 = r#"
+                local t = {}
+                for i = 1, 100 do
+                    t[i] = "item_" .. i
+                end
+                print(#t)
+            "#;
+            for _ in 0..3 {
+                rt.reset_instruction_budget();
+                let before = match get_remaining_points(&mut rt.store, &rt.instance) {
+                    MeteringPoints::Remaining(n) => n,
+                    MeteringPoints::Exhausted => panic!("budget exhausted before call"),
+                };
+                let _ = rt.exec_and_get_output(source2);
+                let after = match get_remaining_points(&mut rt.store, &rt.instance) {
+                    MeteringPoints::Remaining(n) => n,
+                    MeteringPoints::Exhausted => 0,
+                };
+                eprintln!("  string concat (100 items): consumed {} instructions", before - after);
+            }
+            rt.destroy().unwrap();
+        }
+
+        // Measure call_tool (pre-compiled path, no re-parsing)
+        eprintln!("=== call_tool instruction consumption ===");
+        {
+            use wasmer_middlewares::metering::{get_remaining_points, MeteringPoints};
+            let mut rt = LuaRuntime::cold_start(&wasm).expect("cold start failed");
+            rt.register_tool("greet", r#"function greet(args) print("hello " .. args.name) end"#)
+                .expect("register failed");
+
+            for _ in 0..5 {
+                rt.reset_instruction_budget();
+                let before = match get_remaining_points(&mut rt.store, &rt.instance) {
+                    MeteringPoints::Remaining(n) => n,
+                    MeteringPoints::Exhausted => panic!("budget exhausted before call"),
+                };
+                let result = rt.call_tool("greet", r#"{"name": "world"}"#);
+                let after = match get_remaining_points(&mut rt.store, &rt.instance) {
+                    MeteringPoints::Remaining(n) => n,
+                    MeteringPoints::Exhausted => 0,
+                };
+                eprintln!(
+                    "  call_tool greet: consumed {} instructions, result={:?}",
+                    before - after,
+                    result
+                );
+            }
+
+            // Also measure a trivial tool (no string concat)
+            rt.register_tool("noop", r#"function noop(args) print("ok") end"#)
+                .expect("register failed");
+            for _ in 0..5 {
+                rt.reset_instruction_budget();
+                let before = match get_remaining_points(&mut rt.store, &rt.instance) {
+                    MeteringPoints::Remaining(n) => n,
+                    MeteringPoints::Exhausted => panic!("budget exhausted before call"),
+                };
+                let result = rt.call_tool("noop", r#"{}"#);
+                let after = match get_remaining_points(&mut rt.store, &rt.instance) {
+                    MeteringPoints::Remaining(n) => n,
+                    MeteringPoints::Exhausted => 0,
+                };
+                eprintln!(
+                    "  call_tool noop: consumed {} instructions, result={:?}",
+                    before - after,
+                    result
+                );
+            }
+            rt.destroy().unwrap();
+        }
+
+        // Test 1: trivial script (no string concat, no tables)
+        eprintln!("=== Test 1: trivial print ===");
+        {
+            let mut rt = LuaRuntime::cold_start(&wasm).expect("cold start failed");
+            let source = "print('hello')";
+            for i in 0..10001 {
+                rt.reset_instruction_budget();
+                let rc = rt.exec_and_get_output(source);
+                if i < 5 || i % 1000 == 0 {
+                    eprintln!("  iter {}: {:?}", i, rc.as_ref().map(|s| s.trim()).map_err(|e| e.to_string()));
+                }
+                if rc.is_err() {
+                    eprintln!("  CRASHED at iteration {}: {:?}", i, rc.err());
+                    break;
+                }
+            }
+            rt.destroy().unwrap();
+        }
+
+        // Test 2: string concatenation (the original crash case)
+        eprintln!("=== Test 2: string concat ===");
+        {
+            let mut rt = LuaRuntime::cold_start(&wasm).expect("cold start failed");
+            let source = r#"
+                local t = {}
+                for i = 1, 100 do
+                    t[i] = "item_" .. i
+                end
+                print(#t)
+            "#;
+            for i in 0..10001 {
+                rt.reset_instruction_budget();
+                let rc = rt.exec_and_get_output(source);
+                if i < 5 || i % 1000 == 0 {
+                    eprintln!("  iter {}: {:?}", i, rc.as_ref().map(|s| s.trim()).map_err(|e| e.to_string()));
+                }
+                if rc.is_err() {
+                    eprintln!("  CRASHED at iteration {}", i);
+                    break;
+                }
+            }
+            rt.destroy().unwrap();
+        }
+
+        // Test 3: bench_exec_repeated (raw exec path, no GC between calls)
+        eprintln!("=== Test 3: bench_exec_repeated ===");
+        {
+            let mut rt = LuaRuntime::cold_start(&wasm).expect("cold start failed");
+            let source = "print('hello')";
+            for &iters in &[100, 500, 1000, 5000, 10000] {
+                let (ns, checksum) = rt.bench_exec_repeated(source, iters);
+                eprintln!(
+                    "  trivial iters={:>5}  ns/call={:>10.1}  checksum={}",
+                    iters, ns, checksum
+                );
+            }
+            rt.destroy().unwrap();
+        }
     }
 }

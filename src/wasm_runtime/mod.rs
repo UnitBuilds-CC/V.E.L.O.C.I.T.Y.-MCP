@@ -159,6 +159,32 @@ pub fn create_wasm_instance(
     Ok((store, instance, memory, env))
 }
 
+/// Compile a WASM module with cache lookup. Used by runtimes that manage
+/// their own Store/Engine (Rust, Go) rather than going through create_wasm_instance.
+pub fn compile_module_cached(
+    engine: &wasmer::Engine,
+    wasm_bytes: &[u8],
+    instruction_limit: Option<u64>,
+) -> Result<Module, Box<dyn Error>> {
+    let wasm_hash = module_cache_key(wasm_bytes, instruction_limit);
+
+    let cache = MODULE_CACHE
+        .lock()
+        .map_err(|e| format!("Cache lock poisoned: {}", e))?;
+    if let Some(cached_bytes) = cache.get(&wasm_hash) {
+        return unsafe { Ok(Module::deserialize(engine, cached_bytes.as_slice())?) };
+    }
+    drop(cache);
+
+    let module = Module::new(engine, wasm_bytes)?;
+    let serialized = module.serialize()?;
+    MODULE_CACHE
+        .lock()
+        .map_err(|e| format!("Cache lock poisoned: {}", e))?
+        .insert(wasm_hash, Arc::new(serialized.to_vec()));
+    Ok(module)
+}
+
 /// Helper for cold start benchmarking - eliminates duplication across runtimes.
 pub fn bench_cold_start_generic(
     wasm_bytes: &[u8],

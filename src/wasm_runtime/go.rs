@@ -11,7 +11,7 @@ use std::process::Command;
 use wasmer::{FunctionEnv, Instance, Module, Store};
 
 use super::wasi::{build_wasi_imports, WasiEnv};
-use super::WasmRuntime;
+use super::{compile_module_cached, WasmRuntime};
 
 /// Cached compiled Go WASM modules per tool.
 /// The engine is kept so per-call Stores can share the module's engine
@@ -183,9 +183,9 @@ impl WasmRuntime for GoWasmRuntime {
                 .map_err(|e| format!("Compilation failed: {}", e))?
         };
 
-        // Create WASM module
+        // Create WASM module (using shared cache for faster repeat loads)
         let engine = super::build_metered_engine(super::instruction_limit());
-        let module = Module::new(&engine, &wasm_bytes)
+        let module = compile_module_cached(&engine, &wasm_bytes, super::instruction_limit())
             .map_err(|e| format!("Failed to compile WASM module: {}", e))?;
 
         // Cache the compiled module

@@ -162,25 +162,21 @@ fn wasm_hot_call_lua(wasm_bytes: &[u8]) -> Option<f64> {
     let mut rt = LuaRuntime::cold_start(wasm_bytes).ok()?;
     rt.register_tool("text_analyze", LUA_TOOL_SOURCE).ok()?;
 
-    let lua_code = r#"
-local text = "The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs. How vexingly quick daft zebras jump. Bright vixens jump; dozy fowl quack."
-local wc = 0
-for _ in text:gmatch('%S+') do wc = wc + 1 end
-local cc = #text
-local lc = 0
-if #text > 0 then
-    for _ in text:gmatch('\n') do lc = lc + 1 end
-    lc = lc + 1
-end
-print(json_encode({word_count = wc, char_count = cc, line_count = lc}))
-"#;
-
     // warmup
     for _ in 0..5 {
         let _ = rt.call_tool("text_analyze", BENCH_INPUT_JSON);
     }
 
-    let (ns, _checksum) = rt.bench_exec_repeated(lua_code, 1000);
+    let iters = 1000;
+    let start = Instant::now();
+    let mut checksum: u32 = 0;
+    for _ in 0..iters {
+        if let Ok(result) = rt.call_tool("text_analyze", BENCH_INPUT_JSON) {
+            checksum = checksum.wrapping_add(result.len() as u32);
+        }
+    }
+    let ns = start.elapsed().as_nanos() as f64 / iters as f64;
+    std::hint::black_box(checksum);
     Some(ns)
 }
 
