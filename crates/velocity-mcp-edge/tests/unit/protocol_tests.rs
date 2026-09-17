@@ -211,7 +211,8 @@ fn test_handle_empty_method_returns_error() {
     let request = parse_request(json).unwrap();
     let response = handle_mcp_request(&request);
     assert!(response.error.is_some());
-    assert_eq!(response.error.unwrap().code, -32601);
+    // Empty method is a structural violation → Invalid Request, not Method Not Found.
+    assert_eq!(response.error.unwrap().code, -32600);
 }
 
 // ---------------------------------------------------------------------------
