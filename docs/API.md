@@ -1,6 +1,6 @@
 # VELOCITY-MCP API Reference
 
-Complete API reference for VELOCITY-MCP server v3.0.0.
+Complete API reference for VELOCITY-MCP server v3.2.0.
 
 ## Table of Contents
 
@@ -36,7 +36,7 @@ HTTP server with Server-Sent Events for web clients.
 Shared memory IPC for ultra-low latency on Windows.
 
 ```bash
-./velocity_mcp --mode shmem --shmem-path velocity_mcp_shmem
+./velocity_mcp --mode shmem --buffer-path nmcp_buffer.bin
 ```
 
 ---
@@ -44,6 +44,8 @@ Shared memory IPC for ultra-low latency on Windows.
 ## HTTP REST API
 
 Base URL: `http://localhost:3000` (default)
+
+All endpoints except `GET /health` are mounted under the `/v1` prefix.
 
 ### Health Check
 
@@ -55,9 +57,9 @@ Returns server health status.
 ```json
 {
   "status": "healthy",
-  "version": "3.0.0",
-  "uptime_seconds": 3600,
-  "mode": "http"
+  "transport": "http",
+  "version": "3.2.0",
+  "activeSessions": 3
 }
 ```
 
@@ -69,7 +71,7 @@ Returns server health status.
 
 ### Performance Metrics
 
-**Endpoint:** `GET /performance`
+**Endpoint:** `GET /v1/performance`
 
 Returns real-time performance metrics.
 
@@ -77,7 +79,7 @@ Returns real-time performance metrics.
 ```json
 {
   "server": {
-    "version": "3.0.0",
+    "version": "3.2.0",
     "uptime_seconds": 3600.5,
     "protocol": "MCP",
     "protocol_version": "2024-11-05",
@@ -119,7 +121,7 @@ Returns real-time performance metrics.
 
 ### Server Metrics
 
-**Endpoint:** `GET /metrics`
+**Endpoint:** `GET /v1/metrics`
 
 Returns detailed server metrics in JSON format.
 
@@ -138,9 +140,26 @@ Returns detailed server metrics in JSON format.
 
 ---
 
+### Prometheus Metrics
+
+**Endpoint:** `GET /v1/metrics/prometheus`
+
+Returns the same counters in Prometheus text exposition format
+(`text/plain; version=0.0.4`). Emitted metric names:
+
+- `velocity_mcp_requests_total` (counter)
+- `velocity_mcp_requests_successful` (counter)
+- `velocity_mcp_requests_failed` (counter)
+- `velocity_mcp_auth_failures_total` (counter)
+- `velocity_mcp_rate_limit_hits_total` (counter)
+- `velocity_mcp_latency_microseconds` (gauge)
+- `velocity_mcp_sse_connections_active` (gauge)
+
+---
+
 ### List Sessions
 
-**Endpoint:** `GET /sessions`
+**Endpoint:** `GET /v1/sessions`
 
 Returns list of active sessions.
 
@@ -162,7 +181,7 @@ Returns list of active sessions.
 
 ### Delete Session
 
-**Endpoint:** `DELETE /sessions/:id`
+**Endpoint:** `DELETE /v1/sessions/:id`
 
 Deletes a specific session.
 
@@ -218,8 +237,8 @@ Authorization: Bearer <api-key>  # If authentication enabled
       "logging": {}
     },
     "serverInfo": {
-      "name": "velocity-mcp",
-      "version": "3.0.0"
+      "name": "velocity-mcp-rust-server",
+      "version": "3.2.0"
     }
   },
   "id": 1
@@ -315,7 +334,7 @@ data: {}
 
 ### SSE Events
 
-**Endpoint:** `GET /sse`
+**Endpoint:** `GET /v1/sse`
 
 Subscribe to server-sent events for real-time notifications.
 
@@ -379,8 +398,8 @@ Initialize the MCP session.
       "logging": {}
     },
     "serverInfo": {
-      "name": "velocity-mcp",
-      "version": "3.0.0"
+      "name": "velocity-mcp-rust-server",
+      "version": "3.2.0"
     }
   },
   "id": 1
@@ -738,15 +757,15 @@ VELOCITY-MCP supports API key authentication for HTTP transport.
 
 ### Configuration
 
-Enable authentication via CLI:
-```bash
-./velocity_mcp --mode http --api-key your-secret-key
-```
-
-Or via config file:
+Enable authentication via config file:
 ```toml
 [http]
 api_key = "your-secret-key"
+```
+
+Or via the environment (no CLI option exists for the API key):
+```bash
+VELOCITY_API_KEY=your-secret-key ./velocity_mcp --mode http
 ```
 
 ### Usage
@@ -761,25 +780,15 @@ curl -H "Authorization: Bearer your-secret-key" \
 
 ### Error Responses
 
-**Missing API key:**
-```json
-{
-  "jsonrpc": "2.0",
-  "error": {
-    "code": -32000,
-    "message": "Missing API key"
-  },
-  "id": null
-}
-```
+A missing `Authorization` header and a key that does not match both return
+`401 Unauthorized` with the same body:
 
-**Invalid API key:**
 ```json
 {
   "jsonrpc": "2.0",
   "error": {
     "code": -32000,
-    "message": "Invalid API key"
+    "message": "Unauthorized"
   },
   "id": null
 }
@@ -798,31 +807,29 @@ VELOCITY-MCP includes built-in rate limiting to prevent abuse.
 
 ### Configuration
 
-Configure via CLI:
-```bash
-./velocity_mcp --mode http --rate-limit 50 --rate-burst 200
-```
+Rate limiting is a boolean switch: no CLI option sets the numeric limits and
+there is no numeric rate/burst config key.
 
-Or via config file:
+Via config file:
 ```toml
 [http]
-rate_limit = 50
-rate_burst = 200
+enable_rate_limit = true   # default
 ```
 
-### Rate Limit Headers
-
-When rate limited, responses include:
-
+Or via the environment:
+```bash
+VELOCITY_ENABLE_RATE_LIMIT=false
 ```
-HTTP/1.1 429 Too Many Requests
-Retry-After: 1
-X-RateLimit-Limit: 20
-X-RateLimit-Remaining: 0
-X-RateLimit-Reset: 1234567890
-```
+
+The numeric bucket values above are compiled in (`src/rate_limit.rs`) and can
+only be raised through the `VELOCITY_RATE_LIMIT` (requests/second) and
+`VELOCITY_RATE_BURST` (burst capacity) environment variables, e.g. for load
+tests.
 
 ### Error Response
+
+When the bucket is empty the request is rejected with `429 Too Many Requests`
+and a JSON body. No `Retry-After` or `X-RateLimit-*` headers are sent:
 
 ```json
 {
@@ -831,7 +838,7 @@ X-RateLimit-Reset: 1234567890
     "code": -32000,
     "message": "Rate limit exceeded"
   },
-  "id": 1
+  "id": null
 }
 ```
 
@@ -888,20 +895,18 @@ VELOCITY-MCP uses standard JSON-RPC error codes plus custom codes.
 ./velocity_mcp [OPTIONS]
 
 Options:
-  --mode <MODE>              Transport mode: stdio, http, shmem [default: stdio]
-  --addr <ADDR>              HTTP listen address [default: 127.0.0.1:3000]
-  --api-key <KEY>            API key for authentication
-  --rate-limit <NUM>         Requests per second [default: 20]
-  --rate-burst <NUM>         Burst request count [default: 100]
-  --max-body-size <BYTES>    Max request body size [default: 10485760]
-  --cors-origins <ORIGINS>   Comma-separated CORS origins
-  --tls-cert <PATH>          TLS certificate file
-  --tls-key <PATH>           TLS private key file
-  --shmem-path <PATH>        Shared memory path (Windows)
-  --config <PATH>            Configuration file path
-  --help                     Print help information
-  --version                  Print version information
+  --config <path>               Path to TOML configuration file. CLI args override file values
+  --mode <stdio|shmem|http>     Protocol mode. Default: stdio
+  --buffer-path <path>          Path to mapped buffer file. Only used in shmem mode. Default: nmcp_buffer.bin
+  --addr <address>              HTTP listen address. Only used in http mode. Default: 0.0.0.0:3000
+  --tls-cert <path>             Path to TLS certificate (PEM). Enables HTTPS when paired with --tls-key
+  --tls-key <path>              Path to TLS private key (PEM). Enables HTTPS when paired with --tls-cert
+  --benchmark                   Run the performance benchmark suite
+  -h, --help                    Print this help screen
 ```
+
+No version-only flag exists; the version (`v3.2.0`) is printed in the
+`--help` banner.
 
 ### Configuration File
 
@@ -909,35 +914,38 @@ VELOCITY-MCP supports TOML configuration files.
 
 **Example config.toml:**
 ```toml
-[server]
-mode = "http"
-version = "3.0.0"
+# Top-level keys
+mode = "http"                                  # stdio | shmem | http
+buffer_path = "nmcp_buffer.bin"                # shmem mode only
+csharp_path = "NdaMcpServer.exe"               # NDA C# engine delegation
+plugin_dir = "plugins"
 
 [http]
 addr = "0.0.0.0:3000"
-api_key = "your-secret-key"
-rate_limit = 20
-rate_burst = 100
-max_body_size = 10485760
+api_key = "your-secret-key"                    # optional; enables Bearer auth
+max_request_size = 10485760                    # bytes (10 MB default)
+enable_rate_limit = true
 cors_origins = ["https://example.com", "https://app.example.com"]
-
-[http.tls]
-cert = "/path/to/cert.pem"
-key = "/path/to/key.pem"
 
 [logging]
 level = "info"
-format = "json"
 
-[security]
-max_sessions = 10000
-session_timeout = 1800
-enable_audit_log = true
+[features]
+database = false
+oauth2 = false
+http = false
+nda_merkle = true
 
-[performance]
-enable_metrics = true
-metrics_interval = 60
+[wasm_runtimes]
+instruction_limit = 10000000
+
+[wasm_runtimes.javascript]
+enabled = true
+wasm_path = "bench_tools/quickjs_wasm/quickjs.wasm"
 ```
+
+TLS is not part of the config schema — certificates are supplied only through
+the `--tls-cert` / `--tls-key` CLI flags.
 
 **Load configuration:**
 ```bash
@@ -946,13 +954,20 @@ metrics_interval = 60
 
 ### Environment Variables
 
-All configuration options can be set via environment variables with the `VELOCITY_` prefix.
+These settings can be overridden with environment variables (applied after the
+config file, so they win):
 
 ```bash
 export VELOCITY_MODE=http
-export VELOCITY_HTTP_ADDR=0.0.0.0:3000
-export VELOCITY_HTTP_API_KEY=your-secret-key
+export VELOCITY_BUFFER_PATH=nmcp_buffer.bin
+export VELOCITY_CSHARP_PATH=NdaMcpServer.exe
 export VELOCITY_LOG_LEVEL=debug
+export VELOCITY_HTTP_ADDR=0.0.0.0:3000
+export VELOCITY_API_KEY=your-secret-key
+export VELOCITY_MAX_REQUEST_SIZE=10485760
+export VELOCITY_ENABLE_RATE_LIMIT=true
+export VELOCITY_NDA_MERKLE=true
+export VELOCITY_WASM_INSTRUCTION_LIMIT=10000000
 
 ./velocity_mcp
 ```
@@ -1058,16 +1073,16 @@ Make an HTTP request with retry logic.
 Convert a file to NDA binary format.
 
 **Parameters:**
-- `input_path` (string, required) - Input file path
-- `output_path` (string, optional) - Output NDA file path
+- `filePath` (string, required) - Input file path
+- `outputPath` (string, optional) - Output NDA file path (defaults to the input path with a `.nda` extension)
 
 **Example:**
 ```json
 {
   "name": "convert_to_nda_document",
   "arguments": {
-    "input_path": "/path/to/document.txt",
-    "output_path": "/path/to/document.nda"
+    "filePath": "/path/to/document.txt",
+    "outputPath": "/path/to/document.nda"
   }
 }
 ```
@@ -1079,14 +1094,14 @@ Convert a file to NDA binary format.
 Read an NDA document.
 
 **Parameters:**
-- `path` (string, required) - Path to NDA file
+- `ndaPath` (string, required) - Path to NDA file
 
 **Example:**
 ```json
 {
   "name": "read_nda",
   "arguments": {
-    "path": "/path/to/document.nda"
+    "ndaPath": "/path/to/document.nda"
   }
 }
 ```
@@ -1098,7 +1113,7 @@ Read an NDA document.
 Execute an NDA document.
 
 **Parameters:**
-- `path` (string, required) - Path to NDA file
+- `ndaPath` (string, required) - Path to NDA file
 - `arguments` (array, optional) - Execution arguments
 
 **Example:**
@@ -1106,7 +1121,7 @@ Execute an NDA document.
 {
   "name": "execute_nda",
   "arguments": {
-    "path": "/path/to/script.nda",
+    "ndaPath": "/path/to/script.nda",
     "arguments": ["arg1", "arg2"]
   }
 }
@@ -1119,24 +1134,16 @@ Execute an NDA document.
 Convert a JSON tool to NDA format for 2.8x faster parsing (measured).
 
 **Parameters:**
-- `tool_name` (string, required) - Tool name
-- `tool_definition` (object, required) - Tool definition
+- `jsonRequest` (string, required) - JSON-RPC tool call to convert
+- `outputPath` (string, optional) - Where to write the NDA binary (the tool is registered either way)
 
 **Example:**
 ```json
 {
   "name": "convert_to_nda_tool",
   "arguments": {
-    "tool_name": "my_tool",
-    "tool_definition": {
-      "description": "My custom tool",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "input": {"type": "string"}
-        }
-      }
-    }
+    "jsonRequest": "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"my_tool\",\"arguments\":{\"input\":\"value\"}},\"id\":1}",
+    "outputPath": "/path/to/my_tool.nda"
   }
 }
 ```
@@ -1210,4 +1217,4 @@ curl -X POST http://localhost:3000/v1/mcp \
 ---
 
 *Last updated: 2026-09-02*
-*Version: 3.0.0*
+*Version: 3.2.0*

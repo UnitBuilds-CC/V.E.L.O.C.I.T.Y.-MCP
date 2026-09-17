@@ -1,6 +1,6 @@
 # VELOCITY-MCP Deployment Guide
 
-Production deployment guide for VELOCITY-MCP server v3.0.0.
+Production deployment guide for VELOCITY-MCP server v3.2.0.
 
 ## Table of Contents
 
@@ -64,8 +64,8 @@ chmod +x velocity_mcp
 # Move to system path
 sudo mv velocity_mcp /usr/local/bin/
 
-# Verify installation
-velocity_mcp --version
+# Verify installation (prints the version banner; there is no version flag)
+velocity_mcp --help
 ```
 
 **macOS (x86_64):**
@@ -73,7 +73,7 @@ velocity_mcp --version
 curl -L https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/releases/latest/download/velocity_mcp_macos_x86_64 -o velocity_mcp
 chmod +x velocity_mcp
 sudo mv velocity_mcp /usr/local/bin/
-velocity_mcp --version
+velocity_mcp --help
 ```
 
 **macOS (ARM64/Apple Silicon):**
@@ -81,7 +81,7 @@ velocity_mcp --version
 curl -L https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/releases/latest/download/velocity_mcp_macos_arm64 -o velocity_mcp
 chmod +x velocity_mcp
 sudo mv velocity_mcp /usr/local/bin/
-velocity_mcp --version
+velocity_mcp --help
 ```
 
 **Windows (x86_64):**
@@ -93,7 +93,7 @@ Invoke-WebRequest -Uri "https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/re
 Move-Item -Path "velocity_mcp.exe" -Destination "C:\Program Files\velocity_mcp.exe"
 
 # Verify installation
-& "C:\Program Files\velocity_mcp.exe" --version
+& "C:\Program Files\velocity_mcp.exe" --help
 ```
 
 ### Method 2: Build from Source
@@ -150,38 +150,36 @@ docker run -d -p 3000:3000 --name velocity-mcp velocity-mcp
 Create `/etc/velocity-mcp/config.toml`:
 
 ```toml
-[server]
+# Top-level keys
 mode = "http"
-version = "3.0.0"
+buffer_path = "nmcp_buffer.bin"
+csharp_path = "NdaMcpServer.exe"
+plugin_dir = "plugins"
 
 [http]
 addr = "0.0.0.0:3000"
-api_key = "${VELOCITY_API_KEY}"  # Use environment variable
-rate_limit = 100
-rate_burst = 500
-max_body_size = 10485760  # 10MB
+api_key = "your-secure-api-key-here"   # or leave unset and export VELOCITY_API_KEY
+max_request_size = 10485760            # 10 MB
+enable_rate_limit = true
 cors_origins = ["https://your-domain.com"]
 
-[http.tls]
-enabled = true
-cert = "/etc/velocity-mcp/tls/cert.pem"
-key = "/etc/velocity-mcp/tls/key.pem"
-
 [logging]
-level = "info"
-format = "json"
-output = "/var/log/velocity-mcp/server.log"
+level = "info"                         # error | warn | info | debug | trace
 
-[security]
-max_sessions = 10000
-session_timeout = 1800  # 30 minutes
-enable_audit_log = true
-audit_log_path = "/var/log/velocity-mcp/audit.log"
+[features]
+database = false
+oauth2 = false
+http = false
+nda_merkle = true
 
-[performance]
-enable_metrics = true
-metrics_interval = 60
+[wasm_runtimes]
+instruction_limit = 10000000
 ```
+
+Config values are read literally — `${VAR}` placeholders are **not**
+environment-expanded. Use `VELOCITY_API_KEY` (and the other variables below) to
+inject secrets at runtime. TLS material is not part of this file either: it is
+passed with the `--tls-cert` / `--tls-key` command-line flags.
 
 ### Environment Variables
 
@@ -193,12 +191,15 @@ VELOCITY_API_KEY=your-secure-api-key-here
 
 # Logging
 RUST_LOG=info
+VELOCITY_LOG_LEVEL=info
 
-# Optional: Database path
-VELOCITY_DATABASE_PATH=/var/lib/velocity-mcp/data.db
+# Optional overrides (these win over the config file)
+# VELOCITY_HTTP_ADDR=0.0.0.0:3000
+# VELOCITY_MAX_REQUEST_SIZE=10485760
+# VELOCITY_ENABLE_RATE_LIMIT=true
 
-# Optional: Custom temp directory
-VELOCITY_TEMP_DIR=/var/lib/velocity-mcp/tmp
+# Directory where per-session audit logs are flushed (default: ./audit_logs)
+VELOCITY_AUDIT_LOG_PATH=/var/lib/velocity-mcp/audit_logs
 ```
 
 Set permissions:
@@ -421,17 +422,21 @@ sudo crontab -e
 
 ### Update Configuration
 
-Edit `/etc/velocity-mcp/config.toml`:
+TLS is enabled with command-line flags only — the config schema has no TLS
+section. Edit `/etc/systemd/system/velocity-mcp.service`:
 
-```toml
-[http.tls]
-enabled = true
-cert = "/etc/velocity-mcp/tls/cert.pem"
-key = "/etc/velocity-mcp/tls/key.pem"
+```ini
+[Service]
+ExecStart=/usr/local/bin/velocity_mcp --config /etc/velocity-mcp/config.toml \
+  --tls-cert /etc/velocity-mcp/tls/cert.pem \
+  --tls-key /etc/velocity-mcp/tls/key.pem
 ```
+
+Both flags must be present together, otherwise the server refuses to start.
 
 Restart service:
 ```bash
+sudo systemctl daemon-reload
 sudo systemctl restart velocity-mcp
 ```
 
@@ -462,15 +467,20 @@ sudo systemctl restart velocity-mcp
 
 **Enable metrics endpoint:**
 
-```toml
-[performance]
-enable_metrics = true
-metrics_interval = 60
-```
+Metrics are always collected — there is no config switch for them. They are
+served by the HTTP transport under the `/v1` prefix, so they require the same
+`Authorization: Bearer <api_key>` header as every other `/v1` route whenever
+`[http] api_key` is set.
 
 **Access metrics:**
 ```bash
-curl http://localhost:3000/metrics
+# JSON
+curl -H "Authorization: Bearer your-secure-api-key-here" \
+     http://localhost:3000/v1/metrics
+
+# Prometheus text exposition format
+curl -H "Authorization: Bearer your-secure-api-key-here" \
+     http://localhost:3000/v1/metrics/prometheus
 ```
 
 **Prometheus config** `prometheus.yml`:
@@ -479,7 +489,9 @@ curl http://localhost:3000/metrics
 scrape_configs:
   - job_name: 'velocity-mcp'
     scrape_interval: 15s
-    metrics_path: '/metrics'
+    metrics_path: '/v1/metrics/prometheus'
+    authorization:
+      credentials: 'your-secure-api-key-here'
     static_configs:
       - targets: ['localhost:3000']
 ```
@@ -494,10 +506,12 @@ scrape_configs:
 
 **Key metrics to monitor:**
 - `velocity_mcp_requests_total` - Total requests
-- `velocity_mcp_request_duration_seconds` - Request latency
-- `velocity_mcp_active_sessions` - Active sessions
-- `velocity_mcp_errors_total` - Error count
+- `velocity_mcp_requests_successful` - Successful requests
+- `velocity_mcp_requests_failed` - Failed requests
+- `velocity_mcp_auth_failures_total` - Authentication failures
 - `velocity_mcp_rate_limit_hits_total` - Rate limit hits
+- `velocity_mcp_latency_microseconds` - Average request latency (µs)
+- `velocity_mcp_sse_connections_active` - Active SSE connections
 
 ### Health Checks
 
@@ -563,41 +577,70 @@ sudo systemctl restart velocity-mcp
 ### Audit Logging
 
 **Enable audit logging:**
-```toml
-[security]
-enable_audit_log = true
-audit_log_path = "/var/log/velocity-mcp/audit.log"
-```
 
-**Monitor audit log:**
+Audit logging is always on — the config schema has no security section and no
+`enable_audit_log` / `audit_log_path` key. Entries are kept per session in
+memory and flushed to
+`{VELOCITY_AUDIT_LOG_PATH or "audit_logs"}/<session-id>.json` on shutdown, or
+on demand:
+
 ```bash
-sudo tail -f /var/log/velocity-mcp/audit.log
+# Flush all session logs to disk
+curl -X POST \
+     -H "Authorization: Bearer your-secure-api-key-here" \
+     http://localhost:3000/v1/audit/flush
+
+# Export without writing files
+curl -H "Authorization: Bearer your-secure-api-key-here" \
+     http://localhost:3000/v1/audit/export/json
+curl -H "Authorization: Bearer your-secure-api-key-here" \
+     http://localhost:3000/v1/audit/export/csv
 ```
 
-**Audit log format:**
+**Inspect flushed logs:**
+```bash
+sudo ls -l /var/lib/velocity-mcp/audit_logs
+sudo cat /var/lib/velocity-mcp/audit_logs/<session-id>.json | head
+```
+
+**Audit entry format:**
 ```json
 {
-  "timestamp": "2026-08-30T01:00:00Z",
-  "event": "tool_call",
-  "tool": "file_read",
-  "session": "session-abc123",
-  "outcome": "success",
-  "duration_ms": 15
+  "sequence": 42,
+  "timestamp_ms": 1788476400000,
+  "tool_name": "file_read",
+  "duration_us": 15000,
+  "outcome": "Success",
+  "transport": "http",
+  "payload_size": 128,
+  "response_size": 512,
+  "session_id": "session-abc123"
 }
 ```
+
+`transport`, `payload_size`, `response_size`, `merkle_root` and `session_id`
+are omitted when the server does not know them; `merkle_root` is only present
+for NDA frames recorded while `[features] nda_merkle` is enabled.
 
 ### Rate Limiting
 
 **Configure rate limits:**
+
+Rate limiting is a boolean switch — there are no numeric `rate_limit` /
+`rate_burst` config keys:
 ```toml
 [http]
-rate_limit = 100      # Requests per second
-rate_burst = 500      # Burst capacity
+enable_rate_limit = true   # default
 ```
+
+The bucket itself is compiled in at **20 requests per second** with a
+**100 request burst**; both can only be changed through the
+`VELOCITY_RATE_LIMIT` and `VELOCITY_RATE_BURST` environment variables.
 
 **Monitor rate limit hits:**
 ```bash
-curl http://localhost:3000/metrics | grep rate_limit
+curl -s -H "Authorization: Bearer your-secure-api-key-here" \
+     http://localhost:3000/v1/metrics/prometheus | grep rate_limit_hits
 ```
 
 ---
@@ -655,24 +698,16 @@ server {
 
 ### Database Scaling
 
-**SQLite optimization:**
-```toml
-[database]
-path = "/var/lib/velocity-mcp/data.db"
-pool_size = 10
-cache_size = 10000
-```
+The config schema has no database section. Database-backed resources require the
+`database` Cargo feature at build time (`cargo build --release --features database`)
+and `[features] database = true` in the config file.
 
-**PostgreSQL (future):**
-```toml
-[database]
-type = "postgresql"
-host = "localhost"
-port = 5432
-database = "velocity_mcp"
-user = "velocity"
-password = "${DB_PASSWORD}"
-```
+The SQLite file is chosen programmatically by the embedding application through
+`velocity_mcp::resources::set_database_path()` — the first call wins — and the
+opened connection is cached for the lifetime of the process. Connection pooling
+and cache size are therefore not tunable from `config.toml`.
+
+Only SQLite is supported.
 
 ---
 
@@ -768,9 +803,16 @@ sudo journalctl -u velocity-mcp -n 50 --no-pager
    ```
 
 3. **Invalid configuration:**
+   There is no config-check flag; the file is validated at startup and the
+   process exits on failure.
    ```bash
-   velocity_mcp --config /etc/velocity-mcp/config.toml --check-config
+   velocity_mcp --config /etc/velocity-mcp/config.toml
+   # "Error loading config file '...'"  -> unreadable or malformed TOML
+   # "Config error: ..."                -> value rejected by validation
    ```
+   Rejected values: `mode` other than `stdio|shmem|http`, `logging.level`
+   other than `error|warn|info|debug|trace`, an empty `http.addr`, or
+   `http.max_request_size = 0` while running in http mode.
 
 ### High Memory Usage
 
@@ -779,10 +821,16 @@ sudo journalctl -u velocity-mcp -n 50 --no-pager
 ps aux | grep velocity-mcp
 ```
 
-**Reduce session timeout:**
-```toml
-[security]
-session_timeout = 900  # 15 minutes
+**Reduce session retention:**
+
+The idle timeout is hard-coded to 30 minutes (`SESSION_TTL` in
+`src/transport/http.rs`) and is not configurable; evict a session explicitly
+with:
+
+```bash
+curl -X DELETE \
+     -H "Authorization: Bearer your-secure-api-key-here" \
+     http://localhost:3000/v1/sessions/<session-id>
 ```
 
 ### High CPU Usage
@@ -792,11 +840,18 @@ session_timeout = 900  # 15 minutes
 top -p $(pgrep velocity-mcp)
 ```
 
-**Reduce rate limits:**
+**Tighten rate limiting:**
+
+Make sure the boolean switch is on, then lower the compiled-in bucket through
+the environment variables:
 ```toml
 [http]
-rate_limit = 50
-rate_burst = 200
+enable_rate_limit = true
+```
+
+```bash
+export VELOCITY_RATE_LIMIT=10    # requests per second
+export VELOCITY_RATE_BURST=50    # burst capacity
 ```
 
 ### Connection Refused
@@ -846,4 +901,4 @@ sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
 ---
 
 *Last updated: 2026-08-30*
-*Version: 3.0.0*
+*Version: 3.2.0*

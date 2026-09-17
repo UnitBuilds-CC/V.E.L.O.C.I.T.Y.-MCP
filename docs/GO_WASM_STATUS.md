@@ -90,7 +90,7 @@ Instead of manually rebuilding `tool.wasm`, you can now:
 - Automatically recompiles when source changes (cache invalidation)
 - Requires TinyGo to be installed on the system
 
-This makes VELOCITY-MCP the first MCP server to support dynamic tools across ALL language types (interpreted AND compiled).
+Go therefore reaches the same dynamic tool-registration workflow as the interpreted runtimes, at the cost of a one-time TinyGo compile per source change.
 
 ## Alternative Approaches
 

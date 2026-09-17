@@ -5,19 +5,19 @@ The plugin marketplace provides a centralized registry for discovering, installi
 ## Features
 
 - **Plugin Discovery**: Search and browse available plugins
-- **One-Click Installation**: Install plugins with a single API call
-- **Version Management**: Track plugin versions and updates
-- **Plugin Management**: Enable/disable installed plugins
-- **Statistics**: Track downloads, ratings, and usage
+- **One-Click Installation**: Install plugins with a single API call (downloads the archive and verifies its SHA-256 checksum)
+- **Version Management**: Track plugin versions and check/apply updates
+- **Ratings and Reviews**: Submit a 1-5 star review per plugin
+- **Statistics**: Track downloads, ratings, and installed plugins
 
 ## API Endpoints
 
-All marketplace endpoints are available under `/marketplace/` and require authentication if enabled.
+All marketplace endpoints are served under `/v1/marketplace/` and, like every route except the top-level `/health`, require an `Authorization: Bearer <key>` header when an API key is configured (`[http].api_key` or `VELOCITY_API_KEY`). There are no marketplace CLI subcommands — this HTTP API is the only interface. Enabled/disabled state is exposed on each installed plugin record; toggling it is a library-level call (`Marketplace::set_enabled`), not an HTTP route.
 
 ### List Plugins
 
 ```bash
-GET /marketplace/plugins?query=search+text&tags=tag1,tag2&author=author&verified_only=true&sort_by=downloads&limit=20&offset=0
+GET /v1/marketplace/plugins?query=search+text&tags=tag1,tag2&author=author&verified_only=true&sort_by=downloads&limit=20&offset=0
 ```
 
 **Query Parameters:**
@@ -54,7 +54,7 @@ GET /marketplace/plugins?query=search+text&tags=tag1,tag2&author=author&verified
 ### Get Plugin Details
 
 ```bash
-GET /marketplace/plugins/:id
+GET /v1/marketplace/plugins/:id
 ```
 
 **Response:**
@@ -69,7 +69,7 @@ GET /marketplace/plugins/:id
   "tags": ["tag1", "tag2"],
   "download_url": "https://example.com/plugin.zip",
   "checksum": "sha256:...",
-  "min_velocity_version": "3.0.0",
+  "min_velocity_version": "3.2.0",
   "dependencies": ["other.plugin"],
   "downloads": 1000,
   "rating": 4.5,
@@ -83,7 +83,7 @@ GET /marketplace/plugins/:id
 ### Install Plugin
 
 ```bash
-POST /marketplace/install/:id
+POST /v1/marketplace/install/:id
 ```
 
 **Response:**
@@ -99,7 +99,7 @@ POST /marketplace/install/:id
 ### Uninstall Plugin
 
 ```bash
-DELETE /marketplace/install/:id
+DELETE /v1/marketplace/install/:id
 ```
 
 **Response:** `200 OK`
@@ -107,7 +107,7 @@ DELETE /marketplace/install/:id
 ### List Installed Plugins
 
 ```bash
-GET /marketplace/installed
+GET /v1/marketplace/installed
 ```
 
 **Response:**
@@ -122,10 +122,54 @@ GET /marketplace/installed
 ]
 ```
 
+### Submit a Review
+
+```bash
+POST /v1/marketplace/plugins/:id/review
+```
+
+**Request body:**
+```json
+{
+  "reviewer": "author-or-user",
+  "rating": 5,
+  "comment": "Works well"
+}
+```
+
+`rating` must be between 1 and 5. **Response:** `201 Created`; the plugin's `rating` and `rating_count` are recomputed from all stored reviews.
+
+### Check for Updates
+
+```bash
+GET /v1/marketplace/updates
+```
+
+**Response:** array of installed plugins that have a newer version in the index (field names from `PluginUpdate`):
+
+```json
+[
+  {
+    "plugin_id": "author.plugin-name",
+    "current_version": "1.0.0",
+    "latest_version": "1.1.0",
+    "download_url": "https://example.com/plugin-1.1.0.zip"
+  }
+]
+```
+
+### Apply an Update
+
+```bash
+POST /v1/marketplace/update/:id
+```
+
+**Response:** the refreshed `InstalledPlugin` record.
+
 ### Get Marketplace Statistics
 
 ```bash
-GET /marketplace/stats
+GET /v1/marketplace/stats
 ```
 
 **Response:**
@@ -206,7 +250,10 @@ For WASM-based plugins, use the `wasm` executor type with a supported language:
 }
 ```
 
-Supported WASM languages: `javascript`, `typescript`, `python`, `ruby`, `lua`, `go`, `rust`, `php`, `csharp`, `java`, `r`, `julia`, `perl`.
+Supported WASM languages (13 total — 7 production runtimes + 6 tree-walk interpreters, one per `[wasm_runtimes.<lang>]` key):
+
+- **Production runtimes**: `javascript`, `typescript` (via QuickJS), `python` (MicroPython), `ruby` (mruby), `lua`, `go` (TinyGo), `rust`
+- **Tree-walk interpreters** (built on a shared C core): `php`, `csharp`, `java`, `r`, `julia`, `perl`
 
 ### Marketplace Metadata
 
@@ -223,7 +270,7 @@ For marketplace listing, create a `marketplace.json` file:
   "tags": ["utility", "example"],
   "download_url": "https://github.com/author/my-plugin/releases/download/v1.0.0/plugin.zip",
   "checksum": "sha256:abc123...",
-  "min_velocity_version": "3.0.0",
+  "min_velocity_version": "3.2.0",
   "dependencies": [],
   "verified": false
 }
@@ -320,62 +367,83 @@ echo "Processed: $PARAM1"
 ### Python
 
 ```python
+import os
 import requests
 
+BASE = "http://localhost:3000/v1/marketplace"
+HEADERS = {"Authorization": f"Bearer {os.environ['VELOCITY_API_KEY']}"}
+
 # List plugins
-response = requests.get("http://localhost:3000/marketplace/plugins")
+response = requests.get(f"{BASE}/plugins", headers=HEADERS)
 plugins = response.json()
 
 # Install plugin
-response = requests.post("http://localhost:3000/marketplace/install/author.plugin-name")
+response = requests.post(f"{BASE}/install/author.plugin-name", headers=HEADERS)
 installed = response.json()
 
 # List installed
-response = requests.get("http://localhost:3000/marketplace/installed")
+response = requests.get(f"{BASE}/installed", headers=HEADERS)
 installed = response.json()
 ```
 
 ### JavaScript
 
 ```javascript
+const base = "http://localhost:3000/v1/marketplace";
+const headers = { Authorization: `Bearer ${process.env.VELOCITY_API_KEY}` };
+
 // List plugins
-const response = await fetch("http://localhost:3000/marketplace/plugins");
+const response = await fetch(`${base}/plugins`, { headers });
 const plugins = await response.json();
 
 // Install plugin
-const response = await fetch("http://localhost:3000/marketplace/install/author.plugin-name", {
-  method: "POST"
+const install = await fetch(`${base}/install/author.plugin-name`, {
+  method: "POST",
+  headers
 });
-const installed = await response.json();
+const installed = await install.json();
 ```
 
 ### cURL
 
 ```bash
+AUTH="Authorization: Bearer $VELOCITY_API_KEY"
+
 # List plugins
-curl http://localhost:3000/marketplace/plugins
+curl -H "$AUTH" http://localhost:3000/v1/marketplace/plugins
 
 # Get plugin details
-curl http://localhost:3000/marketplace/plugins/author.plugin-name
+curl -H "$AUTH" http://localhost:3000/v1/marketplace/plugins/author.plugin-name
 
 # Install plugin
-curl -X POST http://localhost:3000/marketplace/install/author.plugin-name
+curl -X POST -H "$AUTH" http://localhost:3000/v1/marketplace/install/author.plugin-name
 
 # Uninstall plugin
-curl -X DELETE http://localhost:3000/marketplace/install/author.plugin-name
+curl -X DELETE -H "$AUTH" http://localhost:3000/v1/marketplace/install/author.plugin-name
 
 # List installed
-curl http://localhost:3000/marketplace/installed
+curl -H "$AUTH" http://localhost:3000/v1/marketplace/installed
+
+# Check for updates / apply one
+curl -H "$AUTH" http://localhost:3000/v1/marketplace/updates
+curl -X POST -H "$AUTH" http://localhost:3000/v1/marketplace/update/author.plugin-name
+
+# Submit a review
+curl -X POST -H "$AUTH" -H "Content-Type: application/json" \
+  -d '{"reviewer":"me","rating":5,"comment":"works"}' \
+  http://localhost:3000/v1/marketplace/plugins/author.plugin-name/review
 
 # Get statistics
-curl http://localhost:3000/marketplace/stats
+curl -H "$AUTH" http://localhost:3000/v1/marketplace/stats
 ```
 
 ## Future Enhancements
 
-- Plugin ratings and reviews
-- Automatic updates
-- Plugin dependencies resolution
+Already shipped: ratings/reviews (`POST /v1/marketplace/plugins/:id/review`) and update checking/applying (`GET /v1/marketplace/updates`, `POST /v1/marketplace/update/:id`).
+
+Still to come:
+
+- Plugin dependency resolution (a `dependencies` list is stored in the manifest but not resolved or installed)
 - Plugin marketplace web UI
-- Plugin signing and verification
+- Plugin signing (installation verifies a SHA-256 checksum only; there is no publisher signature scheme)
 - Plugin analytics and metrics

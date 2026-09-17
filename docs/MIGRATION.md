@@ -7,7 +7,7 @@ This guide covers migrating from the Node.js reference MCP implementation to VEL
 | Metric | Node.js MCP | VELOCITY-MCP |
 |--------|------------|--------------|
 | Average latency | Baseline | 27.7x faster (NDA/shmem) |
-| Memory usage | ~120 MB | ~15 MB |
+| Memory usage | not currently measured | not currently measured |
 | Startup time | ~500ms | <50ms |
 | Binary size | ~80 MB (Node runtime) | ~5 MB (single executable) |
 
@@ -18,7 +18,7 @@ This guide covers migrating from the Node.js reference MCP implementation to VEL
 | `stdio` | `--mode stdio` | Drop-in replacement, same JSON-RPC protocol |
 | `streamable-http` | `--mode http` | Compatible HTTP transport |
 | N/A | `--mode shmem` | Shared memory IPC (1us round-trip) |
-| N/A | `--mode ws` | WebSocket transport |
+| N/A | `--mode http` + `GET /v1/ws` | WebSocket upgrade on the HTTP server (there is no `ws` mode) |
 
 **Most users start with stdio mode** — it works with all existing MCP clients with zero configuration changes.
 
@@ -56,18 +56,23 @@ No `node` runtime needed. No `npm install`. Single binary.
 For advanced configuration, use a `config.toml`:
 
 ```toml
-[server]
 mode = "http"
+
+[http]
 addr = "0.0.0.0:3000"
+max_request_size = 10485760   # bytes
+enable_rate_limit = true      # boolean switch only
 
-[security]
-rate_limit_rps = 100
-max_request_size = 1048576
+[logging]
+level = "info"
 
-[audit]
-enabled = true
-max_entries = 10000
+[features]
+nda_merkle = true
 ```
+
+Rate limiting is a boolean switch (the 20 req/s, burst 100 bucket is compiled
+in), and audit logging is always on — there are no per-second rate keys and no
+audit toggle.
 
 Run with: `velocity_mcp --config config.toml`
 

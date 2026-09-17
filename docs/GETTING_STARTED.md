@@ -124,8 +124,8 @@ VELOCITY-MCP works with zero configuration, but you can customize it:
 # With TLS/HTTPS
 ./velocity_mcp --mode http --tls-cert cert.pem --tls-key key.pem
 
-# With API key authentication
-./velocity_mcp --mode http --api-key your-secret-key
+# With API key authentication (no CLI flag - use the environment or config file)
+VELOCITY_API_KEY=your-secret-key ./velocity_mcp --mode http
 
 # Custom config file
 ./velocity_mcp --config config.toml
@@ -134,23 +134,21 @@ VELOCITY-MCP works with zero configuration, but you can customize it:
 ### Configuration file (config.toml)
 
 ```toml
-[server]
 mode = "http"
-addr = "0.0.0.0:3000"
 
 [http]
+addr = "0.0.0.0:3000"
 api_key = "your-secret-key"
 max_request_size = 10485760  # 10MB
 enable_rate_limit = true
 cors_origins = ["https://example.com"]
 
-[security]
-tls_cert = "cert.pem"
-tls_key = "key.pem"
-
 [logging]
 level = "info"
 ```
+
+TLS is not a config-file setting: pass `--tls-cert` and `--tls-key` on the
+command line.
 
 ## Common Workflows
 
@@ -208,28 +206,36 @@ Response:
 ```json
 {
   "status": "healthy",
-  "version": "3.0.0",
-  "uptime_seconds": 3600
+  "transport": "http",
+  "version": "3.2.0",
+  "activeSessions": 3
 }
 ```
 
 ### Performance Metrics
 
 ```bash
-curl http://localhost:3000/performance
+curl -H "Authorization: Bearer your-secret-key" \
+     http://localhost:3000/v1/performance
 ```
 
 Response includes:
-- Request latency (average, p95, p99)
-- Throughput (requests/second)
-- Active connections
-- Memory usage
+- Server info (version, uptime, protocol version, runtime, transport)
+- Throughput (total requests, requests/second, successful/failed counts)
+- Average latency (µs and ms) and total processing time
+- Active SSE connections and sessions
+- Security counters (auth failures, rate-limit hits, CORS/body-size limits)
 - Comparison with Node.js performance
 
 ### Server Metrics
 
 ```bash
-curl http://localhost:3000/metrics
+curl -H "Authorization: Bearer your-secret-key" \
+     http://localhost:3000/v1/metrics
+
+# Prometheus text exposition format
+curl -H "Authorization: Bearer your-secret-key" \
+     http://localhost:3000/v1/metrics/prometheus
 ```
 
 Response includes:
@@ -237,16 +243,21 @@ Response includes:
 - Success/failure rates
 - Rate limit hits
 - Authentication failures
+- Average latency in microseconds
+- Active SSE connections
+
+`/health` is the only route at the top level; every other endpoint, including
+these metrics routes, sits under `/v1`.
 
 ## Security Features
 
 VELOCITY-MCP includes production-grade security:
 
-- **Authentication** - API key or TLS client certificates
+- **Authentication** - API key (`Authorization: Bearer <api_key>`); the TLS server is built with client auth disabled
 - **Rate limiting** - Token bucket algorithm (20 req/sec default)
 - **Timeouts** - All operations have configurable timeouts
 - **Input validation** - SSRF prevention, command injection protection
-- **Resource limits** - Max sessions, file sizes, request sizes
+- **Resource limits** - Configurable max request size, enforced session/SSE subscriber caps, 30-minute idle session eviction
 - **CORS** - Configurable cross-origin restrictions
 - **TLS/HTTPS** - Full TLS 1.3 support
 
@@ -298,7 +309,7 @@ Now that you're up and running:
 1. **Try the examples** in the `examples/` directory
 2. **Connect your favorite MCP client** (see CLIENT_INTEGRATION.md)
 3. **Explore the built-in tools** - file operations, shell, HTTP
-4. **Monitor performance** at `/performance` endpoint
+4. **Monitor performance** at the `/v1/performance` endpoint
 5. **Customize configuration** for your use case
 
-Welcome to the fastest MCP server in the world! 🚀
+Welcome aboard — you are ready to build.

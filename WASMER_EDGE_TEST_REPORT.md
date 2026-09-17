@@ -1,5 +1,29 @@
 # Wasmer Edge MCP Deployment Test Report
 
+> ## ⚠ HISTORICAL / SUPERSEDED — do not use as current status
+>
+> **Everything in this file below this banner describes artifacts and tests from
+> 2026-09-16 and earlier. Its verdict — "tools/call NOT SUPPORTED", "Do NOT deploy
+> to Wasmer Edge" — is FALSE for the current build and is retained only as a record
+> of what was observed then.**
+>
+> **Current status (verified live 2026-09-17):** Wasmer Edge runs the full
+> Hyper/Tokio MCP HTTP server compiled to `wasm32-wasmer-wasi`, taking HTTP over
+> **WASIX sockets** (not the old WCGI/CGI path). It is genuinely **multi-threaded**
+> (measured `available_parallelism()` = 2; Edge caps an instance at 2 CPUs),
+> advertises **10 static tools** from `tools/list`, executes `tools/call`, and is
+> deployed and live. Measured from a transatlantic client: 2150 ms cold vs ~740 ms
+> warm, with ~4 ms of server compute.
+>
+> **Authoritative documents:**
+> - [docs/wasmer_edge_deployment.md](docs/wasmer_edge_deployment.md) — how to build and deploy the current WASIX Edge artifact
+> - [docs/edge_nested_poc_benchmark.md](docs/edge_nested_poc_benchmark.md) — measured nested-WASM plugin runtimes, dynamic registration and durability on Edge
+>
+> **Path note:** the Edge crate serves `/health` and `/mcp` at the root
+> (`crates/velocity-mcp-edge/src/main.rs`), which is why the historical curl
+> examples below use those paths. The native server is different: `/health` is
+> top-level and every other route is mounted under `/v1` (e.g. `/v1/mcp`).
+
 ## Correction — 2026-09-17
 
 The historical conclusions below are superseded. The deployed 3.17.0 WASM artifact contains real tool dispatch: direct CGI tests passed health, initialize, tools/list, echo and malformed-JSON handling. These are not successful live MCP tests.
@@ -14,9 +38,9 @@ Wasmer Edge is therefore not categorically unusable; adapting and verifying the 
 **Tested Version:** v3.2.35 (deployed), v3.2.38 (source)  
 **Endpoint:** https://velocity-mcp-edge.wasmer.app/mcp
 
-## Executive Summary
+## Executive Summary (historical — 2026-09-16 artifact)
 
-**CRITICAL FINDING:** The Wasmer Edge deployment is **NOT VIABLE** for production MCP use. The deployed WASM binary uses a stub implementation that does not support tool execution. Only `initialize` and `tools/list` methods work; `tools/call` returns "Method not found".
+**CRITICAL FINDING *AT THE TIME*:** the Edge deployment tested on 2026-09-16 was **NOT VIABLE** for production MCP use. That specific deployed WASM binary used a stub implementation that did not support tool execution: only `initialize` and `tools/list` worked, and `tools/call` returned "Method not found". **This finding no longer describes the current build**, which dispatches `tools/call` for 10 static tools over WASIX socket HTTP — see the banner above and [docs/wasmer_edge_deployment.md](docs/wasmer_edge_deployment.md).
 
 ## Test Results
 
@@ -45,7 +69,7 @@ Wasmer Edge is therefore not categorically unusable; adapting and verifying the 
 
 ### 2. Tool Execution
 
-**Status:** ❌ NOT WORKING
+**Status (historical, 2026-09-16 stub):** ❌ NOT WORKING — superseded; the current Edge build executes `tools/call`
 
 **Test:**
 ```bash
@@ -106,7 +130,7 @@ fn handle_request(method: &str, body: &[u8]) -> (u16, &'static str, String) {
 
 **Reason:** The tool list is hardcoded in the WASM binary. No mechanism for dynamic registration exists in the stub implementation.
 
-## Comparison: Native vs Edge
+## Comparison: Native vs Edge (as of the 2026-09-16 stub — superseded)
 
 | Feature | Native (Rust/Docker) | Wasmer Edge |
 |---------|---------------------|-------------|
@@ -119,7 +143,7 @@ fn handle_request(method: &str, body: &[u8]) -> (u16, &'static str, String) {
 | **Prompts** | ✅ Full support | ❌ Not implemented |
 | **Sampling** | ✅ Full support | ❌ Not implemented |
 | **Streaming** | ✅ SSE support | ❌ Not implemented |
-| **WASM Runtimes** | ✅ 13 languages | ❌ Not available |
+| **WASM Runtimes** | ✅ 13 languages (7 production + 6 tree-walk) | ❌ Not available |
 
 ## Root Cause Analysis
 
@@ -145,9 +169,9 @@ The Edge deployment was built with two code paths:
 - Workaround was to bypass the cgi crate and write raw WCGI
 - This resulted in a minimal stub rather than porting the full implementation
 
-## Viability Assessment
+## Viability Assessment (of the 2026-09-16 stub — superseded)
 
-### Wasmer Edge is NOT viable for:
+### Wasmer Edge was NOT viable for the stub deployment:
 - ❌ Production MCP servers
 - ❌ Tool execution workloads
 - ❌ Multi-tenant deployments
@@ -162,8 +186,8 @@ The Edge deployment was built with two code paths:
 
 ## Recommendations
 
-### Short-term:
-1. **Do NOT deploy to Wasmer Edge** for production use
+### Short-term (as written on 2026-09-16, for the stub artifact):
+1. **Do NOT deploy to Wasmer Edge** for production use — *withdrawn*: Edge is now deployed and serving MCP over the WASIX socket HTTP path; see [docs/wasmer_edge_deployment.md](docs/wasmer_edge_deployment.md)
 2. Use Docker/Kubernetes deployment instead (proven, fully functional)
 3. Document the limitation clearly in all deployment guides
 
@@ -176,23 +200,22 @@ The Edge deployment was built with two code paths:
 
 2. **Use WASIX HTTP server approach:**
    - The native hyper server might work on Wasmer Edge with WASIX
-   - Requires multi-threading support (currently broken in wasmer 7.4.1)
+   - Requires multi-threading support (broken in wasmer 7.4.1 at the time of writing)
    - Monitor Wasmer runtime updates
+   - **Done 2026-09-17:** this is the path now deployed — the Hyper/Tokio server builds for `wasm32-wasmer-wasi` via `cargo-wasix` and runs with 2 tokio workers on Edge
 
 3. **Alternative edge platforms:**
    - Cloudflare Workers (WASM-based, better HTTP support)
    - Fastly Compute@Edge (WASM-based)
    - AWS Lambda (native Rust support)
 
-## Conclusion
+## Conclusion (historical — superseded)
 
-The Wasmer Edge deployment is a **non-functional stub** that cannot execute tools or support real MCP workflows. The ~800ms latency is irrelevant since the deployment doesn't work. 
+**As measured on 2026-09-16,** the Wasmer Edge deployment was a **non-functional stub** that could not execute tools or support real MCP workflows, and the ~800ms latency was irrelevant because the deployment did not work. At that time **native deployment (Docker/Kubernetes) was the only usable option.**
 
-**Native deployment (Docker/Kubernetes) is 100x better in every metric** because it actually works, while Edge deployment doesn't support the core MCP functionality.
+**Current conclusion (2026-09-17):** the stub was replaced. Edge now runs the real MCP HTTP server over WASIX sockets, multi-threaded with 2 workers and 10 static tools, live and serving `tools/call` — so the historical verdict above applies only to the older artifact.
 
-**Verdict:** Wasmer Edge is not a viable solution for VELOCITY-MCP. Stick with native deployments.
-
-## Final Benchmark Comparison (2026-09-16)
+## Final Benchmark Comparison (2026-09-16, stub artifact — historical numbers)
 
 **Native (localhost:3000):**
 - initialize: 598ms (cold), ~5ms (warm)
@@ -202,7 +225,7 @@ The Wasmer Edge deployment is a **non-functional stub** that cannot execute tool
 **Wasmer Edge (us-ashburn):**
 - initialize: 1400ms (cold), 845ms (warm)
 - tools/list: 1871ms
-- tools/call: NOT SUPPORTED
+- tools/call: NOT SUPPORTED **by that build** (the current build supports it)
 
 **Performance Gap:**
 - Native tools/call: 5ms
@@ -211,12 +234,12 @@ The Wasmer Edge deployment is a **non-functional stub** that cannot execute tool
 
 **Critical Context:**
 This comparison is misleading because:
-1. Native actually executes tools (5ms includes full execution)
-2. Edge only returns a hardcoded list (no execution)
-3. Edge cannot execute tools at all - the comparison is invalid
+1. Native actually executed tools (5ms includes full execution)
+2. Edge only returned a hardcoded list (no execution)
+3. That Edge build could not execute tools at all, so the comparison was invalid
 
-**True Comparison:**
-- Native: Works, 5ms per tool call
-- Edge: Doesn't work, ∞ms per tool call (impossible)
+**True Comparison (at the time):**
+- Native: worked, 5ms per tool call
+- Edge (2026-09-16 stub): did not work; a tool call was impossible
 
-**Verdict:** Native is infinitely better because it actually functions.
+**Verdict (historical):** against that stub, native was the only usable option. The stub has since been replaced by a working WASIX HTTP deployment — see [docs/wasmer_edge_deployment.md](docs/wasmer_edge_deployment.md) for current latency figures.

@@ -16,6 +16,8 @@ All benchmarks run on the same hardware with:
 
 The highest-performance pipeline, using NDA binary encoding over shared memory IPC:
 
+> **Note:** figures below are from a prior-machine run, have not been reproduced on the current box, and are pending re-measurement.
+
 | Method | Latency | Throughput | vs JSON/stdio |
 |--------|---------|------------|---------------|
 | ping | 0.001 ms (1us) | 1,657,825 r/s | 34.3x faster |
@@ -28,6 +30,8 @@ The highest-performance pipeline, using NDA binary encoding over shared memory I
 ## Node.js vs Rust (Fair Comparison)
 
 Same transport (stdio), same encoding (JSON-RPC) — isolates the runtime difference:
+
+> **Note:** figures below are from a prior-machine run, have not been reproduced on the current box, and are pending re-measurement.
 
 | Method | Node.js avg | Rust avg | Speedup |
 |--------|------------|----------|---------|
@@ -42,6 +46,8 @@ Same transport (stdio), same encoding (JSON-RPC) — isolates the runtime differ
 
 ## 4-Pipeline Comparison
 
+> **Note:** figures below are from a prior-machine run, have not been reproduced on the current box, and are pending re-measurement.
+
 | Pipeline | Ping avg | tools/list avg | tools/call avg |
 |----------|----------|----------------|----------------|
 | Node.js JSON/stdio | 0.046 ms | 0.110 ms | 0.042 ms |
@@ -55,6 +61,8 @@ Same transport (stdio), same encoding (JSON-RPC) — isolates the runtime differ
 
 All 8 pipelines instrument write/wait/read phases. The "wait" phase isolates server turnaround time:
 
+> **Note:** figures below are from a prior-machine run, have not been reproduced on the current box, and are pending re-measurement.
+
 | Pipeline | write | wait | read | Total |
 |----------|-------|------|------|-------|
 | NDA/shmem | 0.0us | 0.5us | 0.1us | ~1us |
@@ -63,6 +71,8 @@ All 8 pipelines instrument write/wait/read phases. The "wait" phase isolates ser
 The 12x difference in "wait" phase (0.5us vs 6.3us) shows the JSON parse+stringify cost on the server side. With NDA encoding, the server reads binary directly — no parsing needed.
 
 ## Tail Latency (p99)
+
+> **Note:** figures below are from a prior-machine run, have not been reproduced on the current box, and are pending re-measurement.
 
 | Method | Rust p99 | Node.js p99 | Improvement |
 |--------|----------|-------------|-------------|
@@ -75,6 +85,8 @@ Tail latency matters most in production — this is what users feel when the sys
 ## Scaling
 
 Concurrent dispatch throughput (flat binary, shared memory):
+
+> **Note:** figures below are from a prior-machine run, have not been reproduced on the current box, and are pending re-measurement.
 
 | Threads | Throughput |
 |---------|------------|

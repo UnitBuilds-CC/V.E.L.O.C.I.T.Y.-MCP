@@ -435,7 +435,7 @@ Signature: VERIFIED (Ed25519)
 
 ## 5. Transport Modes
 
-The server supports four transport modes for different use cases.
+The server supports three transport modes for different use cases: `stdio`, `http`, and `shmem`.
 
 ### Stdio Mode (Default)
 
@@ -452,26 +452,18 @@ velocity_mcp --mode http --addr 0.0.0.0:3000
 ```
 
 Full HTTP transport with:
-- **JSON-RPC over HTTP POST** at `/mcp`
-- **Streamable HTTP** at `/mcp/stream` (POST with SSE response)
-- **SSE streaming** at `/sse` for real-time event streaming
-- **WebSocket** at `/ws` for bidirectional communication
+- **JSON-RPC over HTTP POST** at `/v1/mcp` (plus `/v1/mcp/batch` for batched requests and `/v1/mcp/nda` for NDA-native frames)
+- **Streamable HTTP** at `/v1/mcp/stream` (POST with SSE response)
+- **SSE streaming** at `/v1/sse` for real-time event streaming
+- **WebSocket** at `/v1/ws` for bidirectional communication
 - **Session management** with automatic session creation and cleanup
-- **API key authentication** via `Authorization: Bearer <key>` header
-- **CORS** with configurable origin restrictions
-- **Prometheus metrics** at `/metrics`
-- **Health check** at `/health`
-- **Performance metrics** at `/performance`
-- **Request size limits** (default: 1 MB)
-- **TLS/HTTPS** support with configurable certificates
-
-### WebSocket Mode
-
-```bash
-velocity_mcp --mode ws --addr 0.0.0.0:3000
-```
-
-Dedicated WebSocket transport for bidirectional real-time communication. Supports JSON-RPC messages over WebSocket frames.
+- **API key authentication** via `Authorization: Bearer <key>` header, with the key set in `[http].api_key` or `VELOCITY_API_KEY`
+- **CORS** with origin restrictions configured through `[http].cors_origins`
+- **JSON metrics** at `/v1/metrics` and **Prometheus exposition** at `/v1/metrics/prometheus`
+- **Health check** at `/health` (the only route outside `/v1`, so it is unauthenticated)
+- **Performance metrics** at `/v1/performance`
+- **Request size limits** (default: 10 MB, set by `[http].max_request_size`)
+- **TLS/HTTPS** support via the `--tls-cert` / `--tls-key` flags (both must be provided together)
 
 ### Shared Memory Mode
 
@@ -512,7 +504,7 @@ Memory-mapped file IPC for ultra-low latency communication. Supports two wire fo
 
 ## 6. Client SDKs
 
-Official client SDKs are available in 4 languages in the `client/` directory.
+Client SDKs are provided in 4 languages: the Rust client crate in `client/` (package `velocity-mcp-client`), and the Python, TypeScript and Go SDKs in `sdk/python`, `sdk/typescript` and `sdk/go`.
 
 ### Rust
 
@@ -547,7 +539,7 @@ const result = await client.callTool('file_read', { path: '/tmp/data.csv' });
 ### Go
 
 ```go
-import velocity_mcp "github.com/UnitBuilds-CC/velocity-mcp/client/go"
+import velocity_mcp "github.com/UnitBuilds-CC/velocity-mcp/sdk/go"
 
 client := velocity_mcp.NewClient("http://localhost:3000")
 tools, err := client.ListTools()
@@ -560,32 +552,46 @@ result, err := client.CallTool("file_read", map[string]interface{}{"path": "/tmp
 
 The server includes a plugin marketplace for discovering, installing, and managing plugins that extend the server's capabilities.
 
+The marketplace has **no CLI subcommands** — it is driven entirely through the HTTP API while the server runs in HTTP mode. Every route below is under `/v1` and requires the `Authorization: Bearer <key>` header when `[http].api_key` (or `VELOCITY_API_KEY`) is set.
+
 ### Searching for Plugins
 
 ```bash
-velocity_mcp marketplace search --query "data-analysis"
+curl -H "Authorization: Bearer $VELOCITY_API_KEY" \
+  "http://localhost:3000/v1/marketplace/plugins?query=data-analysis&sort_by=downloads&limit=20"
 ```
 
 ### Installing a Plugin
 
 ```bash
-velocity_mcp marketplace install --id "author.plugin-name"
+curl -X POST -H "Authorization: Bearer $VELOCITY_API_KEY" \
+  http://localhost:3000/v1/marketplace/install/author.plugin-name
 ```
 
 ### Managing Plugins
 
 ```bash
 # List installed plugins
-velocity_mcp marketplace list
+curl -H "Authorization: Bearer $VELOCITY_API_KEY" \
+  http://localhost:3000/v1/marketplace/installed
+
+# Check for available updates
+curl -H "Authorization: Bearer $VELOCITY_API_KEY" \
+  http://localhost:3000/v1/marketplace/updates
 
 # Update a plugin
-velocity_mcp marketplace update --id "author.plugin-name"
+curl -X POST -H "Authorization: Bearer $VELOCITY_API_KEY" \
+  http://localhost:3000/v1/marketplace/update/author.plugin-name
 
 # Remove a plugin
-velocity_mcp marketplace remove --id "author.plugin-name"
+curl -X DELETE -H "Authorization: Bearer $VELOCITY_API_KEY" \
+  http://localhost:3000/v1/marketplace/install/author.plugin-name
 
-# Review a plugin
-velocity_mcp marketplace review --id "author.plugin-name"
+# Review a plugin (1-5)
+curl -X POST -H "Authorization: Bearer $VELOCITY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"reviewer":"me","rating":5,"comment":"works"}' \
+  http://localhost:3000/v1/marketplace/plugins/author.plugin-name/review
 ```
 
 ### Plugin Types
@@ -595,7 +601,7 @@ velocity_mcp marketplace review --id "author.plugin-name"
 | **Python** | Python | Scripts and modules executed via Python runtime |
 | **Node.js** | JavaScript/TypeScript | Executed via Node.js runtime |
 | **Rust** | Rust | Native compiled plugins with direct API access |
-| **WASM** | 7 production + 6 planned | Production: JavaScript, TypeScript, Python, Ruby, Lua, Go, Rust. Planned (toy interpreters): PHP, C#, Java, R, Julia, Perl |
+| **WASM** | 7 production + 6 tree-walk | Production runtimes: JavaScript, TypeScript, Python, Ruby, Lua, Go, Rust. Tree-walk interpreters (PHP, C#, Java, R, Julia, Perl) share a single C core |
 
 ### Plugin Security
 
@@ -615,73 +621,64 @@ See [Plugin Marketplace Guide](MARKETPLACE.md) for details.
 
 ### Prometheus Metrics
 
-When running in HTTP mode, Prometheus metrics are available at `/metrics`:
+When running in HTTP mode, Prometheus-format metrics are exposed at `/v1/metrics/prometheus`, and the same counters as JSON at `/v1/metrics`:
 
 ```bash
-curl http://localhost:3000/metrics
+curl -H "Authorization: Bearer $VELOCITY_API_KEY" \
+  http://localhost:3000/v1/metrics/prometheus
 ```
 
-**Available metrics (20+):**
-- `velocity_requests_total` — Total requests by method and status
-- `velocity_request_duration_seconds` — Request latency histogram
-- `velocity_active_connections` — Current active connections
-- `velocity_active_sessions` — Current active sessions
-- `velocity_tool_calls_total` — Tool calls by name and outcome
-- `velocity_tool_call_duration_seconds` — Tool execution latency
-- `velocity_sandbox_violations_total` — Sandbox violations by category
-- `velocity_audit_log_entries` — Audit log entry count
-- `velocity_rate_limiter_rejections_total` — Rate-limited requests
-- `velocity_nda_operations_total` — NDA compile/read/execute operations
-- `velocity_shared_memory_operations_total` — Shared memory IPC operations
-- `velocity_errors_total` — Errors by type
-- `velocity_cache_hits_total` / `velocity_cache_misses_total` — Cache performance
-- `velocity_plugin_operations_total` — Plugin install/remove/update operations
+**Exported metrics (7):**
+- `velocity_mcp_requests_total` — Total requests received (counter)
+- `velocity_mcp_requests_successful` — Successful requests (counter)
+- `velocity_mcp_requests_failed` — Failed requests (counter)
+- `velocity_mcp_auth_failures_total` — Authentication failures (counter)
+- `velocity_mcp_rate_limit_hits_total` — Requests rejected by the rate limiter (counter)
+- `velocity_mcp_latency_microseconds` — Average request latency in microseconds (gauge)
+- `velocity_mcp_sse_connections_active` — Currently active SSE connections (gauge)
 
 ### Prometheus Alerting Rules
 
-Pre-configured alerting rules are available in `monitoring/prometheus/alerts.yml`:
-- High error rate (>5% over 5 minutes)
-- High latency (p95 > 1s over 5 minutes)
-- Sandbox violations detected
-- Rate limiter exhaustion
-- Session limit approaching capacity
-- Memory usage high
+Pre-configured alerting rules are available in `deploy/prometheus/alerts.yml`:
+- `HighErrorRate` / `CriticalErrorRate` — failed-request ratio over 5m / 2m windows
+- `HighLatency` — latency increase over 5 minutes
+- `LowThroughput` — request rate dropping below 1 r/s
+- `HighRateLimitHits` — more than 10 rate-limit rejections per second
+- `HighMemoryUsage` / `HighCPUUsage` — container resource pressure
+- `TLSCertificateExpiringSoon` / `TLSCertificateExpiringImminently`
+- `PluginInstallationFailures` — failed plugin installs
+- `AuditLogBufferFull` — audit ring buffer above 9,000 entries
 
 ### Grafana Dashboard
 
-A pre-built Grafana dashboard is available in `monitoring/grafana/dashboard.json` with panels for:
-- Request rate and latency
-- Tool call breakdown
-- Error rates and types
-- Sandbox violations
-- Cache hit rates
-- Session and connection counts
+A pre-built Grafana dashboard is available in `deploy/grafana/dashboards/velocity-mcp.json` (datasource in `deploy/grafana/datasources/prometheus.yml`) with panels for:
+- Total Requests
+- Success Rate
+- Request Rate
+- Error Rate
+- Active Sessions
+- Rate Limit Hits
+- Plugin Statistics
 
 ### OpenTelemetry
 
-Enable distributed tracing with OpenTelemetry:
+The `observability` feature compiles in the `observability` module, which provides `init_observability(otlp_endpoint)` for setting up an OTLP tracer pipeline:
 
 ```bash
-# Build with observability feature
 cargo build --release --features observability
-
-# Set the OTLP endpoint
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
-
-# Run the server
-velocity_mcp --mode http
 ```
 
-All tracing spans are automatically exported to your OpenTelemetry collector.
+The `velocity_mcp` binary does not call this itself, so spans are not exported automatically; embedders that use the library set up the tracer (passing the collector endpoint, e.g. `http://localhost:4317`) before serving requests.
 
 ### Health and Performance Endpoints
 
 ```bash
-# Health check
+# Health check (top-level, no /v1 prefix, no auth)
 curl http://localhost:3000/health
 
 # Performance metrics (JSON)
-curl http://localhost:3000/performance
+curl -H "Authorization: Bearer $VELOCITY_API_KEY" \
+  http://localhost:3000/v1/performance
 ```
 
 ---
@@ -699,38 +696,27 @@ velocity_mcp --config config.toml
 **Example `config.toml`:**
 
 ```toml
-[server]
-mode = "http"
+# Top-level keys
+mode = "http"                     # stdio | shmem | http (default: stdio)
+buffer_path = "nmcp_buffer.bin"   # shmem mode only
+csharp_path = "NdaMcpServer.exe"  # optional C# engine used for dynamic tool hosting
+plugin_dir = "plugins"
+
+[http]
 addr = "0.0.0.0:3000"
-
-[security]
-max_request_size = 1048576    # 1 MB
-rate_limit_per_second = 20
-rate_limit_burst = 100
-execution_timeout_secs = 30
-max_memory_bytes = 268435456  # 256 MB
-
-[sandbox]
-allow_network = false
-allowed_interpreters = ["python", "node", "powershell", "bash"]
-
-[tls]
-enabled = false
-cert_path = "/path/to/cert.pem"
-key_path = "/path/to/key.pem"
-
-[cors]
-allowed_origins = ["https://myapp.example.com"]
+api_key = "secret-key-123"        # omit (or leave unset) to disable auth
+max_request_size = 10485760       # 10 MB default
+enable_rate_limit = true          # boolean only; the token-bucket sizes are not configurable here
+cors_origins = ["https://myapp.example.com"]
 
 [logging]
-level = "info"
-format = "json"
-
-[resources]
-database_path = "/path/to/resources.db"
+level = "info"                    # error | warn | info | debug | trace
 
 [features]
-nda_merkle = true   # NDA frame Merkle integrity verification (disable for max throughput on trusted transports)
+database = false                  # database resource adapters
+oauth2 = false                    # OAuth2 connector framework
+http = false                      # HTTP transport (build feature toggle)
+nda_merkle = true                 # NDA frame Merkle integrity verification (disable for max throughput on trusted transports)
 
 [wasm_runtimes]
 # Per-call instruction limit for WASM plugin runtimes (metering middleware).
@@ -739,16 +725,26 @@ nda_merkle = true   # NDA frame Merkle integrity verification (disable for max t
 # Note: interpreter bootstrap consumes metered instructions too, so very low
 # values trap during runtime creation. QuickJS needs >1,000,000 just to start.
 instruction_limit = 10_000_000
+
+# Each of the 13 languages (7 production runtimes + 6 tree-walk interpreters)
+# has its own `enabled` + `wasm_path` block, e.g.
+[wasm_runtimes.javascript]
+enabled = true
+wasm_path = "bench_tools/quickjs_wasm/quickjs.wasm"
 ```
+
+TLS/HTTPS is not a config-file option: pass `--tls-cert <path>` and `--tls-key <path>` on the command line (both are required together) to serve HTTPS in HTTP mode.
 
 ### CLI Options
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--mode <stdio\|http\|ws\|shmem>` | Transport mode | `stdio` |
-| `--addr <address>` | HTTP/WebSocket listen address | `0.0.0.0:3000` |
+| `--mode <stdio\|shmem\|http>` | Transport mode | `stdio` |
+| `--addr <address>` | HTTP listen address (http mode only) | `0.0.0.0:3000` |
 | `--config <path>` | Configuration file path | — |
 | `--buffer-path <path>` | Shared memory buffer file (shmem mode) | `nmcp_buffer.bin` |
+| `--tls-cert <path>` | TLS certificate (PEM); enables HTTPS when paired with `--tls-key` | — |
+| `--tls-key <path>` | TLS private key (PEM); enables HTTPS when paired with `--tls-cert` | — |
 | `--benchmark` | Run performance benchmarks | — |
 | `-h, --help` | Print help | — |
 
@@ -762,6 +758,7 @@ Build with optional features using `--features`:
 | `oauth2` | OAuth2 connector framework with token refresh |
 | `database` | Database resource adapters (SQLite) |
 | `observability` | OpenTelemetry distributed tracing and metrics |
+| `wasm-networking` | Networking syscalls for WASM plugin runtimes |
 
 Example: `cargo build --release --features http,oauth2,observability`
 
@@ -769,11 +766,19 @@ Example: `cargo build --release --features http,oauth2,observability`
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `VELOCITY_CSHARP_PATH` | Path to C# NdaMcpServer.exe (for dynamic tool hosting) | — |
+| `VELOCITY_MODE` | Override the transport mode (`stdio`/`shmem`/`http`) | `stdio` |
+| `VELOCITY_BUFFER_PATH` | Override the shared memory buffer path | `nmcp_buffer.bin` |
+| `VELOCITY_CSHARP_PATH` | Path to C# NdaMcpServer.exe (for dynamic tool hosting) | `NdaMcpServer.exe` |
+| `VELOCITY_LOG_LEVEL` | Override the configured log level | `info` |
+| `VELOCITY_HTTP_ADDR` | Override the HTTP listen address | `0.0.0.0:3000` |
+| `VELOCITY_API_KEY` | Set the HTTP API key (alternative to `[http].api_key`) | — (no auth) |
+| `VELOCITY_MAX_REQUEST_SIZE` | Override the maximum HTTP request body size in bytes | `10485760` |
+| `VELOCITY_ENABLE_RATE_LIMIT` | Enable/disable the HTTP rate limiter | `true` |
+| `VELOCITY_RATE_LIMIT` | Token-bucket refill rate (tokens/sec) for the global limiter | `20` |
+| `VELOCITY_RATE_BURST` | Token-burst capacity for the global limiter | `100` |
 | `VELOCITY_NDA_MERKLE` | NDA frame Merkle integrity verification (`0`/`false`/`no` to disable) | `1` |
 | `VELOCITY_WASM_INSTRUCTION_LIMIT` | Per-call WASM metering instruction limit (`0` disables metering) | `10000000` |
-| `RUST_LOG` | Log level (`error`, `warn`, `info`, `debug`, `trace`) | `info` |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OpenTelemetry collector endpoint | — |
+| `RUST_LOG` | Log level for the tracing subscriber (`error`, `warn`, `info`, `debug`, `trace`) | `info` |
 
 ---
 
@@ -783,7 +788,7 @@ Example: `cargo build --release --features http,oauth2,observability`
 
 ```json
 → {"jsonrpc":"2.0","method":"health/check","id":1}
-← {"jsonrpc":"2.0","id":1,"result":{"status":"healthy","mode":"stdio","version":"3.0.0"}}
+← {"jsonrpc":"2.0","id":1,"result":{"status":"healthy","mode":"stdio","version":"3.2.0"}}
 ```
 
 ### HTTP Mode
@@ -793,15 +798,19 @@ curl http://localhost:3000/health
 ```
 
 ```json
-{"status":"healthy","mode":"http","version":"3.0.0","uptime_secs":3600}
+{"status":"healthy","transport":"http","version":"3.2.0","activeSessions":0}
 ```
+
+The `/v1/performance` endpoint (authenticated) is where uptime and throughput are reported.
 
 ### Shared Memory Mode
 
 ```json
 → {"jsonrpc":"2.0","method":"health/check","id":1}
-← {"jsonrpc":"2.0","id":1,"result":{"status":"healthy","mode":"shmem","version":"3.0.0","buffer_path":"nmcp_buffer.bin"}}
+← {"jsonrpc":"2.0","id":1,"result":{"status":"healthy","mode":"shmem","version":"3.2.0"}}
 ```
+
+Over NDA-native framing the same call reports `"mode":"shmem-nda"`.
 
 ---
 
@@ -826,16 +835,9 @@ Set the log level with `RUST_LOG` or dynamically via `logging/setLevel`:
 | `debug` | All above + debug (per-request method names, tool dispatch details) |
 | `trace` | Maximum verbosity |
 
-### Structured JSON Logging
+### Log Output Format
 
-Enable JSON-formatted logs for production log aggregation:
-
-```toml
-[logging]
-format = "json"
-```
-
-Log entries include correlation IDs for request tracing across components.
+Logs are written as plain-text lines to **stderr** by `tracing_subscriber::fmt()`; the level is taken from `RUST_LOG` (falling back to `info`). `[logging].level` in the config file is parsed and validated but there is no JSON formatter option — no `format` key exists under `[logging]`.
 
 ### Examples
 
@@ -846,8 +848,8 @@ velocity_mcp --mode stdio
 # Debug logging for troubleshooting
 RUST_LOG=debug velocity_mcp --mode stdio
 
-# JSON logging for production
-RUST_LOG=info velocity_mcp --mode http --config config.toml
+# HTTP mode with a config file
+velocity_mcp --mode http --config config.toml
 ```
 
 ### Audit Log
@@ -919,11 +921,11 @@ The V.E.L.O.C.I.T.Y. server implements **15+ defense layers** providing enterpri
 | 6 | **Output Size Limits** | stdout: 1 MB, stderr: 256 KB — prevents OOM from runaway output |
 | 7 | **Ed25519 Signatures** | Sign and verify NDA documents for authenticity and tamper detection |
 | 8 | **Merkle Tree Integrity** | SHA-256 root verification of NDA binary content |
-| 9 | **Rate Limiting** | Token bucket: 20 req/sec, burst 100 — per-client tracking |
+| 9 | **Rate Limiting** | Global token bucket: 20 req/sec, burst 100 (shared across clients); HTTP mode gated by `[http].enable_rate_limit` |
 | 10 | **Audit Logging** | 10K entry ring buffer, JSON/CSV export, poisoning-tolerant mutex |
 | 11 | **Error Sanitization** | Strips internal paths (Win/Unix), truncates at 500 chars |
-| 12 | **CORS Protection** | Configurable origin restrictions for HTTP mode |
-| 13 | **API Key Authentication** | Timing-safe comparison for HTTP endpoints |
+| 12 | **CORS Protection** | Origin restrictions via `[http].cors_origins` |
+| 13 | **API Key Authentication** | Timing-safe comparison of `Authorization: Bearer <key>` against `[http].api_key` / `VELOCITY_API_KEY` |
 | 14 | **Dependency Audit** | 0 vulnerabilities across all crate dependencies (`cargo audit`) |
 | 15 | **CI/CD Automation** | GitHub Actions: build + test + cargo audit on every push/PR |
 
@@ -966,18 +968,19 @@ All NDA execution and shell commands go through a capability-based sandbox:
 
 ### Rate Limiting
 
-Token bucket rate limiter protects against abuse:
-- 20 tokens per second refill rate
-- Burst capacity: 100 tokens
-- Per-client tracking in HTTP mode
-- Exceeded requests receive a clear error message
+A single global token-bucket rate limiter protects against abuse:
+- 20 tokens per second refill rate, burst capacity 100 tokens (defaults in `src/rate_limit.rs`)
+- Tuned through the `VELOCITY_RATE_LIMIT` / `VELOCITY_RATE_BURST` environment variables — there are no per-second/burst keys in the config file
+- Shared across all clients in the native server; it is toggled in HTTP mode by the boolean `[http].enable_rate_limit` (default `true`)
+- The `velocity-mcp-edge` crate keys its own limiter per client IP
+- Exceeded requests receive a JSON-RPC error with HTTP status 429
 
 ### Input Size Limits
 
 | Limit | Value | Behavior |
 |-------|-------|----------|
 | Max JSON-RPC request size (stdio) | 1 MB | Rejected before JSON parsing |
-| Max HTTP request size | 1 MB (configurable) | Rejected with 413 status |
+| Max HTTP request size | 10 MB (`[http].max_request_size`) | Rejected with 413 status |
 | Max shared memory input | 4,086 bytes | Rejected with buffer overflow error |
 | Max shared memory output | 61,440 bytes | Rejected with buffer overflow error |
 | Max captured stdout | 1 MB | Truncated to prevent OOM |
@@ -1101,4 +1104,4 @@ A: See the [Deployment Guide](DEPLOYMENT.md) for Docker, Kubernetes, and bare me
 
 ### Q: Can I monitor the server with Prometheus?
 
-A: Yes. In HTTP mode, Prometheus metrics are available at `/metrics`. Pre-built Grafana dashboards and alerting rules are included in `monitoring/`.
+A: Yes. In HTTP mode, Prometheus metrics are exposed at `/v1/metrics/prometheus` (the same counters as JSON at `/v1/metrics`). Pre-built Grafana dashboards and alerting rules are included under `deploy/grafana/` and `deploy/prometheus/`.

@@ -51,7 +51,7 @@ Implements the `WasmRuntime` trait with:
 
 #### 2. Unified Plugin Execution (src/plugins/mod.rs)
 
-All 13 language runtimes now use the same path:
+All 13 language runtimes (7 production + 6 tree-walk interpreters) now use the same path:
 ```rust
 fn execute_wasm_plugin_tool(tool: &PluginTool, arguments: &Value) -> Result<String, String> {
     let source = resolve_wasm_source(executor)?;
@@ -102,10 +102,10 @@ func main() {}
 | Phase | Time | Frequency |
 |-------|------|-----------|
 | First registration (compilation) | 500ms - 2s | Once per tool/source change |
-| Cached execution (hot) | ~5-50µs | Every subsequent call |
+| Cached execution (hot) | not measured (no published Go/WASM hot-call figure) | Every subsequent call |
 | Cache invalidation | Automatic | When source changes |
 
-**Trade-off**: First call after source change has compilation overhead, but subsequent calls are as fast as pre-compiled binaries.
+**Trade-off**: First call after a source change pays the compilation cost; subsequent calls reuse the cached module, so they avoid recompilation entirely.
 
 ## Usage Example
 
@@ -132,15 +132,23 @@ The plugin loads automatically, source is compiled on first tool registration.
 ### 3. Call Tool
 
 ```bash
-curl -X POST http://localhost:3000/tools/call \
+curl -X POST http://localhost:3000/v1/mcp \
   -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $VELOCITY_API_KEY" \
   -d '{
-    "name": "analyze_logs_go",
-    "arguments": {
-      "log_lines": ["ERROR: failed", "INFO: ok response_time=100ms"]
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "analyze_logs_go",
+      "arguments": {
+        "log_lines": ["ERROR: failed", "INFO: ok response_time=100ms"]
+      }
     }
   }'
 ```
+
+(The `Authorization` header is only needed when an API key is configured via `[http].api_key` or `VELOCITY_API_KEY`.)
 
 ### 4. Change Source Code
 
@@ -217,19 +225,19 @@ If TinyGo is not found, tool registration fails with a clear error message point
 ## Testing
 
 All 724 existing tests pass, including:
-- Plugin loading across all 13 languages
+- Plugin loading across all 13 languages (7 production runtimes + 6 tree-walk interpreters)
 - Tool registration and execution
 - Cache invalidation behavior
 - Error handling for missing TinyGo
 
 ## Conclusion
 
-This implementation proves that **AOT compilation and dynamic tool registration are not mutually exclusive**. By treating the compiler as a service (spawning TinyGo on demand), we achieve:
+This implementation shows that **AOT compilation and dynamic tool registration are not mutually exclusive**. By treating the compiler as a service (spawning TinyGo on demand), we achieve:
 
 ✅ True dynamic tool registration (no restarts)
 ✅ Source code updates at runtime
 ✅ Static type safety of Go
-✅ Performance of compiled code (after first call)
-✅ Consistent API across all 13 language runtimes
+✅ Cached execution after the first compile
+✅ Consistent API across all 13 language runtimes (7 production + 6 tree-walk)
 
-VELOCITY-MCP is now the only MCP server supporting dynamic tools across **interpreted AND compiled languages**, breaking the traditional trade-off between flexibility and performance.
+Go therefore follows the same manifest/register/call lifecycle as the interpreted runtimes, trading a one-time compilation cost on first registration for a statically typed tool.
