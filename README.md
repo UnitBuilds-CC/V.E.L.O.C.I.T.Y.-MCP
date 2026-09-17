@@ -34,7 +34,7 @@ Configure your MCP client to point at it. Done.
 
 ## Performance
 
-All numbers measured 2026-09-13 on Core 5 210H, release build.
+All numbers measured 2026-09-13 on Core 5 210H, release build. Re-run 2026-09-17 (same hardware) reproduces the ordering and hierarchy; single-pass speedups vary run-to-run — see [docs/COMPARISON.md](docs/COMPARISON.md) and the raw `bench_nda_2026-09-17.txt` for the current figures.
 
 ### NDA/shmem Transport
 
@@ -153,7 +153,7 @@ Zero-copy TLV parsing with SHA-256 Merkle integrity verification on every frame:
 7. CORS restrictions and API key authentication
 8. Timing-safe comparison for secrets
 9. Error sanitization (prevents information leakage)
-10. shell_exec injection prevention (31 dangerous patterns blocked)
+10. shell_exec injection prevention (62 Unix + 51 Windows command patterns blocked)
 11. SSRF protection (full RFC 1918 + IPv6 blocklist)
 12. edit_file resource bounds (max 1000 edits, 1MB per field)
 13. Merkle integrity verification (SHA-256, SHA-NI accelerated)
@@ -162,10 +162,8 @@ Zero-copy TLV parsing with SHA-256 Merkle integrity verification on every frame:
 
 ### Production Monitoring
 
-- Prometheus metrics (20+ metrics) with alerting rules
+- Prometheus metrics (7 series: `velocity_mcp_*`) with alerting rules
 - Grafana dashboard for visualization
-- OpenTelemetry distributed tracing
-- Structured JSON logging with correlation IDs
 - Health and performance endpoints
 
 ### Extensibility

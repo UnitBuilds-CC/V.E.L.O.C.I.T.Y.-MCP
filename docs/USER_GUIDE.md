@@ -49,7 +49,7 @@ cargo build --release
 ### Verifying the Build
 
 ```bash
-# Run the test suite (703 tests)
+# Run the test suite (1,100+ tests)
 cargo test --all-features
 
 # Run the benchmark suite
@@ -354,7 +354,7 @@ The NDA format is designed for:
 | **Word Documents** | `.docx` | Paragraph triples + style information + document structure |
 | **Images** | `.png`, `.jpg`, `.webp` | Visual display commands + metadata triples + pixel data |
 | **Zip Archives** | `.zip` | File manifest triples + embedded file payloads |
-| **Source code** | 20+ languages | Syntax-colored code editor layout |
+| **Source code** | common programming languages | Syntax-colored code editor layout |
 | **Other formats** | Any | Raw binary payload + file-type metadata triples |
 
 ### Structuring Tools for NDA Support
@@ -870,38 +870,38 @@ Run the built-in benchmark suite:
 ./target/release/velocity_mcp --benchmark
 ```
 
-### Reference Results (Intel Core i5-14400F, release build, 2026-09-02)
+### Reference Results (Intel Core 5 210H, release build, 2026-09-17)
 
-**NDA/shmem Transport (ultra-low latency):**
+Raw: `bench_nda_2026-09-17.txt` (500 iterations × 3 rounds, median kept).
 
-| Method | Latency | Throughput | vs Node.js JSON/stdio |
-|--------|:-------:|:----------:|:---------------------:|
-| ping | 0.002 ms | 445K req/s | **7.8x** |
-| tools/list | 0.007 ms | 137K req/s | **27.7x** |
-| tools/call | 0.003 ms | 314K req/s | **7.3x** |
-| health/check | 0.002 ms | 472K req/s | **9.6x** |
+**NDA/shmem Transport (warm p50, 40 tools in list):**
 
-**Fair Comparison (JSON/stdio, same 16 tools, 500 iterations):**
+| Method | Latency | Throughput | vs JSON/stdio (avg) |
+|--------|:-------:|:----------:|:-------------------:|
+| ping | 0.001 ms | 1,761,585 r/s | **82.0x** |
+| tools/list (40 tools) | 0.003 ms | 284,311 r/s | **249.7x** |
+| tools/call (64B) | 0.001 ms | 511,819 r/s | **36.2x** |
 
-| Method | Node.js avg | Rust avg | Speedup |
-|--------|:-----------:|:--------:|:-------:|
-| ping | 0.029 ms | 0.017 ms | **1.7x** |
-| tools/list | 0.080 ms | 0.202 ms | 0.4x* |
-| tools/call | 0.029 ms | 0.023 ms | **1.3x** |
-| health/check | 0.030 ms | 0.020 ms | **1.5x** |
+**Fair Comparison (Rust JSON/stdio vs Node.js/stdio, warm p50, 40 tools):**
 
-*tools/list: Node.js returns a static array; Rust dynamically assembles with cache checks + dedup + pagination.
+| Method | Node.js | Rust | Result |
+|--------|:-------:|:----:|:------:|
+| ping | 0.098 ms | 0.044 ms | **Rust 2.2x** |
+| tools/list | 0.175 ms | 0.807 ms | **Node 4.6x*** |
+| tools/call | 0.083 ms | 0.061 ms | **Rust 1.4x** |
 
-**4-Pipeline Comparison:**
+*tools/list: Node.js returns a static array; Rust's `get_tools()` dynamically assembles 40 tools from 5 registries with cache validation + dedup + pagination.
 
-| Pipeline | Ping avg | tools/list avg | tools/call avg |
-|----------|----------|----------------|----------------|
-| Node.js JSON/stdio | 0.029 ms | 0.080 ms | 0.029 ms |
-| Rust JSON/stdio | 0.017 ms | 0.202 ms | 0.023 ms |
-| Rust NDA/stdio | 0.025 ms | 0.164 ms | 0.032 ms |
-| Rust NDA/shmem | 0.002 ms | 0.007 ms | 0.003 ms |
+**4-Pipeline Comparison (warm avg):**
 
-**Overall: 9.5x–27.7x faster** (NDA/shmem vs JSON/stdio), **1.3x–1.7x faster** (Rust vs Node.js, same JSON/stdio transport).
+| Pipeline | Ping | tools/list | tools/call |
+|----------|:----:|:----------:|:----------:|
+| Node.js JSON/stdio | 0.149 ms | 0.197 ms | 0.088 ms |
+| Rust JSON/stdio | 0.047 ms | 0.878 ms | 0.071 ms |
+| Rust NDA/stdio | 0.038 ms | 0.204 ms | 0.043 ms |
+| Rust NDA/shmem | 0.001 ms | 0.004 ms | 0.002 ms |
+
+**Overall:** NDA/shmem is 36x–250x faster than JSON/stdio; on identical JSON/stdio, Rust wins ping and tools/call (1.4x–2.2x), Node wins tools/list avg on this single-pass run (Rust dynamic 40-tool assembly). See [docs/COMPARISON.md](COMPARISON.md) for full 8-pipeline + scaling.
 
 ---
 
@@ -989,7 +989,7 @@ A single global token-bucket rate limiter protects against abuse:
 
 ### Testing and Verification
 
-703 tests verify all security layers:
+1,100+ tests verify all security layers:
 - **Unit tests**: Parser bounds checking, sandbox capabilities, signature verification, NDA-native protocol, MCP spec compliance, rate limiter, audit log, error sanitization, transport layers, middleware, plugin system, marketplace
 - **Integration tests**: Adversarial tests covering path traversal, network blocking, XML attacks, tamper detection, sandbox escape attempts, HTTP transport, authentication, batch endpoints
 - **Property-based fuzz tests**: Random cases proving parser never panics, signatures always verify, NDA frames resist tampering and truncation
@@ -1069,7 +1069,7 @@ A: Protocol version `2024-11-05`. The server reports this in the `initialize` re
 
 ### Q: Can I use this server with multiple MCP clients simultaneously?
 
-A: In stdio mode, each client needs its own server process. In HTTP mode, multiple clients can connect simultaneously with automatic session management (up to 1000 concurrent sessions). In shared memory mode, only one host can use the buffer at a time.
+A: In stdio mode, each client needs its own server process. In HTTP mode, multiple clients can connect simultaneously with automatic per-client session management (no fixed cap configured in code). In shared memory mode, only one host can use the buffer at a time.
 
 ### Q: What happens if the C# engine crashes?
 

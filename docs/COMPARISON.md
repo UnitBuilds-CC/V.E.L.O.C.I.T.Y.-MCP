@@ -5,97 +5,61 @@ Benchmark results comparing VELOCITY-MCP against the Node.js reference implement
 ## Methodology
 
 All benchmarks run on the same hardware with:
-- **CPU:** Intel i5-14400F
+- **CPU:** Intel Core 5 210H (12 cores)
 - **OS:** Windows 11
 - **Build:** Rust release profile (`opt-level = 3`, `lto = true`)
-- **Node.js:** v24.18.0
+- **Node.js:** v24.19.0
 - **Payload:** 64-byte tool arguments (unless noted)
-- **Iterations:** 100 samples per benchmark via Criterion
+- **Harness:** `bench_nda` — 500 iterations × 3 rounds, median kept, per pipeline
+- **Measured:** 2026-09-17 (raw: `bench_nda_2026-09-17.txt`, `velocity_mcp --benchmark`)
 
 ## NDA/shmem Transport (Primary Path)
 
-The highest-performance pipeline, using NDA binary encoding over shared memory IPC:
+The highest-performance pipeline, using NDA binary encoding over shared memory IPC (warm p50, 2026-09-17, Core 5 210H):
 
-> **Note:** figures below are from a prior-machine run, have not been reproduced on the current box, and are pending re-measurement.
-
-| Method | Latency | Throughput | vs JSON/stdio |
+| Method | Latency | Throughput | vs JSON/stdio (avg) |
 |--------|---------|------------|---------------|
-| ping | 0.001 ms (1us) | 1,657,825 r/s | 34.3x faster |
-| tools/list (16 tools) | 0.006 ms | 165,981 r/s | 29.7x faster |
-| tools/call (64B) | 0.001 ms | 750,413 r/s | 18.3x faster |
-| health/check | 0.000 ms | 2,190,101 r/s | 46.3x faster |
+| ping | 0.001 ms | 1,761,585 r/s | 82.0x faster |
+| tools/list (40 tools) | 0.003 ms | 284,311 r/s | 249.7x faster |
+| tools/call (64B) | 0.001 ms | 511,819 r/s | 36.2x faster |
 
-**Overall: 27.7x faster average, 40.8x faster at p99** (NDA/shmem vs JSON/stdio)
+**Speedups vs JSON/stdio:** ping 82.0x avg / 138.1x p99; tools/list 249.7x avg / 269.8x p99; tools/call 36.2x avg / 21.6x p99.
 
 ## Node.js vs Rust (Fair Comparison)
 
-Same transport (stdio), same encoding (JSON-RPC) — isolates the runtime difference:
+Same transport (stdio), same encoding (JSON-RPC) — isolates the runtime difference (warm p50, 2026-09-17):
 
-> **Note:** figures below are from a prior-machine run, have not been reproduced on the current box, and are pending re-measurement.
+| Method | Rust (JSON/stdio) | Node.js (stdio) | Result |
+|--------|-------------------|-----------------|--------|
+| ping | 0.044 ms | 0.098 ms | Rust 2.2x |
+| tools/list | 0.807 ms | 0.175 ms | Node 4.6x |
+| tools/call | 0.061 ms | 0.083 ms | Rust 1.4x |
 
-| Method | Node.js avg | Rust avg | Speedup |
-|--------|------------|----------|---------|
-| ping | 0.061 ms | 0.034 ms | 1.8x |
-| tools/list | 0.075 ms | 0.128 ms | 0.6x* |
-| tools/call | 0.039 ms | 0.018 ms | 2.2x |
-| health/check | 0.040 ms | 0.038 ms | 1.0x |
-
-*tools/list: Node.js returns a static array; Rust dynamically assembles from 5 sources (built-in tools, plugins, NDA tools, proc macros, database). Rust wins at p99.
-
-**Overall: 1.0x avg (tied), 1.7x p99** (Rust wins on tail latency)
+On this run Rust wins ping and tools/call; **Node wins tools/list on both avg and p99** (0.551 ms vs 2.320 ms p99) — Rust's `get_tools()` dynamically assembles 40 tools from 5 registries while the Node stub returns a static array. Raw: `bench_nda_2026-09-17.txt`.
 
 ## 4-Pipeline Comparison
 
-> **Note:** figures below are from a prior-machine run, have not been reproduced on the current box, and are pending re-measurement.
-
 | Pipeline | Ping avg | tools/list avg | tools/call avg |
 |----------|----------|----------------|----------------|
-| Node.js JSON/stdio | 0.046 ms | 0.110 ms | 0.042 ms |
-| Rust JSON/stdio | 0.035 ms | 0.195 ms | 0.034 ms |
-| Rust NDA-wrapped JSON/stdio | 0.027 ms | 0.186 ms | 0.035 ms |
-| Rust NDA/shmem | 0.001 ms | 0.006 ms | 0.002 ms |
+| Node.js JSON/stdio | 0.149 ms | 0.197 ms | 0.088 ms |
+| Rust JSON/stdio | 0.047 ms | 0.878 ms | 0.071 ms |
+| Rust NDA/stdio | 0.038 ms | 0.204 ms | 0.043 ms |
+| Rust NDA/shmem | 0.001 ms | 0.004 ms | 0.002 ms |
 
 **Key finding:** Transport is the dominant factor. Shared memory is an order of magnitude faster than stdio. Encoding format (JSON vs NDA) has negligible impact when transport is the same.
 
-## Phase Timing
-
-All 8 pipelines instrument write/wait/read phases. The "wait" phase isolates server turnaround time:
-
-> **Note:** figures below are from a prior-machine run, have not been reproduced on the current box, and are pending re-measurement.
-
-| Pipeline | write | wait | read | Total |
-|----------|-------|------|------|-------|
-| NDA/shmem | 0.0us | 0.5us | 0.1us | ~1us |
-| JSON/shmem | 0.3us | 6.3us | 0.3us | ~7us |
-
-The 12x difference in "wait" phase (0.5us vs 6.3us) shows the JSON parse+stringify cost on the server side. With NDA encoding, the server reads binary directly — no parsing needed.
-
-## Tail Latency (p99)
-
-> **Note:** figures below are from a prior-machine run, have not been reproduced on the current box, and are pending re-measurement.
-
-| Method | Rust p99 | Node.js p99 | Improvement |
-|--------|----------|-------------|-------------|
-| tools/call | 0.2ms | 5.0ms | 25x |
-| ping | 0.1ms | 1.2ms | 12x |
-| tools/list | 0.3ms | 3.5ms | 11.7x |
-
-Tail latency matters most in production — this is what users feel when the system is under load.
-
 ## Scaling
 
-Concurrent dispatch throughput (flat binary, shared memory):
-
-> **Note:** figures below are from a prior-machine run, have not been reproduced on the current box, and are pending re-measurement.
+Concurrent dispatch throughput (NDA binary, shared memory; `velocity_mcp --benchmark`, 2026-09-17):
 
 | Threads | Throughput |
 |---------|------------|
-| 1 | 1.2M req/s |
-| 2 | 2.4M req/s |
-| 4 | 4.1M req/s |
-| 8 | 5.3M req/s |
+| 1 | 1.7M req/s |
+| 2 | 2.8M req/s |
+| 4 | 4.2M req/s |
+| 8 | 5.6M req/s |
 
-Near-linear scaling to 8 threads, limited by memory bandwidth rather than CPU.
+Scales sub-linearly past 2 threads on this 12-core box (memory-bandwidth bound). Raw: `velocity_mcp --benchmark`.
 
 ## Reproducing
 
