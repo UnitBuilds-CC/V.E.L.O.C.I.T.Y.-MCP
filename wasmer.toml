@@ -1,60 +1,18 @@
 [package]
 name = "unitbuilds/velocity-mcp-edge"
-version = "3.2.1"
+version = "3.19.4"
 description = "VELOCITY-MCP serverless deployment on Wasmer Edge - Model Context Protocol with 10 pure-Rust edge tools"
 readme = "docs/edge_user_guide.md"
 
 [[module]]
 name = "velocity-edge"
-source = "crates/velocity-mcp-edge/velocity-edge-wasix.wasm"
+source = "target/wasm32-wasmer-wasi/release/velocity-edge.wasm"
 abi = "wasi"
 
-# =============================================================================
-# Wasmer Edge Configuration
-# Optimized for free tier (128MB, 5M instructions). Adjust for production.
-# See docs/edge_user_guide.md for full configuration reference.
-# =============================================================================
+[[command]]
+name = "velocity-edge"
+module = "velocity-edge"
+runner = "https://webc.org/runner/wasi"
 
-[edge]
-# Memory per instance (MB). Free tier max: 128. Production: 256-2048.
-memory_mb = 128
-
-# Max WASM instructions per request. 5M ~= 50ms compute budget.
-# Increase for complex tool workloads; decrease for strict cost control.
-instruction_limit = 5_000_000
-
-# Minimum warm instances. 0 = scale to zero (no idle cost).
-# Set to 1 to eliminate cold starts (~100-500ms first request).
-min_instances = 0
-
-# Maximum concurrent instances. Free tier: keep at 3.
-# Production: scale to 10-50 based on traffic.
-max_instances = 3
-
-# Environment variables injected into the WASM runtime.
-[edge.env]
-# Logging level: "error" < "warn" < "info" < "debug" < "trace"
-# Use "warn" on free tier to minimize overhead.
-RUST_LOG = "warn"
-
-# Operational mode. "edge" disables OS-specific features (seccomp, shmem, etc.)
-VELOCITY_MODE = "edge"
-
-# Uncomment and set to enable API key authentication:
-# VELOCITY_API_KEY = "sk-your-secret-key-here"
-
-# Uncomment to override request body size limit (default: 1MB):
-# VELOCITY_MAX_REQUEST_SIZE = "1048576"
-
-# Uncomment to override per-request timeout in seconds (default: 30):
-# VELOCITY_REQUEST_TIMEOUT = "30"
-
-# Health check configuration. Wasmer polls this endpoint to verify instance health.
-[edge.healthcheck]
-path = "/health"
-interval_seconds = 30
-
-# Persistent volumes (not available on free tier).
-# Uncomment for production deployments that need plugin cache persistence.
-# [edge.volumes]
-# plugins = "/data/plugins"
+[command.annotations.wasi]
+env = ["PORT=80"]

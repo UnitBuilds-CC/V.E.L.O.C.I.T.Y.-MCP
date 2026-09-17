@@ -9,9 +9,9 @@
 set -euo pipefail
 
 # --- Configuration ---
-WASM_BINARY="target/wasm32-wasip1/release/velocity-edge.wasm"
+WASM_BINARY="target/wasm32-wasmer-wasi/release/velocity-edge.wasm"
 MAX_WASM_SIZE_BYTES=5242880  # 5MB
-TARGET="wasm32-wasip1"
+TARGET="wasm32-wasmer-wasi"
 BIN_NAME="velocity-edge"
 SKIP_TESTS=0
 SKIP_BUILD=0
@@ -58,13 +58,15 @@ if ! command -v rustc &>/dev/null; then
 fi
 log_ok "Rust toolchain found ($(rustc --version))"
 
-# Check wasm32-wasip1 target
-if ! rustup target list --installed | grep -q "$TARGET"; then
-    log_err "Target $TARGET not installed."
-    echo "  Run: rustup target add $TARGET"
+if ! rustc +wasix --print target-libdir --target "$TARGET" >/dev/null; then
+    log_err "Install the WASIX Rust toolchain as +wasix before building."
     exit 1
 fi
-log_ok "Target $TARGET installed"
+if ! command -v cargo-wasix >/dev/null || ! command -v python >/dev/null; then
+    log_err "Python 3 and cargo-wasix are required."
+    exit 1
+fi
+log_ok "WASIX build prerequisites found"
 
 # Check Wasmer CLI
 if ! command -v wasmer &>/dev/null; then
@@ -104,8 +106,8 @@ if [ "$SKIP_BUILD" -eq 1 ]; then
     fi
 else
     echo "[2/6] Building WASM binary for $TARGET..."
-    echo "  Command: cargo build --target $TARGET --release --bin $BIN_NAME"
-    if ! cargo build --target "$TARGET" --release --bin "$BIN_NAME"; then
+    echo "  Command: python deploy/build-edge.py"
+    if ! python deploy/build-edge.py; then
         log_err "Build failed!"
         echo "  Check compiler output above for errors."
         exit 1
@@ -141,7 +143,7 @@ if [ "$SKIP_TESTS" -eq 1 ]; then
     echo "[4/6] Skipping tests (--skip-tests flag set)"
 else
     echo "[4/6] Running tests..."
-    if ! cargo test --workspace --lib; then
+    if ! cargo test --locked -p velocity-mcp-core -p velocity-mcp-edge; then
         log_err "Tests failed!"
         echo "  Fix failing tests before deploying."
         exit 1
@@ -157,7 +159,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
     echo "  [DRY RUN] Would execute: wasmer deploy"
     echo "  [DRY RUN] Skipping actual deployment."
 else
-    if ! wasmer deploy; then
+    if ! wasmer deploy --publish-package; then
         log_err "Deployment failed!"
         echo "  Check Wasmer CLI output above for errors."
         echo "  Common causes:"

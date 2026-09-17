@@ -74,3 +74,7 @@ bench_tools/webr.wasm
 
 # WASIX build artifacts (built locally via cargo-wasix, not committed)
 crates/velocity-mcp-edge/velocity-edge-wasix.wasm
+
+# Nested-WASM PoC build artifact (rebuild via deploy/build-edge-poc.py)
+nested-poc/poc.wasm
+crates/velocity-mcp-edge/velocity-edge.wasm

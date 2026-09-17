@@ -9,9 +9,9 @@ REM Usage: deploy-edge.bat [--skip-tests] [--skip-build] [--dry-run]
 REM ============================================================================
 
 REM --- Configuration ---
-set "WASM_BINARY=target\wasm32-wasip1\release\velocity-edge.wasm"
+set "WASM_BINARY=target\wasm32-wasmer-wasi\release\velocity-edge.wasm"
 set "MAX_WASM_SIZE_BYTES=5242880"
-set "TARGET=wasm32-wasip1"
+set "TARGET=wasm32-wasmer-wasi"
 set "BIN_NAME=velocity-edge"
 set "SKIP_TESTS=0"
 set "SKIP_BUILD=0"
@@ -49,14 +49,16 @@ if errorlevel 1 (
 )
 echo   [OK] Rust toolchain found
 
-REM Check wasm32-wasip1 target
-rustup target list --installed | findstr /i "%TARGET%" >nul 2>&1
+rustc +wasix --print target-libdir --target %TARGET% >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] Target %TARGET% not installed.
-    echo   Run: rustup target add %TARGET%
+    echo [ERROR] Install the WASIX Rust toolchain as +wasix before building.
     exit /b 1
 )
-echo   [OK] Target %TARGET% installed
+where cargo-wasix >nul 2>&1
+if errorlevel 1 exit /b 1
+where python >nul 2>&1
+if errorlevel 1 exit /b 1
+echo   [OK] WASIX build prerequisites found
 
 REM Check Wasmer CLI
 set "PATH=%USERPROFILE%\.wasmer\bin;%PATH%"
@@ -97,8 +99,8 @@ if "%SKIP_BUILD%"=="1" (
     )
 ) else (
     echo [2/6] Building WASM binary for %TARGET%...
-    echo   Command: cargo build --target %TARGET% --release --bin %BIN_NAME%
-    cargo build --target %TARGET% --release --bin %BIN_NAME%
+    echo   Command: python deploy/build-edge.py
+    python deploy/build-edge.py
     if errorlevel 1 (
         echo [ERROR] Build failed!
         echo   Check compiler output above for errors.
@@ -137,7 +139,7 @@ if "%SKIP_TESTS%"=="1" (
     echo [4/6] Skipping tests (--skip-tests flag set)
 ) else (
     echo [4/6] Running tests...
-    cargo test --workspace --lib
+    cargo test --locked -p velocity-mcp-core -p velocity-mcp-edge
     if errorlevel 1 (
         echo [ERROR] Tests failed!
         echo   Fix failing tests before deploying.

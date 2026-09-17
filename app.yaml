@@ -1,24 +1,5 @@
 name: velocity-mcp-edge
 owner: unitbuilds
 package: .
-
-app:
-  version: 3.2.1
-  modules:
-    - name: velocity-edge
-      source: crates/velocity-mcp-edge/velocity-edge-wasix.wasm
-      abi: wasi
-  capabilities:
-    - network
-  env:
-    RUST_LOG: warn
-    VELOCITY_MODE: edge
-  healthcheck:
-    path: /health
-    interval_seconds: 30
-  scaling:
-    min_instances: 0
-    max_instances: 3
-    memory_mb: 128
-kind: wasmer.io/App.v0
 app_id: da_neGIvtaUGJVL
+kind: wasmer.io/App.v0

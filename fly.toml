@@ -1,0 +1,32 @@
+# Fly.io deployment configuration for VELOCITY-MCP
+# Deploy with: flyctl deploy
+
+app = "velocity-mcp"
+primary_region = "fra"  # Frankfurt, Germany (closest to Namibia)
+
+[build]
+  image = "unitbuilds/velocity-mcp:latest"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+
+[env]
+  RUST_LOG = "info"
+  VELOCITY_WASM_INSTRUCTION_LIMIT = "10000000"
+
+# Health check endpoint
+[http_service.checks]
+  grace_period = "10s"
+  interval = "30s"
+  method = "GET"
+  path = "/health"
+  timeout = "5s"

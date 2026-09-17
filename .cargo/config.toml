@@ -1,0 +1,11 @@
+[target.wasm64-wasmer-wasi]
+rustflags = ["-C", "target-feature=-exception-handling"]
+
+[target.wasm32-wasmer-wasi]
+rustflags = ["-C", "target-feature=-exception-handling"]
+
+[target.wasm32-wasip1]
+rustflags = ["-C", "target-feature=-exception-handling"]
+
+[target.wasm32-wasip1-threads]
+rustflags = ["-C", "target-feature=-exception-handling"]
