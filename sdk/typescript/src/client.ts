@@ -22,7 +22,7 @@ import {
 
 const PROTOCOL_VERSION = "2024-11-05";
 const CLIENT_NAME = "velocity-mcp-typescript";
-const CLIENT_VERSION = "3.0.0";
+const CLIENT_VERSION = "3.2.0";
 
 export class McpClient {
   private transport: Transport;

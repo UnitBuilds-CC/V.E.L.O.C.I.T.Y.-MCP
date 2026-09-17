@@ -38,5 +38,5 @@ export type { HttpTransportOptions, StdioTransportOptions } from "./transport";
 export * from "./types";
 export * from "./errors";
 
-export const VERSION = "3.0.0";
+export const VERSION = "3.2.0";
 export const PROTOCOL_VERSION = "2024-11-05";

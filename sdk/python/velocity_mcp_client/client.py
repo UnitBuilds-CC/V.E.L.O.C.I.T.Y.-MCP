@@ -25,7 +25,7 @@ from .errors import ProtocolError, ToolExecutionError, ResourceNotFoundError, Pr
 
 PROTOCOL_VERSION = "2024-11-05"
 CLIENT_NAME = "velocity-mcp-python"
-CLIENT_VERSION = "3.0.0"
+CLIENT_VERSION = "3.2.0"
 
 
 class McpClient:

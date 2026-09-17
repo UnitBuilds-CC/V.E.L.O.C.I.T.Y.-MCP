@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "velocity-mcp-client"
-version = "3.0.0"
+version = "3.2.0"
 authors = [
     { name = "UnitBuilds", email = "ian@unitbuilds.com" }
 ]

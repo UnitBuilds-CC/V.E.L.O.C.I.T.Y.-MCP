@@ -42,7 +42,7 @@ from .types import (
 )
 from .errors import McpError, TransportError, ProtocolError
 
-__version__ = "3.0.0"
+__version__ = "3.2.0"
 __all__ = [
     "McpClient",
     "Transport",

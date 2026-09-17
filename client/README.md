@@ -8,7 +8,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-velocity-mcp-client = "3.0.0"
+velocity-mcp-client = "3.2.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
