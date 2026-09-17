@@ -297,38 +297,57 @@ impl ShmemBuffer {
 
     #[cfg(target_os = "windows")]
     fn wait_for_response(&self) -> Result<()> {
-        let budget = spin_budget_us();
-        if budget > 0 {
-            let start = std::time::Instant::now();
-            let limit = std::time::Duration::from_micros(budget);
-            loop {
-                let state = unsafe {
-                    let ptr = self.mmap.as_ptr().add(STATE_OFFSET) as *const AtomicU8;
-                    (*ptr).load(Ordering::Acquire)
-                };
-                if state == STATE_RES_READY || state == STATE_ERROR {
-                    return Ok(());
-                }
-                if start.elapsed() >= limit {
-                    break;
-                }
-                std::hint::spin_loop();
+        // The state byte is authoritative; the auto-reset event is only an
+        // advisory wakeup. The server may signal the response event after a
+        // fast client already consumed the response via the state spin path,
+        // leaving an orphan signal that must not be mistaken for the next
+        // request's response.
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_micros(spin_budget_us())
+            + std::time::Duration::from_millis(WAIT_TIMEOUT_MS as u64);
+        // Hot path: busy-spin on the state byte to catch sub-event-wait
+        // responses without a syscall.
+        let spin_limit = std::time::Duration::from_micros(spin_budget_us());
+        let spin_start = std::time::Instant::now();
+        loop {
+            let state = unsafe {
+                let ptr = self.mmap.as_ptr().add(STATE_OFFSET) as *const AtomicU8;
+                (*ptr).load(Ordering::Acquire)
+            };
+            if state == STATE_RES_READY || state == STATE_ERROR {
+                return Ok(());
             }
+            if spin_start.elapsed() >= spin_limit {
+                break;
+            }
+            std::hint::spin_loop();
         }
-        unsafe {
-            let rc = WaitForSingleObject(self.h_res_event, WAIT_TIMEOUT_MS);
-            if rc == WAIT_TIMEOUT {
+        // Slow path: event is only an advisory wakeup; re-validate state
+        // after every signal because orphaned signals can linger.
+        loop {
+            let state = unsafe {
+                let ptr = self.mmap.as_ptr().add(STATE_OFFSET) as *const AtomicU8;
+                (*ptr).load(Ordering::Acquire)
+            };
+            if state == STATE_RES_READY || state == STATE_ERROR {
+                return Ok(());
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
                 return Err(Error::Timeout);
             }
-            if rc != 0 {
-                let err = GetLastError();
+            let ms = remaining.as_millis().min(u128::from(u32::MAX)) as u32;
+            let rc = unsafe { WaitForSingleObject(self.h_res_event, ms) };
+            if rc != 0 && rc != WAIT_TIMEOUT {
+                let err = unsafe { GetLastError() };
                 return Err(Error::SharedMemory(format!(
                     "WaitForSingleObject failed (rc={}, error={})",
                     rc, err
                 )));
             }
+            // WAIT_OBJECT_0: re-check state (may be spurious/orphan).
+            // WAIT_TIMEOUT: loop re-checks state once, then times out.
         }
-        Ok(())
     }
 }
 
