@@ -107,12 +107,6 @@ Returns real-time performance metrics.
     "tls_enabled": true,
     "cors_restricted": false,
     "body_size_limit_bytes": 10485760
-  },
-  "vs_nodejs": {
-    "estimated_nodejs_latency_us": 625.1,
-    "speed_multiplier": "Up to 27.7x",
-    "total_time_saved_ms": 7023.5,
-    "note": "Based on comparative benchmarks of identical MCP workloads"
   }
 }
 ```

@@ -742,10 +742,6 @@ async fn performance(State(state): State<Arc<ServerState>>) -> Json<Value> {
         0.0
     };
 
-    // Estimate what Node.js would take (based on typical V8 JSON-RPC overhead)
-    let nodejs_equiv_latency_us = avg_latency_us * 3.8;
-    let time_saved_ms = (nodejs_equiv_latency_us - avg_latency_us) * total_requests as f64 / 1000.0;
-
     Json(json!({
         "server": {
             "version": env!("CARGO_PKG_VERSION"),
@@ -776,12 +772,6 @@ async fn performance(State(state): State<Arc<ServerState>>) -> Json<Value> {
             "tls_enabled": state.security.api_key.is_some(),
             "cors_restricted": state.security.cors_origins.is_some(),
             "body_size_limit_bytes": state.security.max_request_size
-        },
-        "vs_nodejs": {
-            "estimated_nodejs_latency_us": format!("{:.1}", nodejs_equiv_latency_us),
-            "speed_multiplier": "3.8x",
-            "total_time_saved_ms": format!("{:.1}", time_saved_ms),
-            "note": "Based on comparative benchmarks of identical MCP workloads"
         }
     }))
 }
