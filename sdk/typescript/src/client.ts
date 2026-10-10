@@ -18,6 +18,7 @@ import {
   ToolExecutionError,
   ResourceNotFoundError,
   PromptNotFoundError,
+  ServerError,
 } from "./errors";
 
 const PROTOCOL_VERSION = "2024-11-05";
@@ -113,14 +114,29 @@ export class McpClient {
   }
 
   async readResource(uri: string): Promise<ResourceReadResult> {
+    let result: any;
     try {
-      return await this.sendRequest("resources/read", { uri });
+      result = await this.sendRequest("resources/read", { uri });
     } catch (error) {
-      if (error instanceof ProtocolError && error.code === -32003) {
+      // velocity-mcp-core, which Edge dispatches through, reports an unservable
+      // URI as a JSON-RPC -32001 error object.
+      if (error instanceof ProtocolError && error.code === -32001) {
         throw new ResourceNotFoundError(uri);
       }
       throw error;
     }
+    // The native server reports the same condition in band, with no error object, so
+    // its message text is the only cause signal. Both servers say
+    // "Resource not found: <uri>" for an unservable URI (src/resources.rs,
+    // crates/velocity-mcp-core/src/lib.rs); anything else is a read failure.
+    if (result?.isError) {
+      const text: string = result.content?.[0]?.text ?? "";
+      if (text.startsWith("Resource not found")) {
+        throw new ResourceNotFoundError(uri);
+      }
+      throw new ServerError(text || `Resource read failed: ${uri}`);
+    }
+    return result;
   }
 
   async listPrompts(): Promise<Prompt[]> {
@@ -132,17 +148,32 @@ export class McpClient {
     name: string,
     args: Record<string, any>
   ): Promise<PromptGetResult> {
+    let result: any;
     try {
-      return await this.sendRequest("prompts/get", {
+      result = await this.sendRequest("prompts/get", {
         name,
         arguments: args,
       });
     } catch (error) {
-      if (error instanceof ProtocolError && error.code === -32004) {
+      // velocity-mcp-core, which Edge dispatches through, reports an unknown
+      // prompt name as a JSON-RPC -32001 error object.
+      if (error instanceof ProtocolError && error.code === -32001) {
         throw new PromptNotFoundError(name);
       }
       throw error;
     }
+    // The native server reports the same condition in band, with no error object, so
+    // its message text is the only cause signal. Both servers say
+    // "Prompt not found: <name>" for an unknown name; a rejected argument set is a
+    // different failure and is not relabelled as a missing prompt.
+    if (result?.isError) {
+      const text: string = result.content?.[0]?.text ?? "";
+      if (text.startsWith("Prompt not found")) {
+        throw new PromptNotFoundError(name);
+      }
+      throw new ServerError(text || `Prompt get failed: ${name}`);
+    }
+    return result;
   }
 
   async ping(): Promise<void> {

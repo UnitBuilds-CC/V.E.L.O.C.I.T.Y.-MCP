@@ -20,7 +20,7 @@ from .types import (
     PromptsListResult,
     PromptGetResult,
 )
-from .errors import ProtocolError, ToolExecutionError, ResourceNotFoundError, PromptNotFoundError
+from .errors import ProtocolError, ToolExecutionError, ResourceNotFoundError, PromptNotFoundError, ServerError
 
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -153,14 +153,26 @@ class McpClient:
             
         Raises:
             ResourceNotFoundError: If resource not found
+            ServerError: If the URI resolves but cannot be read
         """
         try:
             result = await self._send_request("resources/read", {"uri": uri})
-            return ResourceReadResult.model_validate(result)
         except ProtocolError as e:
-            if e.code == -32003:  # Resource not found code
-                raise ResourceNotFoundError(f"Resource not found: {uri}")
+            # velocity-mcp-core, which Edge dispatches through, reports an
+            # unservable URI as a JSON-RPC -32001 error object.
+            if e.code == -32001:
+                raise ResourceNotFoundError(e.message) from None
             raise
+        # The native server reports the same condition in band, with no error object,
+        # so its message text is the only cause signal. Both servers say
+        # "Resource not found: <uri>" for an unservable URI (src/resources.rs,
+        # crates/velocity-mcp-core/src/lib.rs); anything else is a read failure.
+        if isinstance(result, dict) and result.get("isError"):
+            text = (result.get("content") or [{}])[0].get("text", "")
+            if text.startswith("Resource not found"):
+                raise ResourceNotFoundError(text)
+            raise ServerError(text or "Resource read failed: %s" % uri)
+        return ResourceReadResult.model_validate(result)
     
     async def list_prompts(self) -> List[Prompt]:
         """
@@ -186,15 +198,27 @@ class McpClient:
             
         Raises:
             PromptNotFoundError: If prompt not found
+            ServerError: If the prompt exists but its arguments are rejected
         """
         try:
             params = {"name": name, "arguments": arguments}
             result = await self._send_request("prompts/get", params)
-            return PromptGetResult.model_validate(result)
         except ProtocolError as e:
-            if e.code == -32004:  # Prompt not found code
-                raise PromptNotFoundError(f"Prompt not found: {name}")
+            # velocity-mcp-core, which Edge dispatches through, reports an
+            # unknown prompt name as a JSON-RPC -32001 error object.
+            if e.code == -32001:
+                raise PromptNotFoundError(e.message) from None
             raise
+        # The native server reports the same condition in band, with no error object,
+        # so its message text is the only cause signal. Both servers say
+        # "Prompt not found: <name>" for an unknown name; a rejected argument set
+        # is a different failure and is not relabelled as a missing prompt.
+        if isinstance(result, dict) and result.get("isError"):
+            text = (result.get("content") or [{}])[0].get("text", "")
+            if text.startswith("Prompt not found"):
+                raise PromptNotFoundError(text)
+            raise ServerError(text or "Prompt get failed: %s" % name)
+        return PromptGetResult.model_validate(result)
     
     async def ping(self) -> None:
         """Ping the server."""

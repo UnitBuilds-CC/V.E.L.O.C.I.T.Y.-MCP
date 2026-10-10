@@ -3,6 +3,7 @@ package velocity_mcp
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 )
 
@@ -54,6 +55,25 @@ func (c *McpClient) sendRequest(ctx context.Context, method string, params inter
 	}
 
 	return response.Result, nil
+}
+
+// inBandMessage returns the text of an MCP in-band error result, if the result is
+// one. The native server reports a failed resource or prompt read this way: a
+// JSON-RPC success envelope with isError true and no error object, so the message
+// text is the only cause signal the client gets.
+func inBandMessage(result map[string]interface{}) (string, bool) {
+	if isError, ok := result["isError"].(bool); !ok || !isError {
+		return "", false
+	}
+	contents, _ := result["content"].([]interface{})
+	if len(contents) > 0 {
+		if block, ok := contents[0].(map[string]interface{}); ok {
+			if text, ok := block["text"].(string); ok {
+				return text, true
+			}
+		}
+	}
+	return "", true
 }
 
 // Initialize initializes the MCP connection
@@ -260,12 +280,24 @@ func (c *McpClient) ReadResource(ctx context.Context, uri string) (*ResourceRead
 
 	result, err := c.sendRequest(ctx, "resources/read", params)
 	if err != nil {
+		// velocity-mcp-core, which Edge dispatches through, reports an unservable
+		// URI as a JSON-RPC -32001 error object.
+		if protoErr, ok := err.(*ProtocolError); ok && protoErr.Code == -32001 {
+			return nil, &ResourceNotFoundError{URI: uri}
+		}
 		return nil, err
 	}
 
 	resultMap, ok := result.(map[string]interface{})
 	if !ok {
 		return nil, &ServerError{McpError{Message: "invalid resources/read result"}}
+	}
+
+	if text, inBand := inBandMessage(resultMap); inBand {
+		if strings.HasPrefix(text, "Resource not found") {
+			return nil, &ResourceNotFoundError{URI: uri}
+		}
+		return nil, &ServerError{McpError{Message: text}}
 	}
 
 	readResult := &ResourceReadResult{}
@@ -341,12 +373,24 @@ func (c *McpClient) GetPrompt(ctx context.Context, name string, args map[string]
 
 	result, err := c.sendRequest(ctx, "prompts/get", params)
 	if err != nil {
+		// velocity-mcp-core, which Edge dispatches through, reports an unknown
+		// prompt name as a JSON-RPC -32001 error object.
+		if protoErr, ok := err.(*ProtocolError); ok && protoErr.Code == -32001 {
+			return nil, &PromptNotFoundError{Name: name}
+		}
 		return nil, err
 	}
 
 	resultMap, ok := result.(map[string]interface{})
 	if !ok {
 		return nil, &ServerError{McpError{Message: "invalid prompts/get result"}}
+	}
+
+	if text, inBand := inBandMessage(resultMap); inBand {
+		if strings.HasPrefix(text, "Prompt not found") {
+			return nil, &PromptNotFoundError{Name: name}
+		}
+		return nil, &ServerError{McpError{Message: text}}
 	}
 
 	getResult := &PromptGetResult{}
