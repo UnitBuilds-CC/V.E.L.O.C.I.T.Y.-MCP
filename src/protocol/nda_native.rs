@@ -404,6 +404,11 @@ pub fn skip_tlv_value(bytes: &[u8]) -> Result<usize, Box<dyn Error>> {
 }
 
 fn skip_tlv_value_inner(bytes: &[u8], depth: u32) -> Result<usize, Box<dyn Error>> {
+    // Same boundary as decode_json_value_inner, so the zero-alloc walk accepts
+    // exactly the frames the allocating decoder accepts.
+    if depth > TLV_MAX_DEPTH {
+        return Err(format!("TLV skip: nesting depth exceeds maximum {}", TLV_MAX_DEPTH).into());
+    }
     if bytes.is_empty() {
         return Err("TLV skip: empty value".into());
     }
@@ -432,13 +437,6 @@ fn skip_tlv_value_inner(bytes: &[u8], depth: u32) -> Result<usize, Box<dyn Error
         }
         0x04 => Ok(1),
         0x05 => {
-            if depth >= TLV_MAX_DEPTH {
-                return Err(format!(
-                    "TLV skip: array nesting depth exceeds maximum {}",
-                    TLV_MAX_DEPTH
-                )
-                .into());
-            }
             if bytes.len() < 5 {
                 return Err("TLV skip: truncated array count".into());
             }
@@ -450,13 +448,6 @@ fn skip_tlv_value_inner(bytes: &[u8], depth: u32) -> Result<usize, Box<dyn Error
             Ok(off)
         }
         0x06 => {
-            if depth >= TLV_MAX_DEPTH {
-                return Err(format!(
-                    "TLV skip: object nesting depth exceeds maximum {}",
-                    TLV_MAX_DEPTH
-                )
-                .into());
-            }
             if bytes.len() < 5 {
                 return Err("TLV skip: truncated object count".into());
             }
@@ -990,8 +981,15 @@ pub fn method_name(method: u8) -> &'static str {
         METHOD_PING => "ping",
         METHOD_LOGGING_SET_LEVEL => "logging/setLevel",
         METHOD_HEALTH_CHECK => "health/check",
+        METHOD_RESOURCES_LIST => "resources/list",
+        METHOD_RESOURCES_READ => "resources/read",
+        METHOD_RESOURCE_TEMPLATES_LIST => "resources/templates/list",
+        METHOD_PROMPTS_LIST => "prompts/list",
+        METHOD_PROMPTS_GET => "prompts/get",
+        METHOD_SAMPLING_CREATE => "sampling/createMessage",
         NOTIF_INITIALIZED => "notifications/initialized",
         NOTIF_CANCELLED => "notifications/cancelled",
+        NOTIF_PROGRESS => "notifications/progress",
         _ => "unknown",
     }
 }
@@ -1004,8 +1002,15 @@ pub fn method_from_str(name: &str) -> Option<u8> {
         "ping" => Some(METHOD_PING),
         "logging/setLevel" => Some(METHOD_LOGGING_SET_LEVEL),
         "health/check" => Some(METHOD_HEALTH_CHECK),
+        "resources/list" => Some(METHOD_RESOURCES_LIST),
+        "resources/read" => Some(METHOD_RESOURCES_READ),
+        "resources/templates/list" => Some(METHOD_RESOURCE_TEMPLATES_LIST),
+        "prompts/list" => Some(METHOD_PROMPTS_LIST),
+        "prompts/get" => Some(METHOD_PROMPTS_GET),
+        "sampling/createMessage" => Some(METHOD_SAMPLING_CREATE),
         "notifications/initialized" => Some(NOTIF_INITIALIZED),
         "notifications/cancelled" => Some(NOTIF_CANCELLED),
+        "notifications/progress" => Some(NOTIF_PROGRESS),
         _ => None,
     }
 }
@@ -1428,6 +1433,7 @@ mod tests {
 
     #[test]
     fn test_merkle_integrity() {
+        let _lock = MERKLE_TOGGLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let frame = build_nda_request(METHOD_PING, &json!(1), &Value::Null).unwrap();
         let mut tampered = frame.clone();
         let last = tampered.len() - 1;
@@ -1435,8 +1441,8 @@ mod tests {
         assert!(parse_nda_request(&tampered).is_err());
     }
 
-    // Tests that flip the global merkle toggle are serialized so they cannot
-    // interfere with each other or with tests that assume the default state.
+    // Tests that flip the global merkle toggle, and tests that assume its default,
+    // all hold MERKLE_TOGGLE_LOCK so neither group can interfere with the other.
     static MERKLE_TOGGLE_LOCK: Mutex<()> = Mutex::new(());
 
     struct MerkleDisabledGuard(bool);
@@ -1644,6 +1650,7 @@ mod tests {
 
     #[test]
     fn test_flat_merkle_integrity() {
+        let _lock = MERKLE_TOGGLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let frame = build_flat_request(METHOD_PING, &json!(1), "", &Value::Null);
         let mut tampered = frame.clone();
         let last = tampered.len() - 1;
@@ -1935,6 +1942,7 @@ mod tests {
 
     #[test]
     fn inplace_parse_rejects_bad_frames() {
+        let _lock = MERKLE_TOGGLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let frame = build_nda_request(METHOD_PING, &json!(1), &Value::Null).unwrap();
         assert!(
             parse_nda_request_inplace(&frame[..10]).is_err(),
@@ -1954,8 +1962,8 @@ mod tests {
         let no_id = build_nda_frame(&[METHOD_PING]);
         assert!(parse_nda_request_inplace(&no_id).is_err(), "missing id");
         // Truncated id TLV: string tag claiming 100 bytes
-        let mut truncated = vec![METHOD_PING, 0x01, 0, 0, 0, 100];
-        let trunc_frame = build_nda_frame(&mut truncated);
+        let truncated = vec![METHOD_PING, 0x01, 0, 0, 0, 100];
+        let trunc_frame = build_nda_frame(&truncated);
         assert!(
             parse_nda_request_inplace(&trunc_frame).is_err(),
             "truncated id TLV"
@@ -2092,6 +2100,47 @@ mod tests {
             result.err()
         );
         assert_eq!(result.unwrap(), bytes.len());
+    }
+
+    #[test]
+    fn skip_and_decode_agree_on_the_depth_boundary() {
+        // An *empty* container one level deeper than the leaf in
+        // `skip_tlv_value_accepts_max_depth_nesting`: the innermost array is
+        // entered at depth TLV_MAX_DEPTH and recurses no further, so the
+        // allocating decoder accepts it. The zero-alloc walk used to reject
+        // containers at that depth, so the same frame decoded on the JSON path
+        // and errored on the in-place path.
+        let mut bytes = Vec::new();
+        for _ in 0..32 {
+            bytes.push(0x05);
+            bytes.extend_from_slice(&1u32.to_be_bytes());
+        }
+        bytes.push(0x05);
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+
+        let (value, consumed) =
+            decode_json_value(&bytes).expect("decoder must accept nesting depth == TLV_MAX_DEPTH");
+        assert_eq!(consumed, bytes.len());
+        let mut cursor = &value;
+        for _ in 0..32 {
+            cursor = &cursor.as_array().expect("single-element array")[0];
+        }
+        assert_eq!(cursor, &json!([]));
+        assert_eq!(
+            skip_tlv_value(&bytes).expect("skip must mirror the decoder"),
+            bytes.len()
+        );
+
+        // One level deeper: both walkers must refuse.
+        let mut too_deep = Vec::new();
+        for _ in 0..33 {
+            too_deep.push(0x05);
+            too_deep.extend_from_slice(&1u32.to_be_bytes());
+        }
+        too_deep.push(0x05);
+        too_deep.extend_from_slice(&0u32.to_be_bytes());
+        assert!(decode_json_value(&too_deep).is_err());
+        assert!(skip_tlv_value(&too_deep).is_err());
     }
 
     #[test]
@@ -2567,12 +2616,12 @@ mod tests {
 
     #[test]
     fn test_decode_flat_value_float_round_trip() {
-        let val = json!(3.14);
+        let val = json!(-12.5);
         let mut buf = Vec::new();
         encode_flat_value(&val, &mut buf);
         let mut offset = 0;
         let decoded = decode_flat_value(&buf, &mut offset).unwrap();
-        assert_eq!(decoded, 3.14);
+        assert_eq!(decoded, -12.5);
     }
 
     // ─── Coverage: value_to_u64 variants ───────────────────────────────────
@@ -2612,6 +2661,41 @@ mod tests {
             method_from_str("notifications/cancelled"),
             Some(NOTIF_CANCELLED)
         );
+    }
+
+    // Every declared opcode must round-trip through both name tables. Adding a
+    // METHOD_*/NOTIF_* constant without extending both matches fails this test.
+    #[test]
+    fn test_method_tables_cover_every_declared_opcode() {
+        const ALL: [(u8, &str); 15] = [
+            (METHOD_INITIALIZE, "initialize"),
+            (METHOD_TOOLS_LIST, "tools/list"),
+            (METHOD_TOOLS_CALL, "tools/call"),
+            (METHOD_PING, "ping"),
+            (METHOD_LOGGING_SET_LEVEL, "logging/setLevel"),
+            (METHOD_HEALTH_CHECK, "health/check"),
+            (METHOD_RESOURCES_LIST, "resources/list"),
+            (METHOD_RESOURCES_READ, "resources/read"),
+            (METHOD_RESOURCE_TEMPLATES_LIST, "resources/templates/list"),
+            (METHOD_PROMPTS_LIST, "prompts/list"),
+            (METHOD_PROMPTS_GET, "prompts/get"),
+            (METHOD_SAMPLING_CREATE, "sampling/createMessage"),
+            (NOTIF_INITIALIZED, "notifications/initialized"),
+            (NOTIF_CANCELLED, "notifications/cancelled"),
+            (NOTIF_PROGRESS, "notifications/progress"),
+        ];
+
+        for (code, name) in ALL {
+            assert_eq!(method_name(code), name, "method_name({code:#04X})");
+            assert_eq!(method_from_str(name), Some(code), "name {name}");
+        }
+
+        // Unassigned codes stay unmapped in both directions.
+        for code in [0x0D, 0x0E, 0x0F, 0x13, 0xFF] {
+            assert_eq!(method_name(code), "unknown");
+        }
+        assert_eq!(method_from_str("unknown"), None);
+        assert_eq!(method_from_str("resources/subscribe"), None);
     }
 
     // ─── Coverage: extract_tools_call_fields truncated object errors ───────
@@ -2670,7 +2754,7 @@ mod tests {
         assert_eq!(skip_tlv_value(&int_buf).unwrap(), 9);
 
         let mut float_buf = vec![0x07];
-        float_buf.extend_from_slice(&3.14f64.to_be_bytes());
+        float_buf.extend_from_slice(&2.5f64.to_be_bytes());
         assert_eq!(skip_tlv_value(&float_buf).unwrap(), 9);
     }
 
