@@ -1799,6 +1799,9 @@ static Value *eval_node(AstNode *node, Scope *scope) {
             if (g_has_return || g_error[0]) break;
             iterations++;
         }
+        if (iterations >= 100000 && !g_error[0]) {
+            snprintf(g_error, INTERP_ERROR_BUF_SIZE, "Loop exceeded 100000 iterations (hard cap)");
+        }
         return last;
     }
     case AST_FOR: {
@@ -1823,6 +1826,9 @@ static Value *eval_node(AstNode *node, Scope *scope) {
                 value_deref(v);
             }
             iterations++;
+        }
+        if (iterations >= 100000 && !g_error[0]) {
+            snprintf(g_error, INTERP_ERROR_BUF_SIZE, "Loop exceeded 100000 iterations (hard cap)");
         }
         scope_free(for_scope);
         return last;
@@ -2776,7 +2782,8 @@ static Value* tlv_decode_array(TlvParser* parser) {
     for (uint32_t i = 0; i < count; i++) {
         parser->element_count++;
         if (parser->element_count > TLV_MAX_ELEMENTS) {
-            return arr;  /* Return what we have so far */
+            snprintf(g_error, INTERP_ERROR_BUF_SIZE, "TLV array exceeded %d elements (hard cap)", TLV_MAX_ELEMENTS);
+            return arr;
         }
         Value* item = tlv_decode_value(parser);
         array_push(arr, item);
@@ -2792,12 +2799,14 @@ static Value* tlv_decode_object(TlvParser* parser) {
     for (uint32_t i = 0; i < count; i++) {
         parser->element_count++;
         if (parser->element_count > TLV_MAX_ELEMENTS) {
-            return obj;  /* Return what we have so far */
+            snprintf(g_error, INTERP_ERROR_BUF_SIZE, "TLV object exceeded %d elements (hard cap)", TLV_MAX_ELEMENTS);
+            return obj;
         }
         
         /* Read key length and key string */
         uint16_t key_len = read_u16_be(parser);
         if (key_len > TLV_MAX_STRING_LEN || parser->pos + key_len > parser->len) {
+            snprintf(g_error, INTERP_ERROR_BUF_SIZE, "TLV object key exceeds max string length");
             return obj;
         }
         Value* key = value_new_string((const char*)(parser->data + parser->pos), key_len);
@@ -2841,13 +2850,22 @@ static Value* tlv_decode_value(TlvParser* parser) {
         case TLV_TAG_NULL:
             return value_new_null();
         
-        case TLV_TAG_ARRAY:
+        case TLV_TAG_ARRAY: {
+            /* depth is nesting depth, not a container tally: the sibling
+             * decode below must see it restored, or 33 siblings in one array
+             * would out-earn the limit and be replaced by an error string. */
             parser->depth++;
-            return tlv_decode_array(parser);
+            Value *arr = tlv_decode_array(parser);
+            parser->depth--;
+            return arr;
+        }
         
-        case TLV_TAG_OBJECT:
+        case TLV_TAG_OBJECT: {
             parser->depth++;
-            return tlv_decode_object(parser);
+            Value *obj = tlv_decode_object(parser);
+            parser->depth--;
+            return obj;
+        }
         
         case TLV_TAG_FLOAT: {
             double val = read_f64_be(parser);
@@ -2859,6 +2877,53 @@ static Value* tlv_decode_value(TlvParser* parser) {
             snprintf(buf, sizeof(buf), "Unknown TLV tag: 0x%02x", tag);
             return value_new_string_cstr(buf);
         }
+    }
+}
+
+/* Run the source registered through interp_register_tool in the current scope
+ * (which already holds the bound arguments) and format the reply. Shared by the
+ * JSON and TLV entry points so both encodings return the same payload for the
+ * same arguments, and a defect fixed on one path cannot be missed on the other. */
+static void exec_registered_tool(void) {
+    if (tool_source_len > 0) {
+        g_error[0] = '\0';
+        g_has_return = 0;
+
+        Parser parser;
+        parser_init(&parser, tool_source);
+        AstNode *program = parse_program(&parser);
+
+        if (!parser.had_error) {
+            Value *result = eval_node(program, g_current_scope);
+            value_deref(result);
+        } else {
+            snprintf(g_error, sizeof(g_error), "parse error: %s", parser.error);
+        }
+    }
+
+    /* Format output */
+    if (g_error[0]) {
+        output_reset();
+        char json[2048];
+        int jlen = snprintf(json, sizeof(json), "{\"error\":\"%s\"}", g_error);
+        output_append(json, jlen);
+        output_append_str("\n");
+    } else if (g_result_set) {
+        output_reset();
+        char json[8192];
+        size_t pos = 0;
+        pos += snprintf(json + pos, sizeof(json) - pos, "{\"message\":");
+        /* Serialize the result value as JSON */
+        Value *result_val = value_new_string_cstr(g_result);
+        size_t slen;
+        char *serialized = json_serialize(result_val, &slen);
+        if (pos + slen > sizeof(json) - 1) slen = sizeof(json) - 1 - pos;
+        memcpy(json + pos, serialized, slen); pos += slen;
+        free(serialized);
+        value_deref(result_val);
+        if (pos + 1 < sizeof(json)) { json[pos++] = '}'; json[pos] = '\0'; }
+        output_append(json, pos);
+        output_append_str("\n");
     }
 }
 
@@ -2904,52 +2969,17 @@ int interp_call_tool_binary(const char *tlv_ptr, size_t tlv_len,
         }
     }
 
-    /* Find and execute the named function */
-    char func_name[256];
-    if (name_len >= sizeof(func_name)) name_len = sizeof(func_name) - 1;
-    memcpy(func_name, name_ptr, name_len);
-    func_name[name_len] = '\0';
-
-    Value *func = scope_get(g_current_scope, func_name);
-    if (!func || func->type != VAL_FUNC) {
-        char msg[512];
-        snprintf(msg, sizeof(msg), "ERROR: Unknown tool '%s'", func_name);
-        output_append(msg, strlen(msg));
-        value_deref(args_map);
-        return -1;
-    }
-
-    /* Call the function with no arguments (args are in scope) */
-    g_call_depth++;
-    Value *result = eval_node(func->as.func->body, g_current_scope);
-    g_call_depth--;
-
-    if (g_has_return) {
-        value_deref(result);
-        result = g_return_value ? value_ref(g_return_value) : value_new_null();
-        g_return_value = NULL;
-        g_has_return = 0;
-    }
-
-    if (result) {
-        /* Convert result to JSON and store */
-        size_t slen;
-        char *serialized = json_serialize(result, &slen);
-        if (slen >= sizeof(g_result)) slen = sizeof(g_result) - 1;
-        memcpy(g_result, serialized, slen);
-        g_result[slen] = '\0';
-        free(serialized);
-        g_result_set = 1;
-        value_deref(result);
-    }
+    /* Execute the registered source. The tool name is advisory: a guest holds
+     * the one source registered through interp_register_tool, and the scope
+     * reset above contains only builtins, so looking the name up there could
+     * never succeed - that is what made every binary call answer "Unknown
+     * tool" before any guest code ran. */
+    exec_registered_tool();
 
     value_deref(args_map);
 
-    if (g_error[0]) {
-        output_append(g_error, strlen(g_error));
-        return -1;
-    }
-
+    (void)name_ptr;
+    (void)name_len;
     return 0;
 }
 
@@ -2985,47 +3015,8 @@ int interp_call_tool(const char *args_ptr, size_t args_n,
     }
     value_deref(args_map);
 
-    /* Execute tool source */
-    if (tool_source_len > 0) {
-        g_error[0] = '\0';
-        g_has_return = 0;
-
-        Parser parser;
-        parser_init(&parser, tool_source);
-        AstNode *program = parse_program(&parser);
-
-        if (!parser.had_error) {
-            Value *result = eval_node(program, g_current_scope);
-            value_deref(result);
-        } else {
-            snprintf(g_error, sizeof(g_error), "parse error: %s", parser.error);
-        }
-    }
-
-    /* Format output */
-    if (g_error[0]) {
-        output_reset();
-        char json[2048];
-        int jlen = snprintf(json, sizeof(json), "{\"error\":\"%s\"}", g_error);
-        output_append(json, jlen);
-        output_append_str("\n");
-    } else if (g_result_set) {
-        output_reset();
-        char json[8192];
-        size_t pos = 0;
-        pos += snprintf(json + pos, sizeof(json) - pos, "{\"message\":");
-        /* Serialize the result value as JSON */
-        Value *result_val = value_new_string_cstr(g_result);
-        size_t slen;
-        char *serialized = json_serialize(result_val, &slen);
-        memcpy(json + pos, serialized, slen);
-        pos += slen;
-        free(serialized);
-        value_deref(result_val);
-        pos += snprintf(json + pos, sizeof(json) - pos, "}");
-        output_append(json, pos);
-        output_append_str("\n");
-    }
+    /* Execute tool source and format output */
+    exec_registered_tool();
 
     (void)name_ptr;
     (void)name_len;
