@@ -23,7 +23,7 @@
 //!         "required": ["param1"]
 //!       },
 //!       "executor": {
-//!         "type": "process",
+//!         "executor_type": "process",
 //!         "command": "python",
 //!         "args": ["my_tool.py", "--param1", "{{param1}}"]
 //!       }
@@ -34,8 +34,18 @@
 //!
 //! # Executor Types
 //!
-//! Currently supported executor types:
-//! - `process`: Execute an external process
+//! The key is `executor_type`, not `type`. Supported values:
+//! - `process` — external command; `command` is required
+//! - `wasm` — `language` plus either inline `source` or a `source_file`; the runtime
+//!   is selected by `WasmRuntimesConfig`. `source` is program text for the interpreted
+//!   runtimes; for the compiled ones (go, rust) it may name a `.wasm` file instead,
+//!   which the runtime loads. `source_file` is read as text, so it takes source files,
+//!   not binary modules.
+//!
+//! `load_plugin_manifest` rejects any other value with "Unsupported executor type".
+//! Undeclared keys are ignored by serde, so a misspelled optional key silently takes
+//! its default; a misspelled required key (`name`, `description`, `inputSchema`,
+//! `executor`) instead fails the load with a missing-field error.
 //!
 //! # Template Variables
 //!
@@ -46,7 +56,7 @@ pub mod marketplace;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
@@ -383,14 +393,64 @@ static WASM_RUNTIME_CACHE: std::sync::LazyLock<
 static WASM_TOOL_METADATA: std::sync::LazyLock<Mutex<HashMap<String, String>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Wasmer 5's metering middleware signals budget exhaustion via an injected
-/// `unreachable` operator (TrapCode::UnreachableCodeReached → "unreachable"),
-/// so the surfaced message is generic — match it alongside legacy phrasings.
-fn is_metering_limit_error(err_msg: &str) -> bool {
+/// Tracks which tool names have been registered per language runtime.
+/// Used to detect duplicate registrations that would silently hijack
+/// existing tools in runtimes with shared program slots (interp_core).
+static WASM_TOOL_REGISTRY: std::sync::LazyLock<Mutex<HashMap<String, HashSet<String>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Trap wordings Wasmer surfaces for a guest that stopped mid-execution.
+///
+/// Fallback only: [`guest_trapped`] matches the error's type first, and this
+/// list covers runtimes that stringify a trap before it reaches the caller.
+/// "unreachable" is deliberately broad — Wasmer reports metering exhaustion,
+/// `abort()` and an unhandled guest exception with that same word, so no
+/// phrasing separates those causes.
+fn is_trap_message(err_msg: &str) -> bool {
     err_msg.contains("unreachable")
         || err_msg.contains("out of gas")
         || err_msg.contains("instruction limit")
         || err_msg.contains("metering")
+        || err_msg.contains("out of bounds memory access")
+        || err_msg.contains("call stack exhausted")
+}
+
+/// True when the guest trapped instead of running to completion and reporting
+/// its own error.
+///
+/// A trap unwinds the interpreter mid-execution, so the cached instance cannot
+/// be trusted again. Measured on MicroPython: after a stack-overflowing tool
+/// (`RuntimeError: out of bounds memory access`) every later call on the same
+/// instance failed inside `nlr_push_tail`, and that message carries no metering
+/// wording — so the string-only check left the poisoned runtime cached for the
+/// life of the process.
+fn guest_trapped(err: &(dyn std::error::Error + 'static)) -> bool {
+    err.downcast_ref::<wasmer::RuntimeError>().is_some() || is_trap_message(&err.to_string())
+}
+
+/// First line of a trap's message, for inclusion in a client-visible error.
+///
+/// Wasmer appends a backtrace whose frames read `<unknown>`; the binary
+/// fallback classifier in `registry` treats a message holding both "unknown"
+/// and "tool" as proof the guest never ran and retries it, which would execute
+/// the tool a second time. Only the first line is ever quoted.
+fn trap_reason(err: &(dyn std::error::Error + 'static)) -> String {
+    match err.to_string().lines().next() {
+        Some(line) if !line.trim().is_empty() => line.trim().to_string(),
+        _ => "the guest trapped".to_string(),
+    }
+}
+
+/// Client-visible error for a trapped guest.
+///
+/// Keeps the "exceeded resource limits" wording — an instruction-limit hit is
+/// the commonest trap and `tests/metering_test.rs` pins the phrase — without
+/// asserting it as the only cause, and says the runtime was discarded.
+pub(crate) fn trap_message(tool: &str, reason: &str) -> String {
+    format!(
+        "WASM tool '{}' exceeded resource limits or trapped ({}). The runtime was discarded and will be rebuilt on the next call. A trap means an instruction-limit hit, a stack overflow, or an unrecoverable fault inside the tool; if it is the instruction limit, optimize the code or raise instruction_limit in your configuration.",
+        tool, reason
+    )
 }
 
 fn execute_wasm_plugin_tool(tool: &PluginTool, arguments: &Value) -> Result<String, String> {
@@ -410,6 +470,23 @@ fn execute_wasm_plugin_tool(tool: &PluginTool, arguments: &Value) -> Result<Stri
     if !cache.contains_key(language) {
         let runtime = create_wasm_runtime(language)?;
         cache.insert(language.to_string(), runtime);
+    }
+
+    // #618: Detect duplicate tool registration per language. The interp_core
+    // guests (PHP/C#/Java/R/Julia/Perl) share a single program slot per language,
+    // so a second registration with the same name silently hijacks the first tool's
+    // calls. Reject duplicates explicitly rather than allowing silent overwrites.
+    {
+        let mut registry = WASM_TOOL_REGISTRY
+            .lock()
+            .map_err(|e| format!("WASM tool registry poisoned: {}", e))?;
+        let lang_tools = registry.entry(language.to_string()).or_insert_with(HashSet::new);
+        if !lang_tools.insert(tool.name.clone()) {
+            return Err(format!(
+                "WASM tool '{}' already registered for language '{}'. Duplicate registrations are rejected to prevent call hijacking (#618).",
+                tool.name, language
+            ));
+        }
     }
 
     let runtime = cache
@@ -437,20 +514,18 @@ fn execute_wasm_plugin_tool(tool: &PluginTool, arguments: &Value) -> Result<Stri
     // Note: Plugin-based WASM execution relies on metering middleware for timeout protection.
     // Wall-clock timeouts are not feasible here because the runtime is shared behind a Mutex.
     // Ensure metering is configured via WasmRuntimesConfig.instruction_limit.
+    crate::wasm_runtime::check_args_fit(runtime.as_ref(), args_json.len(), "Tool arguments")?;
     runtime.reset_instruction_budget();
     let result = runtime.call_tool(&tool.name, &args_json);
     match result {
         Ok(out) => Ok(out),
         Err(e) => {
-            if is_metering_limit_error(&e.to_string()) {
-                // A metering trap unwinds the interpreter mid-execution; the
-                // cached instance can't be trusted again. Evict so the next
-                // call rebuilds a fresh runtime.
+            if guest_trapped(e.as_ref()) {
+                // A trap unwinds the interpreter mid-execution; the cached
+                // instance can't be trusted again. Evict so the next call
+                // rebuilds a fresh runtime.
                 cache.remove(language);
-                Err(format!(
-                    "WASM tool '{}' exceeded resource limits (instruction count). This usually means the tool has an infinite loop or is too computationally expensive. Consider optimizing the code or increasing the instruction_limit in your configuration.",
-                    tool.name
-                ))
+                Err(trap_message(&tool.name, &trap_reason(e.as_ref())))
             } else {
                 Err(format!("WASM tool '{}' execution failed: {}", tool.name, e))
             }
@@ -503,17 +578,67 @@ fn create_wasm_runtime(
     }
 
     crate::wasm_runtime::create_wasm_runtime_for_language(language, &wasm_path).map_err(|e| {
-        if is_metering_limit_error(&e.to_string()) {
+        if guest_trapped(e.as_ref()) {
             // Interpreter bootstrap itself burns metered instructions, so a
             // too-low limit traps during creation, before any tool runs.
             format!(
-                "WASM runtime '{}' exceeded resource limits (instruction count) during initialization. Increase instruction_limit in your configuration or VELOCITY_WASM_INSTRUCTION_LIMIT. Underlying error: {}",
-                language, e
+                "WASM runtime '{}' exceeded resource limits or trapped during initialization ({}). Increase instruction_limit in your configuration or VELOCITY_WASM_INSTRUCTION_LIMIT.",
+                language,
+                trap_reason(e.as_ref())
             )
         } else {
             format!("Failed to create WASM runtime for '{}': {}", language, e)
         }
     })
+}
+
+/// Register a tool's source into its cached WASM runtime without executing it.
+///
+/// The JSON path registers as a side effect of every call, so a runtime that is
+/// cold or was evicted by a metering trap has never seen the tool. The binary
+/// path needs this registration to be done explicitly before it can run.
+pub fn register_wasm_tool_source(name: &str, language: &str, source: &str) -> Result<(), String> {
+    let mut cache = WASM_RUNTIME_CACHE
+        .lock()
+        .map_err(|e| format!("WASM runtime cache poisoned: {}", e))?;
+
+    if !cache.contains_key(language) {
+        cache.insert(language.to_string(), create_wasm_runtime(language)?);
+    }
+
+    // #618: Detect duplicate tool registration per language. The interp_core
+    // guests (PHP/C#/Java/R/Julia/Perl) share a single program slot per language,
+    // so a second registration with the same name silently hijacks the first tool's
+    // calls. Reject duplicates explicitly rather than allowing silent overwrites.
+    {
+        let mut registry = WASM_TOOL_REGISTRY
+            .lock()
+            .map_err(|e| format!("WASM tool registry poisoned: {}", e))?;
+        let lang_tools = registry.entry(language.to_string()).or_insert_with(HashSet::new);
+        if !lang_tools.insert(name.to_string()) {
+            return Err(format!(
+                "WASM tool '{}' already registered for language '{}'. Duplicate registrations are rejected to prevent call hijacking (#618).",
+                name, language
+            ));
+        }
+    }
+
+    let runtime = cache
+        .get_mut(language)
+        .ok_or_else(|| format!("No runtime for language: {}", language))?;
+
+    runtime.reset_instruction_budget();
+    runtime
+        .register_tool(name, source)
+        .map_err(|e| format!("Failed to register WASM tool '{}': {}", name, e))?;
+
+    WASM_TOOL_METADATA
+        .lock()
+        .map(|mut metadata| {
+            metadata.insert(name.to_string(), language.to_string());
+        })
+        .unwrap_or_default();
+    Ok(())
 }
 
 /// Call a WASM tool with binary TLV arguments (optimized path).
@@ -536,21 +661,22 @@ pub fn call_wasm_tool_binary(
         .ok_or_else(|| format!("No runtime for language: {}", language))?;
 
     // Use binary protocol - falls back to JSON if not supported
+    crate::wasm_runtime::check_args_fit(runtime.as_ref(), args_tlv.len(), "Binary TLV arguments")?;
     runtime.reset_instruction_budget();
     let result = runtime.call_tool_binary(name, args_tlv);
     match result {
         Ok(out) => Ok(out),
         Err(e) => {
-            if is_metering_limit_error(&e.to_string()) {
-                // Metering trap poisons the interpreter; evict so the next
-                // call rebuilds a fresh runtime.
+            if guest_trapped(e.as_ref()) {
+                // A trap poisons the interpreter; evict so the next call
+                // rebuilds a fresh runtime.
                 cache.remove(language);
-                Err(format!(
-                    "WASM tool '{}' exceeded resource limits (instruction count). Consider optimizing the code or increasing the instruction_limit in your configuration.",
-                    name
-                ))
+                Err(trap_message(name, &trap_reason(e.as_ref())))
             } else {
-                Err(format!("WASM tool '{}' execution failed (binary): {}", name, e))
+                Err(format!(
+                    "WASM tool '{}' execution failed (binary): {}",
+                    name, e
+                ))
             }
         }
     }
@@ -1424,7 +1550,7 @@ def py_list_operations(args):
             &json!({"operation": "sort", "items": [5, 3, 1, 4, 2]}),
         );
         assert!(r1.is_ok(), "sort failed: {:?}", r1.err());
-        assert!(r1.unwrap().contains("[1, 2, 3, 4, 5]"));
+        assert!(r1.unwrap().contains("[1,2,3,4,5]"));
 
         let r2 = execute_plugin_tool(
             &tool,
@@ -1621,5 +1747,52 @@ end
             "Lua result: {}",
             lua_r
         );
+    }
+
+    fn string_error(msg: &str) -> Box<dyn std::error::Error + 'static> {
+        Box::<dyn std::error::Error + 'static>::from(msg.to_string())
+    }
+
+    /// A guest that reports its own error leaves the interpreter intact, so it
+    /// must not be classified as a trap: eviction would cost a cold start on
+    /// every call of a merely buggy tool.
+    #[test]
+    fn test_trap_classification_separates_guest_errors_from_traps() {
+        for trapped in [
+            "RuntimeError: unreachable",
+            "RuntimeError: out of bounds memory access\n    at nlr_push_tail",
+            "Error: out of gas",
+            "call stack exhausted",
+        ] {
+            assert!(guest_trapped(string_error(trapped).as_ref()), "{trapped}");
+        }
+        for tool_error in [
+            "Python tool error: ValueError: bad",
+            "Lua tool error: attempt to index a nil value",
+            "Unknown Python tool: nope",
+            "Failed to register WASM tool 'x': syntax error",
+        ] {
+            assert!(
+                !guest_trapped(string_error(tool_error).as_ref()),
+                "{tool_error}"
+            );
+        }
+    }
+
+    /// Wasmer appends a backtrace whose frames read `<unknown>`. Quoting it
+    /// verbatim would hand `registry`'s binary fallback classifier a message
+    /// holding both "unknown" and "tool", which it reads as proof the guest
+    /// never ran — and then executes the tool a second time.
+    #[test]
+    fn test_trap_reason_never_quotes_the_backtrace() {
+        let err = string_error(
+            "RuntimeError: out of bounds memory access\n    0: <unknown>\n    at mp_wasi_call_tool",
+        );
+        let reason = trap_reason(err.as_ref());
+        assert_eq!(reason, "RuntimeError: out of bounds memory access");
+        assert!(!reason.to_ascii_lowercase().contains("unknown"), "{reason}");
+
+        let empty = string_error("");
+        assert_eq!(trap_reason(empty.as_ref()), "the guest trapped");
     }
 }
