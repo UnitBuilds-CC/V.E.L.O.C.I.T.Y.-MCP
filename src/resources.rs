@@ -374,9 +374,7 @@ static CACHED_DB: OnceLock<Mutex<Option<rusqlite::Connection>>> = OnceLock::new(
 fn get_db_connection(
 ) -> Result<std::sync::MutexGuard<'static, Option<rusqlite::Connection>>, String> {
     let cache = CACHED_DB.get_or_init(|| Mutex::new(None));
-    let mut guard = cache
-        .lock()
-        .map_err(|e| format!("DB cache lock poisoned: {}", e))?;
+    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
     if guard.is_none() {
         let conn = match DATABASE_PATH.get() {
             Some(path) => rusqlite::Connection::open(path)
@@ -533,19 +531,15 @@ pub fn register_api_resource(
 /// Subscribe to resource updates.
 pub fn subscribe_resource(uri: &str, subscriber_id: &str) -> Result<(), String> {
     let store = get_resource_registry();
-    match store.lock() {
-        Ok(mut s) => s.subscribe(uri, subscriber_id),
-        Err(e) => Err(format!("Resource store poisoned: {}", e)),
-    }
+    let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
+    s.subscribe(uri, subscriber_id)
 }
 
 /// Unsubscribe from resource updates.
 pub fn unsubscribe_resource(uri: &str, subscriber_id: &str) -> Result<(), String> {
     let store = get_resource_registry();
-    match store.lock() {
-        Ok(mut s) => s.unsubscribe(uri, subscriber_id),
-        Err(e) => Err(format!("Resource store poisoned: {}", e)),
-    }
+    let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
+    s.unsubscribe(uri, subscriber_id)
 }
 
 /// Notify subscribers of a resource update.
@@ -586,19 +580,15 @@ pub fn list_resource_templates() -> Vec<ResourceTemplate> {
 /// Read a resource by URI.
 pub fn read_resource(uri: &str) -> Result<Value, String> {
     let store = get_resource_registry();
-    match store.lock() {
-        Ok(s) => {
-            let result = s.read_resource(uri)?;
-            Ok(json!({
-                "contents": [{
-                    "uri": result.uri,
-                    "mimeType": result.mime_type,
-                    "text": result.text
-                }]
-            }))
-        }
-        Err(e) => Err(format!("Resource store poisoned: {}", e)),
-    }
+    let s = store.lock().unwrap_or_else(|e| e.into_inner());
+    let result = s.read_resource(uri)?;
+    Ok(json!({
+        "contents": [{
+            "uri": result.uri,
+            "mimeType": result.mime_type,
+            "text": result.text
+        }]
+    }))
 }
 
 /// A prompt template with structured content blocks.
@@ -672,12 +662,11 @@ pub fn get_structured_prompt(
     arguments: &HashMap<String, String>,
 ) -> Result<Value, String> {
     let registry = get_structured_prompt_registry();
-    match registry.lock() {
-        Ok(prompts) => {
-            let prompt = prompts
-                .iter()
-                .find(|p| p.name == name)
-                .ok_or_else(|| format!("Structured prompt not found: {}", name))?;
+    let prompts = registry.lock().unwrap_or_else(|e| e.into_inner());
+    let prompt = prompts
+        .iter()
+        .find(|p| p.name == name)
+        .ok_or_else(|| format!("Structured prompt not found: {}", name))?;
 
             // Validate required arguments
             for arg in &prompt.arguments {
@@ -749,9 +738,6 @@ pub fn get_structured_prompt(
                 "description": prompt.description,
                 "messages": processed_messages
             }))
-        }
-        Err(e) => Err(format!("Structured prompt registry poisoned: {}", e)),
-    }
 }
 
 // ─── Prompts ─────────────────────────────────────────────────────────────────
@@ -798,39 +784,36 @@ pub fn list_prompts() -> Vec<Prompt> {
 /// Get a prompt by name with variable substitution.
 pub fn get_prompt(name: &str, arguments: &HashMap<String, String>) -> Result<Value, String> {
     let registry = get_prompt_registry();
-    match registry.lock() {
-        Ok(prompts) => {
-            let prompt = prompts
-                .iter()
-                .find(|p| p.name == name)
-                .ok_or_else(|| format!("Prompt not found: {}", name))?;
+    let prompts = registry.lock().unwrap_or_else(|e| e.into_inner());
 
-            // Validate required arguments
-            for arg in &prompt.arguments {
-                if arg.required && !arguments.contains_key(&arg.name) {
-                    return Err(format!("Missing required argument: {}", arg.name));
-                }
-            }
+    let prompt = prompts
+        .iter()
+        .find(|p| p.name == name)
+        .ok_or_else(|| format!("Prompt not found: {}", name))?;
 
-            // Simple template: just return the prompt description with variables substituted
-            let mut text = prompt.description.clone();
-            for (key, value) in arguments {
-                text = text.replace(&format!("{{{}}}", key), value);
-            }
-
-            Ok(json!({
-                "description": prompt.description,
-                "messages": [{
-                    "role": "user",
-                    "content": {
-                        "type": "text",
-                        "text": text
-                    }
-                }]
-            }))
+    // Validate required arguments
+    for arg in &prompt.arguments {
+        if arg.required && !arguments.contains_key(&arg.name) {
+            return Err(format!("Missing required argument: {}", arg.name));
         }
-        Err(e) => Err(format!("Prompt registry poisoned: {}", e)),
     }
+
+    // Simple template: just return the prompt description with variables substituted
+    let mut text = prompt.description.clone();
+    for (key, value) in arguments {
+        text = text.replace(&format!("{{{}}}", key), value);
+    }
+
+    Ok(json!({
+        "description": prompt.description,
+        "messages": [{
+            "role": "user",
+            "content": {
+                "type": "text",
+                "text": text
+            }
+        }]
+    }))
 }
 
 /// Handle resources/list request.
@@ -840,8 +823,8 @@ pub fn handle_resources_list(cursor: Option<&str>) -> Value {
         Some(c) => c.parse::<usize>().unwrap_or(0),
         None => 0,
     };
-    let page_size = 100;
-    let end = (start + page_size).min(resources.len());
+    let page_size = crate::protocol::json_rpc::DEFAULT_PAGE_SIZE;
+    let end = start.saturating_add(page_size).min(resources.len());
     let page = if start < resources.len() {
         &resources[start..end]
     } else {
@@ -872,8 +855,8 @@ pub fn handle_resource_templates_list(cursor: Option<&str>) -> Value {
         Some(c) => c.parse::<usize>().unwrap_or(0),
         None => 0,
     };
-    let page_size = 100;
-    let end = (start + page_size).min(templates.len());
+    let page_size = crate::protocol::json_rpc::DEFAULT_PAGE_SIZE;
+    let end = start.saturating_add(page_size).min(templates.len());
     let page = if start < templates.len() {
         &templates[start..end]
     } else {
@@ -921,8 +904,8 @@ pub fn handle_prompts_list(cursor: Option<&str>) -> Value {
         Some(c) => c.parse::<usize>().unwrap_or(0),
         None => 0,
     };
-    let page_size = 100;
-    let end = (start + page_size).min(prompts.len());
+    let page_size = crate::protocol::json_rpc::DEFAULT_PAGE_SIZE;
+    let end = start.saturating_add(page_size).min(prompts.len());
     let page = if start < prompts.len() {
         &prompts[start..end]
     } else {
@@ -957,6 +940,18 @@ pub fn handle_prompts_get(name: &str, arguments: &Value) -> Result<Value, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `poll_resource_updates()` drains one process-global queue, so a test that
+    /// asserts on its contents can have its update stolen by another test's drain.
+    /// Four tests touch that queue and all four hold this guard; the fourth reaches
+    /// `pending_updates` directly, and the two API helpers have no production callers.
+    static UPDATE_QUEUE_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_update_queue() -> std::sync::MutexGuard<'static, ()> {
+        UPDATE_QUEUE_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     fn test_timer(name: &str) -> impl Drop {
         let start = std::time::Instant::now();
@@ -1170,17 +1165,19 @@ mod tests {
     #[test]
     #[cfg(feature = "database")]
     fn test_database_resource_query() {
-        // Register a database resource
+        // `db://users` is already registered by `test_db_resource_registration` with a
+        // query this test cannot run, and registration is last-writer-wins on the
+        // process-global registry, so this probe needs its own uri.
         register_db_resource(
-            "db://users",
-            "Users",
+            "db://query_probe",
+            "Query probe",
             "User database",
             "SELECT 1 as id, 'Alice' as name, 30 as age",
             vec![],
         );
 
         // Read the resource
-        let result = read_resource("db://users");
+        let result = read_resource("db://query_probe");
         assert!(
             result.is_ok(),
             "Database query should succeed: {:?}",
@@ -1247,6 +1244,7 @@ mod tests {
 
     #[test]
     fn test_notify_and_poll_resource_updates() {
+        let _queue = lock_update_queue();
         register_file_resource(
             "test://notify_poll",
             "Notify",
@@ -1262,6 +1260,7 @@ mod tests {
 
     #[test]
     fn test_notify_nonexistent_resource_produces_no_update() {
+        let _queue = lock_update_queue();
         let before = poll_resource_updates();
         notify_resource_update("nonexistent://nothing");
         let after = poll_resource_updates();
@@ -1391,6 +1390,7 @@ mod tests {
 
     #[test]
     fn test_poll_resource_updates_drains() {
+        let _queue = lock_update_queue();
         register_file_resource("test://drain_test", "Drain", "Drain test", "/tmp/drain.txt");
         notify_resource_update("test://drain_test");
         let first = poll_resource_updates();
@@ -1408,6 +1408,7 @@ mod tests {
 
     #[test]
     fn test_notify_update_caps_at_10k() {
+        let _queue = lock_update_queue();
         let store = get_resource_registry();
         if let Ok(mut s) = store.lock() {
             s.resources.push(Resource {
@@ -1614,6 +1615,35 @@ mod tests {
         if let Ok(mut s) = store.lock() {
             s.resources.retain(|r| r.uri != "test://cov_large_res");
             s.file_resources.remove("test://cov_large_res");
+        }
+    }
+    #[test]
+    fn paged_list_handlers_saturate_an_overflow_band_cursor() {
+        // A cursor of usize::MAX parses as a valid usize, so the page arithmetic
+        // must saturate rather than add: `start + page_size` overflows here.
+        let huge = "18446744073709551615";
+        let cases = [
+            ("resources", handle_resources_list(Some(huge))),
+            (
+                "resourceTemplates",
+                handle_resource_templates_list(Some(huge)),
+            ),
+            ("prompts", handle_prompts_list(Some(huge))),
+        ];
+        for (key, result) in cases {
+            let page = result[key].as_array().expect("page is an array");
+            assert!(
+                page.is_empty(),
+                "{}: overflow cursor returned {} items",
+                key,
+                page.len()
+            );
+            assert!(
+                result.get("nextCursor").is_none(),
+                "{}: overflow cursor minted a backwards cursor {:?}",
+                key,
+                result["nextCursor"]
+            );
         }
     }
 }
