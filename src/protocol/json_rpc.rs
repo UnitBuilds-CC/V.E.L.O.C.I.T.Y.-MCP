@@ -17,10 +17,10 @@ use std::time::Instant;
 use tracing::{debug, error, info, warn};
 
 const MAX_REQUEST_SIZE: usize = 1_048_576;
-const DEFAULT_PAGE_SIZE: usize = 100;
+pub(crate) const DEFAULT_PAGE_SIZE: usize = 100;
 const MAX_CANCELLED_IDS: usize = 1024;
 
-static LOG_LEVEL: Mutex<tracing::Level> = Mutex::new(tracing::Level::INFO);
+pub(crate) static LOG_LEVEL: Mutex<tracing::Level> = Mutex::new(tracing::Level::INFO);
 
 /// Cache cancelled request IDs for cancellation support.
 /// Uses String keys to avoid cloning serde_json::Value trees.
@@ -36,9 +36,22 @@ fn id_to_key(id: &Value) -> String {
     }
 }
 
+/// Build a session-scoped cancellation key.
+/// On HTTP transports, the X-Session-ID header is read into thread-local storage
+/// by the transport layer. This prevents one client's cancellation from affecting
+/// another client's request that happens to use the same numeric ID (e.g., both
+/// starting from 1).
+fn cancellation_key(id: &Value) -> String {
+    let session = crate::audit::current_session_id();
+    match session {
+        Some(sid) => format!("{}:{}", sid, id_to_key(id)),
+        None => id_to_key(id), // Fallback for stdio/shmem where there's no session
+    }
+}
+
 pub fn is_cancelled(id: &Value) -> bool {
     if let Ok(ids) = CANCELLED_IDS.lock() {
-        ids.contains(&id_to_key(id))
+        ids.contains(&cancellation_key(id))
     } else {
         false
     }
@@ -50,17 +63,86 @@ fn add_cancelled(id: Value) {
             // Evict oldest entries (arbitrary since HashSet is unordered)
             ids.clear();
         }
-        ids.insert(id_to_key(&id));
+        ids.insert(cancellation_key(&id));
     }
 }
 
 fn remove_cancelled(id: &Value) {
     if let Ok(mut ids) = CANCELLED_IDS.lock() {
-        ids.remove(&id_to_key(id));
+        ids.remove(&cancellation_key(id));
+    }
+}
+
+/// True when a value is shaped like a JSON-RPC request or notification.
+///
+/// `handle_request` returns `None` for two different reasons: a notification, which
+/// must not get a response, and a value it cannot dispatch at all, which is an
+/// Invalid Request. Transports need this test to tell them apart instead of assuming
+/// every `None` was a notification.
+pub fn is_request_shaped(value: &Value) -> bool {
+    value.get("method").and_then(Value::as_str).is_some()
+}
+
+/// Map a sanitized tool error onto the `Error type:` / `Hint:` pair appended to the
+/// client-facing text. The arms test substrings our own code writes (`plugins`
+/// wraps registration failures, `wasm_runtime::go` wraps compile failures), plus
+/// OS error text for the rest.
+///
+/// `TOOL_BUILD_FAILED` must be tested before `NOT_FOUND`: a missing compiler
+/// reports `Compilation failed: TinyGo not found`, whose "not found" used to win
+/// and return "Check that the path or resource exists." — a hint the client cannot
+/// act on, because nothing is wrong with any path.
+fn classify_tool_error(sanitized: &str) -> (&'static str, &'static str) {
+    if sanitized.contains("Compilation failed")
+        || sanitized.contains("Failed to register WASM tool")
+    {
+        (
+            "TOOL_BUILD_FAILED",
+            "The tool module could not be compiled or registered on this host. The message above names the cause; a missing build toolchain is fixed by installing it or by loading a prebuilt module path from the manifest.",
+        )
+    } else if NOT_FOUND_MARKERS.iter().any(|m| sanitized.contains(m)) {
+        ("NOT_FOUND", "Check that the path or resource exists.")
+    } else if sanitized.contains("Permission denied") || sanitized.contains("access") {
+        (
+            "PERMISSION_DENIED",
+            "Check file permissions or run with elevated privileges.",
+        )
+    } else if sanitized.contains("required") || sanitized.contains("missing") {
+        (
+            "INVALID_ARGUMENTS",
+            "Check that all required parameters are provided with correct types.",
+        )
+    } else if sanitized.contains("timeout") || sanitized.contains("timed out") {
+        (
+            "TIMEOUT",
+            "The operation took too long. Try again or increase timeout.",
+        )
+    } else if sanitized.contains("connection") || sanitized.contains("network") {
+        (
+            "NETWORK_ERROR",
+            "A network error occurred. Check connectivity and retry.",
+        )
+    } else {
+        (
+            "EXECUTION_ERROR",
+            "Review the error message and adjust inputs accordingly.",
+        )
     }
 }
 
 pub fn handle_request(request: &Value) -> Option<Value> {
+    // Dispatch first: a notification can still have side effects to perform
+    // (`notifications/cancelled` records the cancelled id, which `is_cancelled`
+    // later reads back). Only the reply is withheld.
+    let response = dispatch(request);
+    // JSON-RPC 2.0 §4.1: a Request with no `id` is a Notification and the server
+    // MUST NOT reply to it. The test is on presence, not on `id.is_null()`, because
+    // an explicit `"id": null` is a present member and therefore not a notification.
+    request.get("id")?;
+    response
+}
+
+fn dispatch(request: &Value) -> Option<Value> {
     let method = request["method"].as_str().unwrap_or("");
     let id = &request["id"];
 
@@ -79,7 +161,7 @@ pub fn handle_request(request: &Value) -> Option<Value> {
                 version = client_version,
                 "Client initializing"
             );
-            let result = super::build_initialize_response(true); // include elicitation and roots
+            let result = super::build_initialize_response(true); // advertise the elicitation capability
             Some(json!({
                 "jsonrpc": "2.0",
                 "id": id,
@@ -219,46 +301,15 @@ pub fn handle_request(request: &Value) -> Option<Value> {
                     error!(tool = name, error = %err_msg, "Tool execution failed");
                     audit::record_tool_call(name, call_start, AuditOutcome::Error(err_msg.clone()));
 
-                    let sanitized = sandbox::sanitize_error(&err_msg);
-
-                    // Classify error and provide actionable hint for the LLM
-                    let (error_type, hint) = if sanitized.contains("not found")
-                        || sanitized.contains("No such file")
-                    {
-                        ("NOT_FOUND", "Check that the path or resource exists.")
-                    } else if sanitized.contains("Permission denied")
-                        || sanitized.contains("access")
-                    {
-                        (
-                            "PERMISSION_DENIED",
-                            "Check file permissions or run with elevated privileges.",
-                        )
-                    } else if sanitized.contains("required") || sanitized.contains("missing") {
-                        (
-                            "INVALID_ARGUMENTS",
-                            "Check that all required parameters are provided with correct types.",
-                        )
-                    } else if sanitized.contains("timeout") || sanitized.contains("timed out") {
-                        (
-                            "TIMEOUT",
-                            "The operation took too long. Try again or increase timeout.",
-                        )
-                    } else if sanitized.contains("connection") || sanitized.contains("network") {
-                        (
-                            "NETWORK_ERROR",
-                            "A network error occurred. Check connectivity and retry.",
-                        )
-                    } else {
-                        (
-                            "EXECUTION_ERROR",
-                            "Review the error message and adjust inputs accordingly.",
-                        )
-                    };
-
-                    format!(
-                        "Error running tool '{}': {}\n\nError type: {}\nHint: {}",
-                        name, sanitized, error_type, hint
-                    )
+                    // The `Error type:` / `Hint:` suffix is a cross-transport contract, not a
+                    // JSON-RPC extra: the shared-memory and NDA binary dispatchers call this same
+                    // helper, so a client cannot get a classification on one transport and bare
+                    // text on another. Until 2026-10-11 only this site appended it, which no
+                    // payload differential over successful calls could see -- the binary path
+                    // answered 0/5 error cases with the same classification as this one. The
+                    // helper and its parity test sit at the end of this module so adding them
+                    // moved no line this file's citations name.
+                    tool_error_text(name, &err_msg)
                 }
             };
 
@@ -657,8 +708,24 @@ fn run_stdio_json_mode(
             }
         };
 
-        if let Some(response) = handle_request(&request) {
-            println!("{}", response);
+        match handle_request(&request) {
+            Some(response) => println!("{}", response),
+            // A notification must not produce a response line.
+            None if is_request_shaped(&request) => {}
+            None => {
+                warn!("Ignoring malformed request line");
+                let message = if request.is_array() {
+                    "Invalid Request: batch requests are not supported over stdio"
+                } else {
+                    "Invalid Request: expected a JSON-RPC 2.0 request object"
+                };
+                let err_res = json!({
+                    "jsonrpc": "2.0",
+                    "error": { "code": -32600, "message": message },
+                    "id": null
+                });
+                println!("{}", err_res);
+            }
         }
     }
 
@@ -684,12 +751,40 @@ mod tests {
         assert!(res["result"]["capabilities"]["tools"].is_object());
         assert_eq!(res["result"]["capabilities"]["tools"]["listChanged"], true);
         assert!(res["result"]["capabilities"]["logging"].is_object());
+        // Capabilities we cannot emit must not be advertised as available.
+        assert_eq!(
+            res["result"]["capabilities"]["resources"]["subscribe"],
+            false
+        );
+        assert_eq!(
+            res["result"]["capabilities"]["resources"]["listChanged"],
+            false
+        );
+        assert_eq!(
+            res["result"]["capabilities"]["prompts"]["listChanged"],
+            false
+        );
+        // roots is a client capability and has no place in the server map.
+        assert!(res["result"]["capabilities"].get("roots").is_none());
     }
 
     #[test]
     fn test_notifications_initialized_returns_none() {
         let req = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
         assert!(handle_request(&req).is_none());
+    }
+
+    /// JSON-RPC 2.0 §4.1: the discriminator is the absence of `id`, not the method
+    /// name. A dispatchable method sent without an `id` is a Notification and must
+    /// not produce a reply, even though `ping` with an `id` does.
+    #[test]
+    fn test_id_less_request_gets_no_reply() {
+        assert!(handle_request(&json!({"jsonrpc": "2.0", "method": "ping"})).is_none());
+        assert!(
+            handle_request(&json!({"jsonrpc": "2.0", "method": "tools/list"})).is_none(),
+            "a dispatchable method sent without an id must not be answered"
+        );
+        assert!(handle_request(&json!({"jsonrpc": "2.0", "method": "ping", "id": 1})).is_some());
     }
 
     #[test]
@@ -726,6 +821,36 @@ mod tests {
         assert!(is_cancelled(&json!(42)));
         remove_cancelled(&json!(42));
         assert!(!is_cancelled(&json!(42)));
+    }
+
+    /// Characterisation test for #525: cross-session cancellation isolation.
+    /// Without session scoping, one client's cancelled request ID would leak
+    /// to another client using the same numeric ID (e.g., both starting from 1).
+    /// The fix uses thread-local session IDs to scope cancellation keys.
+    #[test]
+    fn test_cross_session_cancellation_isolation() {
+        use crate::audit;
+
+        // Session A: cancel request ID 4242
+        audit::set_session_context("session-A".to_string());
+        let req_a = json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 4242, "reason": "timeout"}});
+        assert!(handle_request(&req_a).is_none());
+        assert!(is_cancelled(&json!(4242)), "Session A should see its own cancellation");
+
+        // Session B: same request ID 4242 should NOT be cancelled
+        audit::set_session_context("session-B".to_string());
+        assert!(
+            !is_cancelled(&json!(4242)),
+            "Session B must not see Session A's cancellation"
+        );
+
+        // Clean up: remove Session A's cancellation
+        audit::set_session_context("session-A".to_string());
+        remove_cancelled(&json!(4242));
+        assert!(!is_cancelled(&json!(4242)));
+
+        // Reset session context
+        audit::clear_session_context();
     }
 
     #[test]
@@ -770,6 +895,16 @@ mod tests {
         });
         let res = handle_request(&req).unwrap();
         assert_eq!(res["result"]["isError"], true);
+        // A rate-limit refusal also answers with isError:true, so pin the branch:
+        // only the dispatch path prefixes the tool error with this wording.
+        assert!(
+            res["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or("")
+                .contains("Error running tool"),
+            "text was: {}",
+            res["result"]["content"][0]["text"]
+        );
     }
 
     #[test]
@@ -832,7 +967,7 @@ mod tests {
 
     #[test]
     fn test_parse_error_response_format() {
-        let bad_json = "not valid json{{{";
+        let (_merkle, bad_json) = (lock_merkle(), "not valid json{{{");
         let result: Result<Value, _> = serde_json::from_str(bad_json);
         assert!(result.is_err());
         let err_res = json!({
@@ -871,7 +1006,10 @@ mod tests {
         let req = json!({"jsonrpc": "2.0", "method": "resources/read", "id": 32, "params": {"uri": "invalid://nonexistent/resource"}});
         let res = handle_request(&req).unwrap();
         assert_eq!(res["result"]["isError"], true);
-        assert!(res["result"]["content"][0]["text"].as_str().unwrap().len() > 0);
+        assert!(!res["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -956,7 +1094,7 @@ mod tests {
         let res = handle_request(&req).unwrap();
         assert_eq!(res["result"]["isError"], false);
         let text = res["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(text.len() > 0);
+        assert!(!text.is_empty());
     }
 
     #[test]
@@ -994,6 +1132,7 @@ mod tests {
     #[test]
     fn test_nda_frame_ping() {
         use crate::protocol::nda_native;
+        let _merkle = lock_merkle();
         let frame = nda_native::build_nda_request(nda_native::METHOD_PING, &json!(1), &Value::Null)
             .unwrap();
         let result = handle_nda_frame(&frame).unwrap();
@@ -1005,6 +1144,7 @@ mod tests {
     #[test]
     fn test_nda_frame_initialize() {
         use crate::protocol::nda_native;
+        let _merkle = lock_merkle();
         let frame = nda_native::build_nda_request(
             nda_native::METHOD_INITIALIZE,
             &json!(2),
@@ -1020,6 +1160,7 @@ mod tests {
     #[test]
     fn test_nda_frame_initialized_notification() {
         use crate::protocol::nda_native;
+        let _merkle = lock_merkle();
         let frame =
             nda_native::build_nda_request(nda_native::NOTIF_INITIALIZED, &json!(3), &Value::Null)
                 .unwrap();
@@ -1031,6 +1172,7 @@ mod tests {
     #[test]
     fn test_nda_frame_tools_list() {
         use crate::protocol::nda_native;
+        let _merkle = lock_merkle();
         let frame =
             nda_native::build_nda_request(nda_native::METHOD_TOOLS_LIST, &json!(4), &Value::Null)
                 .unwrap();
@@ -1043,6 +1185,7 @@ mod tests {
     #[test]
     fn test_nda_frame_tools_call() {
         use crate::protocol::nda_native;
+        let _merkle = lock_merkle();
         let frame = nda_native::build_nda_request(
             nda_native::METHOD_TOOLS_CALL,
             &json!(5),
@@ -1058,6 +1201,7 @@ mod tests {
     #[test]
     fn test_nda_frame_tools_call_error_path() {
         use crate::protocol::nda_native;
+        let _merkle = lock_merkle();
         let frame = nda_native::build_nda_request(
             nda_native::METHOD_TOOLS_CALL,
             &json!(6),
@@ -1077,6 +1221,7 @@ mod tests {
     #[test]
     fn test_nda_frame_fallback_to_json_rpc() {
         use crate::protocol::nda_native;
+        let _merkle = lock_merkle();
         let frame =
             nda_native::build_nda_request(nda_native::METHOD_HEALTH_CHECK, &json!(7), &Value::Null)
                 .unwrap();
@@ -1090,11 +1235,11 @@ mod tests {
     fn test_nda_frame_parse_error() {
         // Garbage input should return an error frame, not panic
         let garbage = vec![0u8; 10];
-        let result = handle_nda_frame(&garbage);
+        let (_merkle, result) = (lock_merkle(), handle_nda_frame(&garbage));
         // dispatch_nda_request returns Ok with error frame for parse failures
         assert!(result.is_ok());
         let frame = result.unwrap();
-        assert!(frame.len() > 0);
+        assert!(!frame.is_empty());
     }
 
     // ── add_cancelled eviction test ─────────────────────────────────────
@@ -1145,21 +1290,69 @@ mod tests {
         assert!(text.contains("Error running tool"));
     }
 
-    // ── tools/list pagination with valid cursor ─────────────────────────
+    /// Every arm named by one fixture. The two end-to-end classification tests
+    /// above cannot be exclusive: their text comes from this OS's error strings,
+    /// which differ across the CI platforms. These fixtures are the substrings our
+    /// own code writes, so the mapping is the same on every host.
+    #[test]
+    fn test_classify_tool_error_names_every_arm() {
+        for (msg, expected) in [
+            (
+                "Failed to register WASM tool 'x': Compilation failed: TinyGo not found",
+                "TOOL_BUILD_FAILED",
+            ),
+            (
+                "Failed to register WASM tool 'x': syntax error",
+                "TOOL_BUILD_FAILED",
+            ),
+            ("No such file or directory (os error 2)", "NOT_FOUND"),
+            ("Permission denied (os error 13)", "PERMISSION_DENIED"),
+            ("parameter 'path' is required", "INVALID_ARGUMENTS"),
+            ("operation timed out after 30s", "TIMEOUT"),
+            ("connection refused by peer", "NETWORK_ERROR"),
+            (
+                "Lua tool error: attempt to index a nil value",
+                "EXECUTION_ERROR",
+            ),
+        ] {
+            let (kind, hint) = classify_tool_error(msg);
+            assert_eq!(kind, expected, "{msg}");
+            assert!(!hint.is_empty(), "{msg}");
+        }
+    }
 
+    /// The regression this classifier fixes: a missing compiler reports its own
+    /// name with "not found" in it, which the path arm used to claim, handing the
+    /// client a path-checking hint for a toolchain problem.
+    #[test]
+    fn test_classify_tool_error_build_beats_not_found() {
+        for msg in [
+            "Compilation failed: TinyGo not found. Install from https://tinygo.org/getting-started/install/",
+            "Failed to register WASM tool 'analyze_logs_go': Compilation failed: TinyGo not found",
+        ] {
+            assert_eq!(classify_tool_error(msg).0, "TOOL_BUILD_FAILED", "{msg}");
+        }
+        // The arm must not swallow a genuine path miss that merely mentions a build.
+        assert_eq!(
+            classify_tool_error("file not found: /a/b.txt").0,
+            "NOT_FOUND"
+        );
+    }
+
+    // ── tools/list pagination with valid cursor ─────────────────────────
     #[test]
     fn test_tools_list_pagination_with_cursor() {
         let req =
             json!({"jsonrpc": "2.0", "method": "tools/list", "id": 200, "params": {"cursor": "0"}});
         let res = handle_request(&req).unwrap();
-        assert!(res["result"]["tools"].as_array().unwrap().len() > 0);
+        assert!(!res["result"]["tools"].as_array().unwrap().is_empty());
     }
 
     #[test]
     fn test_tools_list_pagination_invalid_cursor() {
         let req = json!({"jsonrpc": "2.0", "method": "tools/list", "id": 201, "params": {"cursor": "not_a_number"}});
         let res = handle_request(&req).unwrap();
-        assert!(res["result"]["tools"].as_array().unwrap().len() > 0);
+        assert!(!res["result"]["tools"].as_array().unwrap().is_empty());
     }
 
     // ── notifications/cancelled with null requestId ─────────────────────
@@ -1319,6 +1512,7 @@ mod tests {
     #[test]
     fn test_nda_frame_tools_call_empty_args() {
         use crate::protocol::nda_native;
+        let _merkle = lock_merkle();
         let frame = nda_native::build_nda_request(
             nda_native::METHOD_TOOLS_CALL,
             &json!(50),
@@ -1336,6 +1530,7 @@ mod tests {
     #[test]
     fn test_nda_frame_fallback_sampling_error() {
         use crate::protocol::nda_native;
+        let _merkle = lock_merkle();
         let frame = nda_native::build_nda_request(
             nda_native::METHOD_HEALTH_CHECK,
             &json!(51),
@@ -1379,6 +1574,7 @@ mod tests {
 
     #[test]
     fn test_tools_list_pagination_next_cursor_when_exceeding_page_size() {
+        let _registries = crate::registry::tests::lock_registries();
         use crate::registry::{
             bump_registry_generation, get_macro_registry, register_tool_lazy, Tool,
         };
@@ -1407,7 +1603,10 @@ mod tests {
         let req2 = json!({"jsonrpc": "2.0", "method": "tools/list", "id": 301, "params": {"cursor": cursor}});
         let res2 = handle_request(&req2).unwrap();
         let tools2 = res2["result"]["tools"].as_array().unwrap();
-        assert!(tools2.len() > 0, "Second page should have remaining tools");
+        assert!(
+            !tools2.is_empty(),
+            "Second page should have remaining tools"
+        );
         assert!(
             res2["result"]["nextCursor"].is_null(),
             "Last page should have no nextCursor"
@@ -1456,4 +1655,83 @@ mod tests {
         injector.join().unwrap();
         remove_cancelled(&json!(77777));
     }
+}
+
+/// Substrings that mean "the thing named by this error does not exist". The classifier
+/// works on error *text*, and ENOENT reads differently per platform: Linux reports
+/// "No such file or directory (os error 2)" while Windows reports "The system cannot
+/// find the file specified." / "...the path specified." (os error 2 / 3). Before the
+/// third marker a missing file on Windows fell through to EXECUTION_ERROR with the
+/// generic hint, so the same condition classified differently by host.
+const NOT_FOUND_MARKERS: [&str; 3] = ["not found", "No such file", "cannot find"];
+
+#[cfg(test)]
+mod not_found_marker_tests {
+    use super::{classify_tool_error, NOT_FOUND_MARKERS};
+
+    /// Measured on 2026-10-11 by replaying `docs/API.md`'s own examples against a live
+    /// HTTP server: `file_read` on an absolute path that does not exist returned
+    /// `Error type: EXECUTION_ERROR` on this host, while the same condition on Linux
+    /// returned NOT_FOUND. Both Windows spellings now map to NOT_FOUND, and the build
+    /// arm must still win over them.
+    #[test]
+    fn windows_enoent_spellings_classify_as_not_found() {
+        for msg in [
+            "Error running tool 'file_read': The system cannot find the file specified. (os error 2)",
+            "Error running tool 'file_read': The system cannot find the path specified. (os error 3)",
+        ] {
+            assert_eq!(classify_tool_error(msg).0, "NOT_FOUND", "{msg}");
+        }
+        assert_eq!(
+            classify_tool_error("No such file or directory (os error 2)").0,
+            "NOT_FOUND"
+        );
+        assert_eq!(NOT_FOUND_MARKERS.len(), 3);
+    }
+
+    #[test]
+    fn build_failure_text_still_beats_the_markers() {
+        assert_eq!(
+            classify_tool_error(
+                "Failed to register WASM tool 'x': Compilation failed: TinyGo not found"
+            )
+            .0,
+            "TOOL_BUILD_FAILED"
+        );
+    }
+}
+
+/// Render a failed tool call as client-facing text: sanitise, classify, then append the
+/// `Error type:` / `Hint:` lines. One function on purpose -- the stdio/HTTP JSON-RPC
+/// dispatcher, the shared-memory loop and the NDA binary dispatchers all call it, because
+/// the transports are documented as answering a call identically and a payload that differs
+/// only in whether a client is told *why* something failed is a defect, not a transport trait.
+pub(crate) fn tool_error_text(name: &str, err: &str) -> String {
+    let sanitized = sandbox::sanitize_error(err);
+    let (error_type, hint) = classify_tool_error(&sanitized);
+    format!(
+        "Error running tool '{}': {}\n\nError type: {}\nHint: {}",
+        name, sanitized, error_type, hint
+    )
+}
+
+#[cfg(test)]
+mod overflow_pagination_tests {
+    use super::*;
+
+    #[test]
+    fn dispatcher_resources_list_survives_an_overflow_band_cursor() {
+        let req = json!({
+            "jsonrpc": "2.0", "method": "resources/list", "id": 901,
+            "params": {"cursor": "18446744073709551615"}
+        });
+        let res = handle_request(&req).expect("resources/list is handled");
+        assert!(res["result"]["resources"].as_array().unwrap().is_empty());
+        assert!(res["result"].get("nextCursor").is_none());
+    }
+}
+
+#[cfg(test)]
+fn lock_merkle() -> std::sync::MutexGuard<'static, ()> {
+    crate::protocol::nda_native::tests::lock_merkle()
 }
