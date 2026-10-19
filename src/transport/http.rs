@@ -1271,17 +1271,7 @@ async fn handle_websocket(socket: axum::extract::ws::WebSocket, state: Arc<Serve
         while let Some(msg) = StreamExt::next(&mut receiver).await {
             match msg {
                 Ok(Message::Text(text)) => {
-                    if text.len() > 1_048_576 {
-                        let err_res = serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "error": { "code": -32700, "message": "WebSocket message too large" },
-                            "id": null
-                        });
-                        let _ = sender.send(Message::Text(err_res.to_string())).await;
-                        continue;
-                    }
-
-                    // Refill tokens based on elapsed time
+                    // Refill tokens based on elapsed time (before size check so oversized frames are charged)
                     let now = std::time::Instant::now();
                     let elapsed_ms = now.duration_since(last_refill).as_millis() as u64;
                     if elapsed_ms >= 20 {
@@ -1293,22 +1283,43 @@ async fn handle_websocket(socket: axum::extract::ws::WebSocket, state: Arc<Serve
                         }
                     }
 
-                    // Check rate limit
+                    // Check rate limit before processing
                     if tokens == 0 {
                         let err_res = serde_json::json!({
                             "jsonrpc": "2.0",
-                            "error": { "code": -32008, "message": "Rate limit exceeded" },
+                            "error": { "code": -32000, "message": "Rate limit exceeded" },
                             "id": null
                         });
                         let _ = sender.send(Message::Text(err_res.to_string())).await;
-                        // The request is dropped, not deferred, and the frame's `id: null` is uncorrelatable.
                         tracing::warn!(session = %ws_session_id, "WebSocket rate limit exceeded");
                         continue;
                     }
                     tokens -= 1;
 
+                    // Check size after token charge so oversized frames consume a token
+                    if text.len() > 1_048_576 {
+                        let err_res = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "error": { "code": -32700, "message": "WebSocket message too large" },
+                            "id": null
+                        });
+                        let _ = sender.send(Message::Text(err_res.to_string())).await;
+                        continue;
+                    }
+
                     match serde_json::from_str::<Value>(&text) {
                         Ok(request) => {
+                            // Batch arrays are not supported on WebSocket; redirect to /v1/mcp/batch
+                            if request.is_array() {
+                                let err_res = serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "error": { "code": -32600, "message": "Invalid Request: batch requests must be posted to /v1/mcp/batch" },
+                                    "id": null
+                                });
+                                let _ = sender.send(Message::Text(err_res.to_string())).await;
+                                continue;
+                            }
+
                             // Process the request
                             let start_time = std::time::Instant::now();
                             let response = json_rpc::handle_request(&request);
@@ -1349,6 +1360,15 @@ async fn handle_websocket(socket: axum::extract::ws::WebSocket, state: Arc<Serve
                             }
                         }
                     }
+                }
+                Ok(Message::Binary(_)) => {
+                    // Binary frames are not supported; respond with parse error
+                    let err_res = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "error": { "code": -32700, "message": "Binary frames not supported; send JSON-RPC as text" },
+                        "id": null
+                    });
+                    let _ = sender.send(Message::Text(err_res.to_string())).await;
                 }
                 Ok(Message::Close(_)) => break,
                 Err(_) => break,
