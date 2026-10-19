@@ -411,21 +411,21 @@ fn extract_client_ip(req: &Request<impl hyper::body::Body>, peer_addr: SocketAdd
     if !is_trusted_proxy(peer_addr) {
         return peer_addr.ip();
     }
-
-    // Parse X-Forwarded-For and use the rightmost untrusted IP
-    req.headers()
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| {
-            // Split by comma and iterate in reverse to find the first untrusted IP
-            s.split(',')
-                .rev()
-                .map(|ip| ip.trim())
-                .find_map(|ip| ip.parse::<SocketAddr>().ok())
-                .filter(|addr| !is_trusted_proxy(*addr))
-        })
-        .map(|addr| addr.ip())
-        .unwrap_or(peer_addr.ip())
+    // Chain entries may be bare or carry a port; scan right-to-left.
+    let headers = req.headers();
+    let Some(value) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) else {
+        return peer_addr.ip();
+    };
+    for entry in value.split(',').map(str::trim).rev() {
+        let parsed = entry
+            .parse::<IpAddr>()
+            .ok()
+            .or_else(|| entry.parse::<SocketAddr>().ok().map(|addr| addr.ip()));
+        if let Some(ip) = parsed.filter(|ip| !is_trusted_proxy(SocketAddr::new(*ip, 0))) {
+            return ip;
+        }
+    }
+    peer_addr.ip()
 }
 
 /// Check if an address is a trusted proxy (localhost or private network).
@@ -1012,9 +1012,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 // ---------------------------------------------------------------------------
-// Entry point — wasm32: raw WCGI via stdin/stdout (RFC 3875)
-// The Wasmer Edge WCGI runner maps stdin/stdout to HTTP request/response.
-// CGI env vars are provided as WASI environment variables.
+// Entry point — plain WASI wasm32 only: CGI via stdin/stdout (RFC 3875).
+// This is the fallback for wasm32 targets without socket support. Wasmer Edge
+// does not use it: the deployed WASIX build (`target_vendor = "wasmer"`) runs
+// the socket HTTP server above, after the `wasm32-wasip1` CGI artifact failed
+// in its deployed configuration.
 // ---------------------------------------------------------------------------
 
 #[cfg(all(target_arch = "wasm32", not(target_vendor = "wasmer")))]
@@ -1034,24 +1036,30 @@ fn handler(request: cgi::Request) -> cgi::Response {
             let json = r#"{"status":"healthy","version":"3.16.0"}"#;
             cgi::binary_response(StatusCode::OK, "application/json", json.as_bytes().to_vec())
         }
-        "POST" => {
-            match velocity_mcp_core::parse_request(body) {
-                Ok(request) => {
-                    let executor = tools::EdgeToolExecutor::new();
-                    let response =
-                        velocity_mcp_core::handle_mcp_request_with_executor(&request, &executor);
-                    let response_bytes = velocity_mcp_core::serialize_response(&response);
-                    cgi::binary_response(StatusCode::OK, "application/json", response_bytes)
-                }
-                Err(_) => {
-                    let json = r#"{"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"},"id":null}"#;
-                    cgi::binary_response(StatusCode::BAD_REQUEST, "application/json", json.as_bytes().to_vec())
-                }
+        "POST" => match velocity_mcp_core::parse_request(body) {
+            Ok(request) => {
+                let executor = tools::EdgeToolExecutor::new();
+                let response =
+                    velocity_mcp_core::handle_mcp_request_with_executor(&request, &executor);
+                let response_bytes = velocity_mcp_core::serialize_response(&response);
+                cgi::binary_response(StatusCode::OK, "application/json", response_bytes)
             }
-        }
+            Err(_) => {
+                let json = r#"{"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"},"id":null}"#;
+                cgi::binary_response(
+                    StatusCode::BAD_REQUEST,
+                    "application/json",
+                    json.as_bytes().to_vec(),
+                )
+            }
+        },
         _ => {
             let json = r#"{"error":"Method Not Allowed"}"#;
-            cgi::binary_response(StatusCode::METHOD_NOT_ALLOWED, "application/json", json.as_bytes().to_vec())
+            cgi::binary_response(
+                StatusCode::METHOD_NOT_ALLOWED,
+                "application/json",
+                json.as_bytes().to_vec(),
+            )
         }
     }
 }
@@ -1312,7 +1320,10 @@ mod tests {
         let content = parsed["result"]["content"].as_array().unwrap();
         assert!(!content.is_empty());
         let text = content[0]["text"].as_str().unwrap();
-        assert!(text.contains("hello edge"), "echo tool should return input message");
+        assert!(
+            text.contains("hello edge"),
+            "echo tool should return input message"
+        );
     }
 
     #[test]
@@ -1339,7 +1350,10 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&response_str).unwrap();
         let content = parsed["result"]["content"].as_array().unwrap();
         let text = content[0]["text"].as_str().unwrap();
-        assert!(text.contains("14"), "math_eval should compute 2 + 3 * 4 = 14");
+        assert!(
+            text.contains("14"),
+            "math_eval should compute 2 + 3 * 4 = 14"
+        );
     }
 
     #[test]
@@ -1359,9 +1373,15 @@ mod tests {
         let response_str = String::from_utf8(response_bytes).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&response_str).unwrap();
         let result = parsed["result"].as_object().unwrap();
-        assert_eq!(result["isError"], true, "Unknown tool should return isError=true");
+        assert_eq!(
+            result["isError"], true,
+            "Unknown tool should return isError=true"
+        );
         let text = result["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("Unknown tool"), "Error message should mention unknown tool");
+        assert!(
+            text.contains("Unknown tool"),
+            "Error message should mention unknown tool"
+        );
     }
 
     // -- Pre-serialized constants --
@@ -1383,5 +1403,168 @@ mod tests {
                 String::from_utf8_lossy(body)
             );
         }
+    }
+
+    // -- Client-IP extraction: the value every rate-limit bucket is keyed on --
+
+    fn request_with_xff(value: &str) -> Request<Full<Bytes>> {
+        Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header("x-forwarded-for", value)
+            .body(Full::new(Bytes::new()))
+            .unwrap()
+    }
+
+    fn peer(addr: &str) -> SocketAddr {
+        addr.parse().unwrap()
+    }
+
+    fn ip(addr: &str) -> IpAddr {
+        addr.parse().unwrap()
+    }
+
+    #[test]
+    fn client_ip_ignores_forwarded_header_from_an_untrusted_peer() {
+        let req = request_with_xff("8.8.8.8");
+        assert_eq!(
+            extract_client_ip(&req, peer("203.0.113.9:5555")),
+            ip("203.0.113.9")
+        );
+    }
+
+    #[test]
+    fn client_ip_uses_a_bare_forwarded_address_from_a_trusted_peer() {
+        let req = request_with_xff("203.0.113.5");
+        assert_eq!(
+            extract_client_ip(&req, peer("127.0.0.1:5555")),
+            ip("203.0.113.5")
+        );
+    }
+
+    #[test]
+    fn client_ip_skips_the_trusted_rightmost_entries_of_a_forwarded_chain() {
+        let req = request_with_xff("198.51.100.7, 203.0.113.5, 10.0.0.1");
+        assert_eq!(
+            extract_client_ip(&req, peer("10.0.0.2:5555")),
+            ip("203.0.113.5")
+        );
+    }
+
+    #[test]
+    fn client_ip_accepts_the_address_and_port_forwarded_form() {
+        let req = request_with_xff("203.0.113.5:7777");
+        assert_eq!(
+            extract_client_ip(&req, peer("127.0.0.1:5555")),
+            ip("203.0.113.5")
+        );
+    }
+
+    #[test]
+    fn client_ip_falls_back_to_the_peer_when_no_forwarded_address_parses() {
+        let req = request_with_xff("unknown, 999.1.1.1");
+        assert_eq!(
+            extract_client_ip(&req, peer("127.0.0.1:5555")),
+            ip("127.0.0.1")
+        );
+        let bare = request_with_xff("");
+        assert_eq!(
+            extract_client_ip(&bare, peer("127.0.0.1:5555")),
+            ip("127.0.0.1")
+        );
+    }
+
+    // -- Configuration read the way production reads it --
+
+    #[test]
+    fn config_from_env_treats_a_blank_api_key_as_auth_disabled() {
+        // The env var is process-global, so all arms run in one test; this binary has no other
+        // caller of from_env, so a failing assert here cannot misdirect a sibling verdict.
+        let original = std::env::var_os("VELOCITY_API_KEY");
+
+        std::env::remove_var("VELOCITY_API_KEY");
+        assert!(
+            !ServerConfig::from_env().auth_enabled(),
+            "an unset key must disable auth"
+        );
+
+        std::env::set_var("VELOCITY_API_KEY", "");
+        assert!(
+            !ServerConfig::from_env().auth_enabled(),
+            "an empty key must disable auth rather than accept an empty token"
+        );
+
+        std::env::set_var("VELOCITY_API_KEY", "   ");
+        let whitespace = ServerConfig::from_env();
+        assert!(
+            !whitespace.auth_enabled(),
+            "a whitespace-only key must disable auth, got {:?}",
+            whitespace.api_key
+        );
+
+        std::env::set_var("VELOCITY_API_KEY", "  secret-key  ");
+        let configured = ServerConfig::from_env();
+        assert!(configured.auth_enabled());
+        assert_eq!(configured.api_key.as_deref(), Some("secret-key"));
+
+        match original {
+            Some(value) => std::env::set_var("VELOCITY_API_KEY", value),
+            None => std::env::remove_var("VELOCITY_API_KEY"),
+        }
+    }
+
+    // -- CORS header application --
+
+    fn response_with_cors(
+        origin: Option<&str>,
+        allowed: Option<Vec<String>>,
+    ) -> Response<Full<Bytes>> {
+        let config = ServerConfig {
+            max_body_size: DEFAULT_MAX_BODY_SIZE,
+            allowed_origins: allowed,
+            api_key: None,
+            rate_limit_per_minute: DEFAULT_RATE_LIMIT,
+        };
+        with_cors(
+            build_response(StatusCode::OK, HEALTH_RESPONSE),
+            origin,
+            &config,
+        )
+    }
+
+    #[test]
+    fn cors_allows_the_origin_and_marks_the_response_vary() {
+        let resp = response_with_cors(
+            Some("https://example.com"),
+            Some(vec!["https://example.com".into()]),
+        );
+        let headers = resp.headers();
+        assert_eq!(
+            headers
+                .get("access-control-allow-origin")
+                .map(|v| v.as_bytes()),
+            Some(b"https://example.com".as_ref())
+        );
+        assert_eq!(
+            headers.get("vary").map(|v| v.as_bytes()),
+            Some(b"origin".as_ref())
+        );
+    }
+
+    #[test]
+    fn cors_adds_no_headers_when_origins_are_not_configured() {
+        let resp = response_with_cors(Some("https://example.com"), None);
+        assert!(resp.headers().get("access-control-allow-origin").is_none());
+        assert!(resp.headers().get("vary").is_none());
+    }
+
+    #[test]
+    fn cors_refuses_an_origin_outside_the_allow_list() {
+        let resp = response_with_cors(
+            Some("https://evil.example"),
+            Some(vec!["https://example.com".into()]),
+        );
+        assert!(resp.headers().get("access-control-allow-origin").is_none());
+        assert!(resp.headers().get("vary").is_none());
     }
 }

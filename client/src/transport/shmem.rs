@@ -40,6 +40,13 @@ extern "system" {
     fn WaitForSingleObject(hHandle: *mut std::ffi::c_void, dwMilliseconds: u32) -> u32;
     fn CloseHandle(hObject: *mut std::ffi::c_void) -> i32;
     fn GetLastError() -> u32;
+}
+
+// timeBeginPeriod/timeEndPeriod are in winmm.lib, which the MSVC linker does not
+// pull in by default; without this attribute the crate fails to link on Windows.
+#[cfg(target_os = "windows")]
+#[link(name = "winmm")]
+extern "system" {
     fn timeBeginPeriod(uPeriod: u32) -> u32;
     fn timeEndPeriod(uPeriod: u32) -> u32;
 }

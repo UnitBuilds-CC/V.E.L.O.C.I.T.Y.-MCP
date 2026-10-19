@@ -418,12 +418,10 @@ static int tlv_decode_value(TlvParser *p, lua_State *ls, int depth) {
         }
 
         case TLV_TAG_INTEGER: {
-            uint32_t len;
-            if (tlv_read_u32_be(p, &len) != 0) { lua_pushnil(ls); return -1; }
-            if (len != 8) { lua_pushnil(ls); return -1; }  /* i64 = 8 bytes */
+            /* Wire form is tag + 8 raw big-endian bytes; there is no length
+             * prefix on numeric tags. */
             const uint8_t *bytes;
             if (tlv_read_bytes(p, 8, &bytes) != 0) { lua_pushnil(ls); return -1; }
-            /* Big-endian i64 */
             int64_t val = 0;
             for (int i = 0; i < 8; i++) {
                 val = (val << 8) | bytes[i];
@@ -433,16 +431,14 @@ static int tlv_decode_value(TlvParser *p, lua_State *ls, int depth) {
         }
 
         case TLV_TAG_FLOAT: {
-            uint32_t len;
-            if (tlv_read_u32_be(p, &len) != 0) { lua_pushnil(ls); return -1; }
-            if (len != 8) { lua_pushnil(ls); return -1; }  /* f64 = 8 bytes */
             const uint8_t *bytes;
             if (tlv_read_bytes(p, 8, &bytes) != 0) { lua_pushnil(ls); return -1; }
-            /* Big-endian f64 - simple reinterpretation */
+            uint64_t bits = 0;
+            for (int i = 0; i < 8; i++) {
+                bits = (bits << 8) | bytes[i];
+            }
             double val;
-            memcpy(&val, bytes, 8);
-            /* Note: This assumes host is little-endian. For proper BE decode,
-               we'd need byte swap. Keeping simple for now. */
+            memcpy(&val, &bits, 8);
             lua_pushnumber(ls, val);
             return 0;
         }
@@ -624,6 +620,12 @@ int lua_wasi_call_tool(const char *args_ptr, size_t args_n,
                        const char *name_ptr, size_t name_len) {
     if (L == NULL) return -1;
 
+    /* Drop any args left by a previous binary call: get_tool_args() prefers the
+     * pre-decoded TLV table, so a stale one would be handed to this JSON call
+     * instead of args_buf. Each entry point declares its own args source. */
+    lua_pushnil(L);
+    lua_setfield(L, LUA_REGISTRYINDEX, "__tool_args_binary");
+
     /* Copy args directly from WASM memory into our parse buffer */
     if (args_n >= ARGS_BUF_SIZE) args_n = ARGS_BUF_SIZE - 1;
     memcpy(args_buf, args_ptr, args_n);
@@ -708,6 +710,11 @@ int lua_wasi_call_tool_binary(const char *tlv_ptr, size_t tlv_len,
         lua_pop(L, 2);
         return -1;
     }
+
+    /* The wrapper has consumed the pre-decoded args; retire them so they cannot
+     * become the next call's arguments. */
+    lua_pushnil(L);
+    lua_setfield(L, LUA_REGISTRYINDEX, "__tool_args_binary");
 
     lua_settop(L, 0);
     return 0;

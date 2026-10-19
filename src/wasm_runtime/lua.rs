@@ -422,7 +422,10 @@ mod tests {
                     MeteringPoints::Remaining(n) => n,
                     MeteringPoints::Exhausted => 0,
                 };
-                eprintln!("  string concat (100 items): consumed {} instructions", before - after);
+                eprintln!(
+                    "  string concat (100 items): consumed {} instructions",
+                    before - after
+                );
             }
             rt.destroy().unwrap();
         }
@@ -432,8 +435,11 @@ mod tests {
         {
             use wasmer_middlewares::metering::{get_remaining_points, MeteringPoints};
             let mut rt = LuaRuntime::cold_start(&wasm).expect("cold start failed");
-            rt.register_tool("greet", r#"function greet(args) print("hello " .. args.name) end"#)
-                .expect("register failed");
+            rt.register_tool(
+                "greet",
+                r#"function greet(args) print("hello " .. args.name) end"#,
+            )
+            .expect("register failed");
 
             for _ in 0..5 {
                 rt.reset_instruction_budget();
@@ -485,7 +491,11 @@ mod tests {
                 rt.reset_instruction_budget();
                 let rc = rt.exec_and_get_output(source);
                 if i < 5 || i % 1000 == 0 {
-                    eprintln!("  iter {}: {:?}", i, rc.as_ref().map(|s| s.trim()).map_err(|e| e.to_string()));
+                    eprintln!(
+                        "  iter {}: {:?}",
+                        i,
+                        rc.as_ref().map(|s| s.trim()).map_err(|e| e.to_string())
+                    );
                 }
                 if rc.is_err() {
                     eprintln!("  CRASHED at iteration {}: {:?}", i, rc.err());
@@ -510,7 +520,11 @@ mod tests {
                 rt.reset_instruction_budget();
                 let rc = rt.exec_and_get_output(source);
                 if i < 5 || i % 1000 == 0 {
-                    eprintln!("  iter {}: {:?}", i, rc.as_ref().map(|s| s.trim()).map_err(|e| e.to_string()));
+                    eprintln!(
+                        "  iter {}: {:?}",
+                        i,
+                        rc.as_ref().map(|s| s.trim()).map_err(|e| e.to_string())
+                    );
                 }
                 if rc.is_err() {
                     eprintln!("  CRASHED at iteration {}", i);

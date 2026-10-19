@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>V.E.L.O.C.I.T.Y. MCP — Live Console</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #faf6ee; --card: #ffffff; --ink: #1e293b; --muted: #64748b;
+    --teal: #0f766e; --mint: #d9f2e6; --sapphire: #2451b3; --lavender: #ede9fe;
+    --line: #e7e0d2; --warn: #b45309; --bad: #b91c1c;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.45 "Segoe UI", system-ui, sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+           padding: 14px 20px; background: var(--card); border-bottom: 1px solid var(--line); }
+  h1 { font-size: 17px; margin: 0 14px 0 0; letter-spacing: .4px; color: var(--teal); }
+  h1 small { color: var(--muted); font-weight: 400; }
+  input, select, button, textarea {
+    font: inherit; color: var(--ink); background: #fff;
+    border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px;
+  }
+  #serverUrl { width: 250px; } #apiKey { width: 170px; }
+  button { cursor: pointer; background: var(--mint); border-color: #bfe3cf; font-weight: 600; }
+  button:hover { filter: brightness(0.97); }
+  button.primary { background: var(--teal); border-color: var(--teal); color: #fff; }
+  .pill { padding: 4px 12px; border-radius: 999px; font-weight: 600; font-size: 12.5px;
+          background: var(--lavender); color: var(--muted); }
+  .pill.ok { background: var(--mint); color: var(--teal); }
+  .pill.bad { background: #fee2e2; color: var(--bad); }
+  main { display: grid; gap: 16px; padding: 18px 20px 30px;
+         grid-template-columns: repeat(12, 1fr); max-width: 1280px; margin: 0 auto; }
+  section { background: var(--card); border: 1px solid var(--line);
+            border-radius: 14px; padding: 14px 16px; grid-column: span 12; }
+  section h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 1px;
+               margin: 0 0 10px; color: var(--muted); }
+  #stats { grid-column: span 12; display: grid; gap: 12px;
+           grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); }
+  .stat { background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+          padding: 12px 14px; }
+  .stat b { display: block; font-size: 22px; color: var(--sapphire); font-variant-numeric: tabular-nums; }
+  .stat span { color: var(--muted); font-size: 12.5px; }
+  #chartWrap { grid-column: span 12; }
+  canvas { width: 100%; height: 90px; display: block; }
+  #tools { grid-column: span 7; min-height: 220px; }
+  #callPanel { grid-column: span 5; }
+  #events { grid-column: span 12; }
+  #toolList { display: flex; flex-wrap: wrap; gap: 8px; }
+  .tool { padding: 7px 12px; border-radius: 10px; background: var(--lavender);
+          border: 1px solid #ddd6f3; cursor: pointer; font-size: 13px; }
+  .tool.sel { background: var(--sapphire); color: #fff; border-color: var(--sapphire); }
+  textarea { width: 100%; min-height: 84px; font-family: Consolas, monospace; font-size: 13px; }
+  pre { background: #f6f3ea; border: 1px solid var(--line); border-radius: 10px;
+        padding: 10px 12px; font-size: 12.5px; max-height: 260px; overflow: auto;
+        white-space: pre-wrap; word-break: break-word; margin: 10px 0 0; }
+  #log { font-family: Consolas, monospace; font-size: 12.5px; max-height: 190px;
+         overflow: auto; background: #f6f3ea; border: 1px solid var(--line);
+         border-radius: 10px; padding: 8px 12px; }
+  #log div { border-bottom: 1px dashed #eee7d8; padding: 3px 0; }
+  .rtt { color: var(--teal); font-weight: 700; font-variant-numeric: tabular-nums; }
+  .bench { margin-top: 8px; color: var(--muted); }
+  .bench b { color: var(--teal); font-size: 17px; }
+  .note { color: var(--muted); font-size: 12.5px; margin: 6px 0 0; }
+  .bad-txt { color: var(--bad); }
+  .cmp-row { display: flex; justify-content: space-between; gap: 10px;
+             padding: 7px 12px; border-radius: 10px; margin-top: 8px;
+             font-size: 13px; border: 1px solid var(--line); }
+  #cmpJson { background: var(--lavender); }
+  #cmpNda  { background: var(--mint); }
+  .cmp-row b { color: var(--sapphire); font-variant-numeric: tabular-nums; }
+  .cmp-verdict { margin-top: 8px; font-size: 13px; color: var(--teal); font-weight: 600; }
+</style>
+</head>
+<body>
+<header>
+  <h1>V.E.L.O.C.I.T.Y. <small>MCP live console</small></h1>
+  <input id="serverUrl" value="http://127.0.0.1:3900" spellcheck="false">
+  <input id="apiKey" type="password" placeholder="API key (optional)" spellcheck="false">
+  <button class="primary" id="connectBtn">Connect</button>
+  <span class="pill" id="connPill">disconnected</span>
+  <span class="pill" id="versionPill">–</span>
+</header>
+
+<main>
+  <div class="stat"><b id="sTotal">–</b><span>total requests</span></div>
+  <div class="stat"><b id="sRate">–</b><span>req / second</span></div>
+  <div class="stat"><b id="sLat">–</b><span>avg latency (ms)</span></div>
+  <div class="stat"><b id="sUptime">–</b><span>uptime</span></div>
+  <div class="stat"><b id="sSess">–</b><span>active sessions</span></div>
+  <div class="stat"><b id="sSec">–</b><span>auth fails / rate hits</span></div>
+
+  <section id="chartWrap">
+    <h2>Requests per second (Δ between polls of /v1/performance)</h2>
+    <canvas id="chart" width="1240" height="90"></canvas>
+  </section>
+
+  <section id="tools">
+    <h2>Tools (tools/list via /v1/mcp) <span id="toolCount"></span></h2>
+    <div id="toolList">— connect to load —</div>
+    <div class="bench">
+      <button id="burstBtn">Run 50-call ping burst</button>
+      <span id="burstOut">measures client→HTTP→dispatch→client round-trips</span>
+    </div>
+  </section>
+
+  <section id="callPanel">
+    <h2>Call <span id="selTool">no tool selected</span></h2>
+    <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+      <label style="color:var(--muted); font-size:13px;">Transport</label>
+      <select id="transport">
+        <option value="json">JSON-RPC (/v1/mcp)</option>
+        <option value="nda">NDA binary (/v1/mcp/nda)</option>
+        <option value="both" selected>Both — side-by-side</option>
+      </select>
+    </div>
+    <textarea id="args" spellcheck="false">{"text": "hello velocity"}</textarea>
+    <div style="margin-top:8px; display:flex; gap:8px; align-items:center;">
+      <button class="primary" id="callBtn">Execute</button>
+      <span>last round-trip: <span class="rtt" id="lastRtt">–</span></span>
+    </div>
+    <div id="compare" style="display:none;">
+      <div class="cmp-row" id="cmpJson"></div>
+      <div class="cmp-row" id="cmpNda"></div>
+      <div class="cmp-verdict" id="cmpVerdict"></div>
+      <div class="note">Over localhost HTTP both encodings run at near-identical speed — the
+      NDA design pays off in the shared-memory transport (see docs/COMPARISON.md). This panel
+      proves wire-format correctness, byte compactness and in-browser SHA-256 integrity.</div>
+    </div>
+    <pre id="callResult">result appears here</pre>
+  </section>
+
+  <section id="events">
+    <h2>Live events (SSE /v1/sse) &amp; log</h2>
+    <div id="log"></div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let base = '', rpcId = 1, sse = null, pollTimer = null;
+// Tools the server reports as lacking a native NDA binary executor. Their NDA
+// frames are accepted, but the server decodes the TLV args into the JSON path,
+// so a JSON-vs-NDA comparison for them would measure the same execution twice.
+const noBinary = new Set();
+let capBinary = 0;
+const history = [], rtts = [];
+const SAMPLES = {
+  echo: '{"message": "hello velocity"}',
+  bench_echo: '{"size": 64}',
+  text_transform: '{"action": "upper", "input": "hello velocity"}',
+  js_calculator: '{"expression": "2**10 + 6*7"}',
+  js_string_transform: '{"action": "upper", "input": "hello velocity"}',
+  js_data_flatten: '{"data": [[1, 2], [3, [4]]]}',
+  lua_string_utils: '{"action": "upper", "input": "hello velocity"}',
+  lua_math_tools: '{"operation": "sqrt", "value": 144}',
+  go_text_stats: '{"text": "the quick brown fox jumps over the lazy dog"}',
+  analyze_logs: '{"log_lines": "INFO all good\\nERROR boom"}',
+  py_text_analyzer: '{"text": "the quick brown fox jumps over the lazy dog"}',
+  py_unit_converter: '{"value": 100, "from_unit": "km", "to_unit": "mi"}',
+  py_list_operations: '{"operation": "sum", "items": [1, 2, 3, 4]}',
+  rb_text_stats: '{"text": "hello velocity"}',
+  rust_text_stats: '{"text": "hello velocity"}',
+  ts_text_stats: '{"text": "hello velocity"}',
+  csharp_greet: '{"name": "Ada"}', java_greet: '{"name": "Ada"}',
+  julia_greet: '{"name": "Ada"}', perl_greet: '{"name": "Ada"}',
+  php_greet: '{"name": "Ada"}', r_greet: '{"name": "Ada"}',
+  analyze_logs_go: '{"log_lines": "INFO all good\\nERROR boom"}',
+  analyze_logs_js: '{"log_lines": "INFO all good\\nERROR boom"}',
+  analyze_logs_lua: '{"log_lines": "INFO all good\\nERROR boom"}'
+};
+
+// Parameter-name-aware sample values: a generic string in `path`/`command`/`url`
+// produces confusing tool errors (file_write rejected "hello velocity").
+const NAME_HINTS = [
+  [/^(file_?path|path|nda_?path|file)$/i, 'C:\\Users\\Public\\velocity_demo.txt'],
+  [/^(dir|directory|target_dir)$/i, 'C:\\Users\\Public'],
+  [/^command$/i, 'echo hello velocity'],
+  [/^url$/i, 'http://127.0.0.1:3900/health'],
+  [/^uri$/i, 'file:///C:/Users/Public/velocity_demo.txt'],
+  [/pattern$/i, '*.rs'],
+  [/^(source|origin)$/i, 'C:\\Users\\Public\\velocity_demo.txt'],
+  [/^(destination|target)$/i, 'C:\\Users\\Public\\velocity_demo_copy.txt'],
+  [/^(content|text|input|message|data)$/i, 'hello velocity'],
+];
+function prefillArgs(name, schema) {
+  if (SAMPLES[name]) return SAMPLES[name];
+  const props = (schema && schema.properties) || {};
+  const out = {};
+  for (const [k, v] of Object.entries(props)) {
+    const hint = NAME_HINTS.find(([re]) => re.test(k));
+    if (hint) { out[k] = hint[1]; continue; }
+    out[k] = v.type === 'number' || v.type === 'integer' ? 42
+           : v.type === 'boolean' ? true
+           : v.type === 'array' ? [1, 2, 3]
+           : v.enum && v.enum.length ? v.enum[0]
+           : 'hello velocity';
+  }
+  return JSON.stringify(Object.keys(out).length ? out : { text: 'hello velocity' }, null, 2);
+}
+
+function headers() {
+  const h = { 'Content-Type': 'application/json' };
+  const k = $('apiKey').value.trim();
+  if (k) h['Authorization'] = 'Bearer ' + k;
+  return h;
+}
+
+function log(msg, bad) {
+  const d = document.createElement('div');
+  d.textContent = new Date().toLocaleTimeString() + '  ' + msg;
+  if (bad) d.classList.add('bad-txt');
+  $('log').prepend(d);
+  while ($('log').children.length > 200) $('log').lastChild.remove();
+}
+
+async function rpc(method, params) {
+  const url = base + '/v1/mcp';
+  const body = { jsonrpc: '2.0', method, id: rpcId++ };
+  if (params !== undefined) body.params = params;
+  const bodyStr = JSON.stringify(body);
+  const t0 = performance.now();
+  const res = await fetch(url, {
+    method: 'POST', headers: headers(), body: bodyStr
+  });
+  const wall = performance.now() - t0;
+  const text = await res.text();
+  const json = JSON.parse(text);
+  // Prefer the Resource Timing duration: it is stamped by the network stack's
+  // high-resolution clock. The await-resumption wall time above is quantized
+  // to the Windows timer (~10 ms), which inflates and flattens real latency.
+  const entries = performance.getEntriesByName(url, 'fetch');
+  const last = entries[entries.length - 1];
+  const rtt = last && last.duration > 0 ? last.duration : wall;
+  if (json.error) throw new Error(json.error.message || JSON.stringify(json.error));
+  return { result: json.result, rtt,
+           reqBytes: new TextEncoder().encode(bodyStr).length,
+           resBytes: new TextEncoder().encode(text).length };
+}
+
+// ---- NDA binary TLV codec (JS port of client/src/transport/nda_codec.rs) ----
+const NDA_METHODS = {
+  'initialize': 0x01, 'tools/list': 0x02, 'tools/call': 0x03, 'ping': 0x04,
+  'logging/setLevel': 0x05, 'health/check': 0x06,
+  'resources/list': 0x07, 'resources/read': 0x08, 'resources/templates/list': 0x09,
+  'prompts/list': 0x0A, 'prompts/get': 0x0B, 'sampling/createMessage': 0x0C,
+  'notifications/initialized': 0x10, 'notifications/cancelled': 0x11,
+};
+const NDA_HDR = 36; // "NMCP" + 32-byte SHA-256 payload root
+
+function u32be(n) { return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255]; }
+function tlvEnc(v, out) {
+  if (typeof v === 'string') {
+    const b = new TextEncoder().encode(v);
+    out.push(0x01, ...u32be(b.length), ...b);
+  } else if (typeof v === 'number') {
+    const d = new DataView(new ArrayBuffer(8));
+    if (Number.isSafeInteger(v)) { out.push(0x02); d.setBigInt64(0, BigInt(v)); }
+    else { out.push(0x07); d.setFloat64(0, v); }
+    for (let i = 0; i < 8; i++) out.push(d.getUint8(i));
+  } else if (typeof v === 'boolean') {
+    out.push(0x03, v ? 1 : 0);
+  } else if (v === null || v === undefined) {
+    out.push(0x04);
+  } else if (Array.isArray(v)) {
+    out.push(0x05, ...u32be(v.length));
+    for (const it of v) tlvEnc(it, out);
+  } else if (typeof v === 'object') {
+    const ks = Object.keys(v);
+    out.push(0x06, ...u32be(ks.length));
+    for (const k of ks) {
+      const kb = new TextEncoder().encode(k);
+      if (kb.length > 0xFFFF) throw new Error('TLV object key length ' + kb.length + ' exceeds u16 max');
+      out.push((kb.length >> 8) & 255, kb.length & 255, ...kb);
+      tlvEnc(v[k], out);
+    }
+  } else throw new Error('TLV: unsupported value ' + typeof v);
+}
+function tlvDec(b, off) {
+  const tag = b[off];
+  if (tag === undefined) throw new Error('TLV: empty value');
+  const u32 = o => (b[o] << 24 | b[o + 1] << 16 | b[o + 2] << 8 | b[o + 3]) >>> 0;
+  const str = (o, len) => {
+    if (b.length < o + len) throw new Error('TLV string: truncated body');
+    try { return new TextDecoder('utf-8', { fatal: true }).decode(b.subarray(o, o + len)); }
+    catch { throw new Error('TLV string: invalid UTF-8'); }
+  };
+  const need = n => { if (b.length < off + n) throw new Error('TLV value: truncated'); };
+  if (tag === 0x01) {
+    need(5);
+    const len = u32(off + 1);
+    return [str(off + 5, len), 5 + len];
+  }
+  if (tag === 0x03) { need(2); return [b[off + 1] !== 0, 2]; }
+  if (tag === 0x04) return [null, 1];
+  if (tag === 0x05 || tag === 0x06) {
+    const count = u32(off + 1);
+    if (count > b.length - (off + 5)) throw new Error('TLV ' + (tag === 0x05 ? 'array' : 'object') + ': truncated count');
+    const arr = tag === 0x05 ? [] : {}; let o = off + 5;
+    for (let i = 0; i < count; i++) {
+      if (tag === 0x06) {
+        if (b.length < o + 2) throw new Error('TLV object: truncated key length');
+        const klen = (b[o] << 8) | b[o + 1]; o += 2;
+        const key = str(o, klen); o += klen;
+        const [v, n] = tlvDec(b, o); arr[key] = v; o += n;
+      } else {
+        const [v, n] = tlvDec(b, o); arr.push(v); o += n;
+      }
+    }
+    return [arr, o - off];
+  }
+  need(9);
+  const d = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  if (tag === 0x02) return [Number(d.getBigInt64(off + 1)), 9];
+  if (tag === 0x07) return [d.getFloat64(off + 1), 9];
+  throw new Error('TLV: unknown tag 0x' + tag.toString(16).padStart(2, '0'));
+}
+async function sha256(bytes) {
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+}
+async function buildNdaRequest(methodCode, id, data) {
+  const payload = [methodCode];
+  tlvEnc(id, payload);
+  if (data !== null && data !== undefined) tlvEnc(data, payload);
+  const p = Uint8Array.from(payload);
+  return new Uint8Array([...new TextEncoder().encode('NMCP'), ...await sha256(p), ...p]);
+}
+async function parseNdaResponse(frame) {
+  if (frame.length < NDA_HDR + 1) throw new Error('NDA response too small (' + frame.length + ' B)');
+  if (new TextDecoder().decode(frame.subarray(0, 4)) !== 'NMCP') throw new Error('bad NDA magic');
+  const payload = frame.subarray(NDA_HDR);
+  const root = frame.subarray(4, 36);
+  if (root.some(b => b !== 0)) {
+    const computed = await sha256(payload);
+    for (let i = 0; i < 32; i++)
+      if (computed[i] !== root[i]) throw new Error('NDA Merkle root mismatch');
+  }
+  const [id, n1] = tlvDec(payload, 1);
+  let result = {};
+  if (1 + n1 < payload.length) { const [v] = tlvDec(payload, 1 + n1); result = v; }
+  return { status: payload[0], id, result };
+}
+async function rpcNda(method, params) {
+  const code = NDA_METHODS[method];
+  if (code === undefined) throw new Error('method not in NDA frame table: ' + method);
+  const url = base + '/v1/mcp/nda';
+  const id = rpcId++;
+  const frame = await buildNdaRequest(code, id, params ?? null);
+  const t0 = performance.now();
+  const res = await fetch(url, {
+    method: 'POST', headers: { ...headers(), 'Content-Type': 'application/octet-stream' }, body: frame
+  });
+  const wall = performance.now() - t0;
+  if (!res.ok) throw new Error('NDA endpoint HTTP ' + res.status);
+  const buf = new Uint8Array(await res.arrayBuffer());
+  const entries = performance.getEntriesByName(url, 'fetch');
+  const last = entries[entries.length - 1];
+  const rtt = last && last.duration > 0 ? last.duration : wall;
+  const parsed = await parseNdaResponse(buf);
+  if (parsed.id !== id) throw new Error('NDA id mismatch: ' + parsed.id + ' vs ' + id);
+  if (parsed.status === 1) throw new Error('NDA error: ' + (typeof parsed.result === 'string' ? parsed.result : JSON.stringify(parsed.result)));
+  return { result: parsed.result, rtt, reqBytes: frame.length, resBytes: buf.length };
+}
+
+async function get(path) {
+  const res = await fetch(base + path, { headers: headers() });
+  if (!res.ok) throw new Error(path + ' → HTTP ' + res.status);
+  return res.json();
+}
+
+function fmtUs(ms) { return ms < 1 ? (ms * 1000).toFixed(1) + ' µs' : ms.toFixed(2) + ' ms'; }
+
+let lastTotal = null, lastTime = null;
+async function refreshPerf() {
+  const p = await get('/v1/performance');
+  const total = p.throughput.total_requests;
+  $('sTotal').textContent = total.toLocaleString();
+  // Instantaneous rate from the delta between polls (the server's
+  // requests_per_second is a lifetime average and reads ~0 on an idle box).
+  const now = performance.now();
+  // total is per-process: a restart or a reconnect to another server makes it
+  // go backwards. That is not a rate, so drop the sample instead of clamping
+  // it to 0 and drawing a fake idle spike.
+  if (lastTotal !== null && total >= lastTotal) {
+    const inst = (total - lastTotal) / ((now - lastTime) / 1000);
+    $('sRate').textContent = Math.max(0, inst).toFixed(1);
+    history.push(Math.max(0, inst)); if (history.length > 120) history.shift();
+  }
+  lastTotal = total; lastTime = now;
+  $('sLat').textContent = parseFloat(p.latency.average_ms).toFixed(3);
+  $('sSess').textContent = p.connections.active_sessions;
+  $('sSec').textContent = p.security.auth_failures + ' / ' + p.security.rate_limit_hits;
+  const up = p.server.uptime_seconds;
+  $('sUptime').textContent = up > 3600 ? (up/3600).toFixed(1) + ' h'
+                           : up > 60 ? (up/60).toFixed(0) + ' min' : up.toFixed(0) + ' s';
+  drawChart();
+}
+
+// The pill's healthy text is whatever /health reported, not a hard-coded
+// string, so a metrics poll that recovers can restore the same label.
+let connectedLabel = 'connected';
+function setConnPill(text, cls) {
+  $('connPill').textContent = text; $('connPill').className = cls;
+}
+
+// The poll keeps firing after the server goes away, and get() rejects on both
+// a network error and a non-2xx. Unhandled, that is a rejection every 1.5 s
+// with stale numbers still on screen, so report the transition once instead.
+// A rejection that carries an HTTP status proves the server answered, so it
+// must not redden the connection pill: the 50-call burst test throttles our
+// own poll by design, and calling that 'stale' reported a live server as down.
+let perfFailing = false;
+function pollPerf() {
+  refreshPerf().then(
+    () => {
+      if (!perfFailing) return;
+      perfFailing = false;
+      // A success is proof of life, so undo the 'stale' a transport failure
+      // drew. Without this a single outage left the pill red for the session.
+      setConnPill(connectedLabel, 'pill ok');
+    },
+    e => {
+      if (perfFailing) return;
+      perfFailing = true;
+      const answered = /→ HTTP \d/.test(e.message);
+      if (!answered) setConnPill('stale', 'pill bad');
+      log('metrics poll ' + (answered ? 'throttled' : 'failed') + ': ' + e.message, true);
+    }
+  );
+}
+
+function drawChart() {
+  const c = $('chart'), ctx = c.getContext('2d');
+  ctx.clearRect(0, 0, c.width, c.height);
+  if (history.length < 2) return;
+  const max = Math.max(0.001, ...history);
+  ctx.strokeStyle = '#0f766e'; ctx.lineWidth = 2; ctx.beginPath();
+  history.forEach((v, i) => {
+    const x = i / (history.length - 1) * (c.width - 8) + 4;
+    const y = c.height - 6 - v / max * (c.height - 14);
+    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+  });
+  ctx.stroke();
+  ctx.fillStyle = '#64748b'; ctx.font = '11px Segoe UI';
+  ctx.fillText('peak ' + max.toFixed(1) + ' r/s', 6, 12);
+}
+
+async function loadTools() {
+  const { result } = await rpc('tools/list', {});
+  const tools = result.tools || [];
+  $('toolCount').textContent = '(' + tools.length + ')';
+  const list = $('toolList'); list.innerHTML = '';
+  tools.forEach(t => {
+    const el = document.createElement('div');
+    el.className = 'tool';
+    el.textContent = t.name;
+    el.title = (t.description || '').slice(0, 140);
+    if (noBinary.has(t.name)) {
+      // t.name comes from tools/list, i.e. from a plugin manifest: append the
+      // badge as a node so a name can never be parsed as markup. el.textContent
+      // already carries the name, so the rendered row is identical.
+      const badge = document.createElement('span');
+      badge.style.cssText = 'color:var(--muted); font-size:11px;';
+      badge.textContent = ' ·json';
+      el.appendChild(badge);
+      el.title += ' — no NDA-native binary executor yet: NDA frames are served by decoding TLV args into the JSON path';
+    }
+    el.onclick = () => {
+      list.querySelectorAll('.sel').forEach(s => s.classList.remove('sel'));
+      el.classList.add('sel');
+      $('selTool').textContent = '— ' + t.name;
+      $('args').value = prefillArgs(t.name, t.inputSchema);
+      current = t.name;
+    };
+    list.appendChild(el);
+  });
+}
+
+// Per-tool NDA executor capabilities, as reported by the server.
+async function loadCaps() {
+  noBinary.clear(); capTotal = 0;
+  const c = await get('/v1/nda/capabilities');
+  (c.tools || []).forEach(t => {
+    capTotal++;
+    if (t.binaryExecutor === false) noBinary.add(t.name);
+  });
+  log('NDA executors: ' + (capTotal - noBinary.size) + '/' + capTotal +
+      ' WASM tools take TLV bytes directly, ' + noBinary.size + ' via decoded-JSON path');
+}
+let current = null;
+
+async function callTool() {
+  if (!current) { log('select a tool first', true); return; }
+  let params;
+  try { params = JSON.parse($('args').value || '{}'); }
+  catch (e) { log('arguments are not valid JSON: ' + e.message, true); return; }
+  const mode = $('transport').value;
+  const call = async fn => {
+    try { return { ok: true, r: await fn() }; }
+    catch (e) { return { ok: false, err: e.message }; }
+  };
+  try {
+    if (mode === 'both') {
+      $('compare').style.display = 'block';
+      // Sequential, not parallel: two simultaneous fresh connections race the
+      // server's accept loop on Windows and one pays a ~60 ms scheduling tax,
+      // which would look like an encoding difference but isn't one.
+      const j = await call(() => rpc('tools/call', { name: current, arguments: params }));
+      const noExec = noBinary.has(current);
+      const n = noExec
+        ? { ok: false, skip: 'skipped — no native binary executor for this tool yet' }
+        : await call(() => rpcNda('tools/call', { name: current, arguments: params }));
+      const row = (el, label, x, extra) => {
+        // Built from nodes, not innerHTML: x.err carries server-supplied text,
+        // so the same HTML-escaping-free string that labels a tool could
+        // otherwise be parsed as markup. Rendered output is unchanged.
+        el.textContent = '';
+        const l = document.createElement('span');
+        l.textContent = label;
+        el.appendChild(l);
+        const v = document.createElement('span');
+        if (x.ok) {
+          const b = document.createElement('b');
+          b.textContent = fmtUs(x.r.rtt);
+          v.appendChild(b);
+          v.appendChild(document.createTextNode(' · req ' + x.r.reqBytes + ' B · res ' +
+            x.r.resBytes + ' B' + (extra ? ' · ' + extra : '')));
+        } else {
+          v.className = x.skip ? 'note' : 'bad-txt';
+          v.textContent = x.skip || x.err;
+        }
+        el.appendChild(v);
+      };
+      row($('cmpJson'), 'JSON-RPC', j, 'MCP envelope');
+      row($('cmpNda'), 'NDA binary', n, 'SHA-256 root verified in-browser');
+      if (noExec) {
+        $('cmpVerdict').textContent = current + ' reports no binary NDA executor, so the server '
+          + 'decodes this frame\'s TLV args into the same JSON path — '
+          + 'a second number would measure nothing. See GET /v1/nda/capabilities.';
+        if (j.ok) $('callResult').textContent = JSON.stringify(j.r.result, null, 2);
+        log('compare ' + current + ': JSON only (no NDA binary executor)');
+        return;
+      }
+      if (j.ok && n.ok) {
+        rtts.push(n.r.rtt); if (rtts.length > 50) rtts.shift();
+        $('lastRtt').textContent = fmtUs(n.r.rtt);
+        // The JSON path returns the MCP envelope {content:[{text,type}],isError};
+        // the NDA path returns the compact raw text payload. Compare the payloads.
+        const jText = JSON.stringify(
+          (j.r.result && j.r.result.content) ? j.r.result.content.map(c => c.text).join('') : j.r.result);
+        const nText = JSON.stringify(Array.isArray(n.r.result) ? n.r.result.join('') : n.r.result);
+        const same = jText === nText;
+        const size = (100 * (1 - n.r.reqBytes / j.r.reqBytes)).toFixed(0);
+        const speed = (j.r.rtt / n.r.rtt).toFixed(2);
+        $('cmpVerdict').textContent =
+          (same ? 'identical payload via both encodings · ' : 'WARNING: payloads differ · ') +
+          n.r.reqBytes + ' vs ' + j.r.reqBytes + ' B on the wire (' + size + '% smaller) · ' +
+          fmtUs(n.r.rtt) + ' vs ' + fmtUs(j.r.rtt) + ' (' + speed + 'x)';
+        $('callResult').textContent = JSON.stringify(n.r.result, null, 2);
+        log('compare ' + current + ': JSON ' + fmtUs(j.r.rtt) + '/' + j.r.reqBytes + 'B vs NDA ' +
+          fmtUs(n.r.rtt) + '/' + n.r.reqBytes + 'B, identical=' + same);
+      } else {
+        $('cmpVerdict').textContent = '';
+        if (j.ok) $('callResult').textContent = JSON.stringify(j.r.result, null, 2);
+      }
+      return;
+    }
+    const { result, rtt } = mode === 'nda'
+      ? await rpcNda('tools/call', { name: current, arguments: params })
+      : await rpc('tools/call', { name: current, arguments: params });
+    $('compare').style.display = 'none';
+    rtts.push(rtt); if (rtts.length > 50) rtts.shift();
+    $('lastRtt').textContent = fmtUs(rtt) + '  (median last 50: '
+      + fmtUs(rtts.slice().sort((a,b)=>a-b)[rtts.length>>1]) + ')';
+    $('callResult').textContent = JSON.stringify(result, null, 2);
+    const via = mode === 'nda'
+      ? (noBinary.has(current) ? 'NDA frame, JSON fallback' : 'NDA binary')
+      : 'JSON-RPC';
+    log('tools/call ' + current + ' via ' + via + ' → ' + fmtUs(rtt));
+  } catch (e) { log('tool call failed: ' + e.message, true); }
+}
+
+async function burst() {
+  const mode = $('transport').value;
+  $('burstOut').textContent = 'running…';
+  const run = async fn => {
+    const lats = [];
+    for (let i = 0; i < 50; i++) {
+      const { rtt } = await fn().catch(() => ({ rtt: NaN }));
+      if (Number.isFinite(rtt)) lats.push(rtt);
+    }
+    if (!lats.length) return null;
+    lats.sort((a, b) => a - b);
+    return { n: lats.length,
+             avg: lats.reduce((s, v) => s + v, 0) / lats.length,
+             p50: lats[lats.length >> 1],
+             p95: lats[Math.floor(lats.length * 0.95) - 1] };
+  };
+  const fmt = s => 'avg <b>' + fmtUs(s.avg) + '</b> · p50 <b>' + fmtUs(s.p50) + '</b> · p95 <b>' + fmtUs(s.p95) + '</b> over ' + s.n + ' pings';
+  if (mode === 'both') {
+    const j = await run(() => rpc('ping'));
+    await new Promise(r => setTimeout(r, 1600)); // let the rate-limiter bucket refill
+    const n = await run(() => rpcNda('ping', null));
+    if (!j || !n) { $('burstOut').textContent = 'one or both bursts failed (rate limited?)'; return; }
+    $('burstOut').innerHTML = 'JSON-RPC: ' + fmt(j) + '<br>NDA binary: ' + fmt(n) +
+      ' <span style="color:var(--muted)">· same 50-call loop, both encodings</span>';
+  } else {
+    const s = await run(mode === 'nda' ? () => rpcNda('ping', null) : () => rpc('ping'));
+    if (!s) { $('burstOut').textContent = 'all calls failed (rate limited?)'; return; }
+    $('burstOut').innerHTML = (mode === 'nda' ? 'NDA binary: ' : 'JSON-RPC: ') + fmt(s);
+  }
+}
+
+const CAPTURE = location.search.includes('capture=1');
+
+function openSSE() {
+  if (CAPTURE) return;
+  if (sse) sse.close();
+  const url = base + '/v1/sse?session_id=demo-' + Date.now();
+  try {
+    sse = new EventSource(url);
+    sse.onopen = () => log('SSE stream open');
+    // /v1/sse sends *named* events, and EventSource only routes named events to
+    // addEventListener — onmessage sees just the unnamed default stream.
+    for (const name of ['connected', 'notification', 'request_completed'])
+      sse.addEventListener(name, e => log(name + ': ' + e.data));
+    // Heartbeats arrive as SSE comment lines, which EventSource discards by spec.
+    sse.onerror = () => log('SSE stream closed (needs unauthenticated /v1/sse)', true);
+  } catch (e) { log('SSE unavailable: ' + e.message, true); }
+}
+
+async function connect() {
+  base = $('serverUrl').value.trim().replace(/\/+$/, '');
+  setConnPill('…', 'pill');
+  try {
+    const h = await get('/health');
+    connectedLabel = h.status || 'connected';
+    setConnPill(connectedLabel, 'pill ok');
+    $('versionPill').textContent = 'v' + (h.version || '?') + ' · ' + (h.transport || '?');
+    log('connected — /health ' + (h.status || 'ok'));
+    clearInterval(pollTimer);
+    lastTotal = null; lastTime = null; history.length = 0; perfFailing = false;
+    pollTimer = setInterval(pollPerf, 1500);
+    refreshPerf().catch(() => {});
+    await loadCaps().catch(e => log('capability fetch failed: ' + e.message, true));
+    await loadTools();
+    openSSE();
+    // Warm both endpoints: first-call cost (connection setup + WebCrypto
+    // init) is ~60 ms and would skew the JSON-vs-NDA comparison.
+    rpc('ping').catch(() => {});
+    rpcNda('ping', null).catch(() => {});
+  } catch (e) {
+    setConnPill('unreachable', 'pill bad');
+    log('connect failed: ' + e.message, true);
+  }
+}
+
+$('connectBtn').onclick = connect;
+$('callBtn').onclick = callTool;
+$('burstBtn').onclick = burst;
+
+// ?api= overrides the server field once at startup (for tests/automation),
+// but must not clobber manual edits on later Connect clicks.
+const apiParam = new URLSearchParams(location.search).get('api');
+if (apiParam) $('serverUrl').value = apiParam;
+
+async function autoDemo() {
+  const pick = name => {
+    const el = [...$('toolList').children].find(t => t.textContent === name);
+    if (el) el.click();
+    return !!el;
+  };
+  if (pick('echo')) { await callTool(); await new Promise(r => setTimeout(r, 300)); }
+  if (pick('js_calculator')) { await callTool(); }
+  await burst();
+}
+
+connect().then(() => {
+  if (location.search.includes('demo=1')) autoDemo();
+});
+</script>
+</body>
+</html>

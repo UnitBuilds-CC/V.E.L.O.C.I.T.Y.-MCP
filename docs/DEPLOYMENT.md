@@ -51,55 +51,37 @@ Production deployment guide for VELOCITY-MCP server v3.2.0.
 
 ## Installation
 
-### Method 1: Pre-built Binaries (Recommended)
+### Method 1: Pre-built Binaries
 
-**Linux (x86_64):**
+**This route is not currently usable, as measured on 2026-10-10.** `gh release view v3.2.0`
+returns *release not found* — there is no GitHub release for the current version, and the
+latest one (v3.1.0, published 2026-09-02) carries exactly one asset, `velocity_mcp.exe`.
+
+The file names this section previously advertised do not match what the release workflow
+publishes either. Its matrix runs windows-latest, ubuntu-latest and macos-latest and uploads
+`velocity_mcp_v<version>_linux_x64`, `velocity_mcp_v<version>_macos_x64` and
+`velocity_mcp_v<version>_win_x64.exe`, so there is no Apple-silicon asset and any
+`releases/latest/download/<unversioned-name>` URL 404s. Check what is actually downloadable
+before scripting against it:
+
 ```bash
-# Download latest release
-curl -L https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/releases/latest/download/velocity_mcp_linux_x86_64 -o velocity_mcp
-
-# Make executable
-chmod +x velocity_mcp
-
-# Move to system path
-sudo mv velocity_mcp /usr/local/bin/
-
-# Verify installation (prints the version banner; there is no version flag)
-velocity_mcp --help
+gh release view --json tagName,assets --jq '.tagName, (.assets[].name)'
 ```
 
-**macOS (x86_64):**
-```bash
-curl -L https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/releases/latest/download/velocity_mcp_macos_x86_64 -o velocity_mcp
-chmod +x velocity_mcp
-sudo mv velocity_mcp /usr/local/bin/
-velocity_mcp --help
-```
+Why v3.2.0 has no release: that workflow run (2026-09-11) failed at the `Build release binary`
+step on ubuntu-latest with repeated `error[E0433]: cannot find module or crate libc in this
+scope`, from `src/sandbox/linux_seccomp.rs` referencing `libc` before the dependency was
+declared for the linux target. The `libc = "0.2"` entry in that target block was added three
+days later (2026-09-14, commit `88a92de`), so the cause is fixed on the current tree but was
+never re-run — publishing these assets means pushing a new tag, which is the operator's call.
 
-**macOS (ARM64/Apple Silicon):**
-```bash
-curl -L https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/releases/latest/download/velocity_mcp_macos_arm64 -o velocity_mcp
-chmod +x velocity_mcp
-sudo mv velocity_mcp /usr/local/bin/
-velocity_mcp --help
-```
-
-**Windows (x86_64):**
-```powershell
-# Download using PowerShell
-Invoke-WebRequest -Uri "https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/releases/latest/download/velocity_mcp_windows_x86_64.exe" -OutFile "velocity_mcp.exe"
-
-# Move to system path
-Move-Item -Path "velocity_mcp.exe" -Destination "C:\Program Files\velocity_mcp.exe"
-
-# Verify installation
-& "C:\Program Files\velocity_mcp.exe" --help
-```
+Until a tagged release exists, install from source (Method 2) or run the published image
+(Method 3); `docker pull unitbuilds/velocity-mcp:latest` is what `README.md` documents.
 
 ### Method 2: Build from Source
 
 **Prerequisites:**
-- Rust 1.75+ (https://rustup.rs)
+- A recent stable Rust (https://rustup.rs). `deploy/Dockerfile` deliberately floats its toolchain on `rust:1-bookworm` instead of pinning a rustc version, because locked dependencies raise their own `rust-version` over time and a hard pin then breaks the build.
 - Git
 - Build tools (gcc, make)
 
@@ -121,25 +103,28 @@ sudo cp target/release/velocity_mcp /usr/local/bin/
 
 ### Method 3: Docker
 
-**Dockerfile:**
+The shipped recipe is `deploy/Dockerfile`: a multi-stage build that copies every workspace manifest first, floats on `rust:1-bookworm`, runs the binary as a non-root `velocity` user, bakes `plugins/` into the image, and health-checks `/health` with `curl`. Its `CMD` names only `--mode http` — the listen address comes from the built-in default `0.0.0.0:3000`, which is what `EXPOSE 3000` advertises. Its minimal shape:
+
 ```dockerfile
-FROM rust:1.75 as builder
+FROM rust:1-bookworm as builder
 WORKDIR /build
 COPY . .
-RUN cargo build --release --features http,database,oauth2
+RUN cargo build --release --features http,database,oauth2 --bin velocity_mcp
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /build/target/release/velocity_mcp /usr/local/bin/
 EXPOSE 3000
-CMD ["velocity_mcp", "--mode", "http", "--addr", "0.0.0.0:3000"]
+CMD ["/app/velocity_mcp", "--mode", "http"]
 ```
 
-**Build and run:**
+**Build and run** (from the repository root — there is no root `Dockerfile`, so name the shipped one):
 ```bash
-docker build -t velocity-mcp .
+docker build -t velocity-mcp -f deploy/Dockerfile .
 docker run -d -p 3000:3000 --name velocity-mcp velocity-mcp
 ```
+
+`deploy/docker-compose.yml` wraps the same image and adds optional Prometheus and Grafana services under the `monitoring` profile; run it as `docker compose -f deploy/docker-compose.yml --profile monitoring up --build`. Relative paths in that file resolve against `deploy/`, which is where the Prometheus and Grafana provisioning directories live.
 
 ---
 
@@ -177,9 +162,12 @@ instruction_limit = 10000000
 ```
 
 Config values are read literally — `${VAR}` placeholders are **not**
-environment-expanded. Use `VELOCITY_API_KEY` (and the other variables below) to
-inject secrets at runtime. TLS material is not part of this file either: it is
-passed with the `--tls-cert` / `--tls-key` command-line flags.
+environment-expanded: the config layer only reads ten fixed `VELOCITY_*` names,
+which `docs/USER_GUIDE.md` tabulates in full (the sample below shows the common
+ones). Of the `[features]` keys above only `nda_merkle` changes behaviour;
+`database`, `oauth2` and `http` are parsed and ignored, because those three are chosen
+at build time by the Cargo features of the same names. TLS material is not part of this
+file either: it is passed with the `--tls-cert` / `--tls-key` command-line flags.
 
 ### Environment Variables
 
@@ -187,6 +175,8 @@ Create `/etc/velocity-mcp/env`:
 
 ```bash
 # API Key (generate with: openssl rand -hex 32)
+# A blank or whitespace-only value means authentication is not configured; it
+# does not enable auth with an empty key.
 VELOCITY_API_KEY=your-secure-api-key-here
 
 # Logging
@@ -498,11 +488,22 @@ scrape_configs:
 
 ### Grafana Dashboard
 
-**Import dashboard:**
-1. Open Grafana
-2. Go to Dashboards → Import
-3. Use dashboard ID: 1860 (or create custom)
-4. Select Prometheus data source
+**Load the shipped dashboard:**
+
+This repository already ships one: `deploy/grafana/dashboards/velocity-mcp.json`, seven panels that cover every series the HTTP handler exports and query no series it does not. The Prometheus datasource is provisioned from `deploy/grafana/datasources/prometheus.yml` and the dashboard from `deploy/grafana/provisioning/dashboards/velocity-mcp.yml`, so `docker compose -f deploy/docker-compose.yml --profile monitoring up` loads both without a manual step. The JSON is in Grafana's API-payload shape (`{"dashboard": …, "overwrite": …}`), which the file provider accepts; you can also paste it into Dashboards → Import and pick the Prometheus datasource, or post it to the HTTP API:
+
+```bash
+curl -X POST -H "Content-Type: application/json" \
+  -u admin:admin \
+  --data @deploy/grafana/dashboards/velocity-mcp.json \
+  http://localhost:3001/api/dashboards/db
+```
+
+A community dashboard ID is not a substitute: this server's series are all named `velocity_mcp_*`, which no external dashboard queries. Two panels still use Grafana's legacy `graph` type and none of the seven carry an explicit `datasource`, so all resolve to the provisioned default; that is Grafana's documented behaviour but the stack has not been brought up in a container to confirm it here.
+
+**How the file provider resolves paths:** Grafana scans `/etc/grafana/provisioning/dashboards` for provider YAML only, so a dashboard file placed there is read by nobody. The provider sets `options.path: /var/lib/grafana/dashboards`, and the compose file mounts `deploy/grafana/dashboards` read-only at exactly that path. `uid: velocity-mcp` is pinned and `allowUiUpdates: false`, so a dashboard edited in the UI is replaced by the file within `updateIntervalSeconds` (30) — edit the JSON in the repository instead. `disableDeletion: true` means removing the file does not remove the dashboard from Grafana's database.
+
+**Alert rules ship but never load:** `deploy/prometheus/alerts.yml` holds eleven rules, while `deploy/prometheus/prometheus.yml` declares no `rule_files:` list and compose mounts only that one file, so no rule evaluates today. Enabling it takes a `rule_files: ["alerts.yml"]` entry plus a bind mount, and starts firing real notifications — an operator decision, not a repair. Of the eleven, five key on series this server does not export (a latency histogram bucket, two TLS expiry gauges, a plugin-install failure counter and an audit-buffer gauge) and two read external `container_*` series from a cAdvisor-style exporter, so four rules could fire against this build — and one of those, `LowThroughput`, is `sum(rate(...)) < 1` over 10m, which is true of any quiet server, so it would page on an idle deployment. See the per-rule annotations in that file.
 
 **Key metrics to monitor:**
 - `velocity_mcp_requests_total` - Total requests
@@ -699,8 +700,9 @@ server {
 ### Database Scaling
 
 The config schema has no database section. Database-backed resources require the
-`database` Cargo feature at build time (`cargo build --release --features database`)
-and `[features] database = true` in the config file.
+`database` Cargo feature at build time (`cargo build --release --features database`);
+`[features] database` in the config file does nothing, as noted under Configuration File
+— the only live key in that section is `nda_merkle`.
 
 The SQLite file is chosen programmatically by the embedding application through
 `velocity_mcp::resources::set_database_path()` — the first call wins — and the
@@ -730,7 +732,9 @@ mkdir -p $BACKUP_DIR
 # Backup configuration
 tar -czf $BACKUP_DIR/config_$DATE.tar.gz /etc/velocity-mcp/
 
-# Backup database (if using)
+# Backup database (if using). There is no config key for the SQLite path: it is whatever
+# the embedding application passed to velocity_mcp::resources::set_database_path(), so
+# keep this path and that call in sync (the first call wins, later ones are ignored).
 if [ -f /var/lib/velocity-mcp/data.db ]; then
     sqlite3 /var/lib/velocity-mcp/data.db ".backup $BACKUP_DIR/database_$DATE.db"
 fi
@@ -900,5 +904,5 @@ sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
 
 ---
 
-*Last updated: 2026-08-30*
+*Last updated: 2026-10-10*
 *Version: 3.2.0*

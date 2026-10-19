@@ -14,7 +14,7 @@
 //!
 //! | Method | Status |
 //! |---|---|
-//! | `initialize` | Full — declares tools, resources, prompts, elicitation, roots capabilities |
+//! | `initialize` | Full — declares tools, resources, prompts capabilities |
 //! | `notifications/initialized` | Acknowledged (no-op) |
 //! | `ping` | Full |
 //! | `tools/list` | Full via executor; stub returns empty |
@@ -24,10 +24,10 @@
 //! | `resources/templates/list` | Returns empty list |
 //! | `prompts/list` | Returns empty list (no prompt provider on Edge) |
 //! | `prompts/get` | Validates name, returns error for unknown prompts |
-//! | `elicitation/create` | Full — validates schema, returns accept/reject/decline |
-//! | `roots/list` | Returns empty roots list |
+//! | `elicitation/create` | Refused (`-32601`) — server→client method |
+//! | `roots/list` | Refused (`-32601`) — server→client method |
 //! | `completion/complete` | Validates ref type, returns empty completions |
-//! | `sampling/createMessage` | Returns error (server cannot sample on Edge) |
+//! | `sampling/createMessage` | Refused (`-32601`) — server→client method |
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -142,10 +142,7 @@ fn dispatch(request: &McpRequest, executor: Option<&dyn ToolExecutor>) -> McpRes
         "prompts/list" => handle_prompts_list(request),
         "prompts/get" => handle_prompts_get(request),
 
-        "elicitation/create" => handle_elicitation_create(request),
-        "roots/list" => handle_roots_list(request),
         "completion/complete" => handle_completion_complete(request),
-        "sampling/createMessage" => handle_sampling_create_message(request),
 
         _ => method_not_found(request),
     }
@@ -190,14 +187,15 @@ fn method_not_found(request: &McpRequest) -> McpResponse {
 // ---------------------------------------------------------------------------
 
 fn handle_initialize(request: &McpRequest) -> McpResponse {
+    // Server-side capabilities only. `roots` is a *client* capability, while
+    // `sampling` and `elicitation` are server capabilities this crate never
+    // exercises -- it sends no such request -- so none belongs in this map.
     let capabilities = serde_json::json!({
         "protocolVersion": "2024-11-05",
         "capabilities": {
             "tools": {},
             "resources": { "subscribe": false, "listChanged": false },
-            "prompts": { "listChanged": false },
-            "elicitation": {},
-            "roots": { "listChanged": false }
+            "prompts": { "listChanged": false }
         },
         "serverInfo": {
             "name": "velocity-mcp-edge",
@@ -245,7 +243,10 @@ fn handle_tools_list(request: &McpRequest, executor: &dyn ToolExecutor) -> McpRe
         })
         .collect();
 
-    ok_response(request.id.clone(), serde_json::json!({ "tools": tools_json }))
+    ok_response(
+        request.id.clone(),
+        serde_json::json!({ "tools": tools_json }),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -308,10 +309,7 @@ fn handle_tools_call(request: &McpRequest, executor: &dyn ToolExecutor) -> McpRe
 // ---------------------------------------------------------------------------
 
 fn handle_resources_list(request: &McpRequest) -> McpResponse {
-    ok_response(
-        request.id.clone(),
-        serde_json::json!({ "resources": [] }),
-    )
+    ok_response(request.id.clone(), serde_json::json!({ "resources": [] }))
 }
 
 fn handle_resources_read(request: &McpRequest) -> McpResponse {
@@ -347,10 +345,7 @@ fn handle_resources_templates_list(request: &McpRequest) -> McpResponse {
 // ---------------------------------------------------------------------------
 
 fn handle_prompts_list(request: &McpRequest) -> McpResponse {
-    ok_response(
-        request.id.clone(),
-        serde_json::json!({ "prompts": [] }),
-    )
+    ok_response(request.id.clone(), serde_json::json!({ "prompts": [] }))
 }
 
 fn handle_prompts_get(request: &McpRequest) -> McpResponse {
@@ -370,70 +365,6 @@ fn handle_prompts_get(request: &McpRequest) -> McpResponse {
         request.id.clone(),
         -32001,
         format!("Prompt not found: {}", name),
-    )
-}
-
-// ---------------------------------------------------------------------------
-// elicitation/create
-// ---------------------------------------------------------------------------
-
-/// Handle elicitation/create — the server requests structured input from the user.
-///
-/// Per MCP spec, the server sends an elicitation request with a message and
-/// optional JSON Schema. The client responds with accept (including requested data),
-/// reject, or decline. On Edge, we validate the request format and return an
-/// acknowledgment since there is no interactive user session.
-fn handle_elicitation_create(request: &McpRequest) -> McpResponse {
-    let params = request.params.as_ref();
-
-    let message = match params.and_then(|p| p["message"].as_str()) {
-        Some(m) if !m.is_empty() => m,
-        _ => {
-            return error_response(
-                request.id.clone(),
-                -32602,
-                "Missing required field: params.message",
-            );
-        }
-    };
-
-    // Validate requestedSchema if present (must be a valid JSON Schema object)
-    if let Some(schema) = params.and_then(|p| p.get("requestedSchema")) {
-        if !schema.is_object() {
-            return error_response(
-                request.id.clone(),
-                -32602,
-                "params.requestedSchema must be a JSON Schema object",
-            );
-        }
-    }
-
-    // On Edge there is no interactive user, so we acknowledge the request
-    // and indicate that the elicitation was received but cannot be fulfilled
-    // interactively. A real client would present this to the user.
-    ok_response(
-        request.id.clone(),
-        serde_json::json!({
-            "action": "accept",
-            "message": message,
-            "data": {}
-        }),
-    )
-}
-
-// ---------------------------------------------------------------------------
-// roots/list
-// ---------------------------------------------------------------------------
-
-/// Handle roots/list — returns the file system roots the client exposes.
-///
-/// Roots tell the server which directories/files the client considers its
-/// working context. On Edge, we return an empty list since the WASM sandbox
-/// has no access to the client's filesystem.
-fn handle_roots_list(request: &McpRequest) -> McpResponse {
-    ok_response(
-        request.id.clone(),
-        serde_json::json!({ "roots": [] }),
     )
 }
 
@@ -470,7 +401,10 @@ fn handle_completion_complete(request: &McpRequest) -> McpResponse {
             return error_response(
                 request.id.clone(),
                 -32602,
-                format!("Invalid ref type: '{}'. Expected 'ref/prompt' or 'ref/resource'", other),
+                format!(
+                    "Invalid ref type: '{}'. Expected 'ref/prompt' or 'ref/resource'",
+                    other
+                ),
             );
         }
     }
@@ -500,22 +434,6 @@ fn handle_completion_complete(request: &McpRequest) -> McpResponse {
                 "hasMore": false
             }
         }),
-    )
-}
-
-// ---------------------------------------------------------------------------
-// sampling/createMessage
-// ---------------------------------------------------------------------------
-
-/// Handle sampling/createMessage — server-initiated LLM sampling.
-///
-/// On Edge, the server cannot perform LLM sampling (no model access).
-/// Return a clear error indicating this capability is unavailable.
-fn handle_sampling_create_message(request: &McpRequest) -> McpResponse {
-    error_response(
-        request.id.clone(),
-        -32603,
-        "Sampling is not available on the Edge server. Use a local VELOCITY-MCP instance for sampling support.",
     )
 }
 
@@ -603,8 +521,10 @@ mod tests {
         assert!(result["capabilities"]["tools"].is_object());
         assert!(result["capabilities"]["resources"].is_object());
         assert!(result["capabilities"]["prompts"].is_object());
-        assert!(result["capabilities"]["elicitation"].is_object());
-        assert!(result["capabilities"]["roots"].is_object());
+        // Client-direction capabilities must not appear in the server's map.
+        assert!(result["capabilities"].get("elicitation").is_none());
+        assert!(result["capabilities"].get("roots").is_none());
+        assert!(result["capabilities"].get("sampling").is_none());
         assert_eq!(result["serverInfo"]["name"], "velocity-mcp-edge");
     }
 
@@ -629,7 +549,9 @@ mod tests {
 
     #[test]
     fn test_notifications_cancelled() {
-        let r = req(br#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":42}}"#);
+        let r = req(
+            br#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":42}}"#,
+        );
         let resp = handle_mcp_request(&r);
         assert!(resp.result.is_some());
     }
@@ -658,19 +580,18 @@ mod tests {
     #[test]
     fn test_tools_list_preserves_request_ids() {
         for id in [serde_json::json!(1), serde_json::json!("tool-list")] {
-            let request = req(
-                &serde_json::to_vec(&serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "method": "tools/list"
-                }))
-                .unwrap(),
-            );
+            let request = req(&serde_json::to_vec(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/list"
+            }))
+            .unwrap());
             for response in [
                 handle_mcp_request(&request),
                 handle_mcp_request_with_executor(&request, &MockExecutor),
             ] {
-                let serialized: Value = serde_json::from_slice(&serialize_response(&response)).unwrap();
+                let serialized: Value =
+                    serde_json::from_slice(&serialize_response(&response)).unwrap();
                 assert_eq!(serialized["id"], id);
             }
         }
@@ -743,7 +664,10 @@ mod tests {
     fn test_resources_list_empty() {
         let r = req(br#"{"jsonrpc":"2.0","method":"resources/list","params":{},"id":1}"#);
         let resp = handle_mcp_request(&r);
-        let resources = resp.result.unwrap()["resources"].as_array().unwrap().clone();
+        let resources = resp.result.unwrap()["resources"]
+            .as_array()
+            .unwrap()
+            .clone();
         assert!(resources.is_empty());
     }
 
@@ -794,69 +718,42 @@ mod tests {
 
     #[test]
     fn test_prompts_get_unknown() {
-        let r = req(br#"{"jsonrpc":"2.0","method":"prompts/get","params":{"name":"nonexistent"},"id":1}"#);
+        let r = req(
+            br#"{"jsonrpc":"2.0","method":"prompts/get","params":{"name":"nonexistent"},"id":1}"#,
+        );
         let resp = handle_mcp_request(&r);
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().code, -32001);
     }
 
-    // -- elicitation --
+    // -- client-direction methods --
 
+    /// `elicitation/create`, `roots/list` and `sampling/createMessage` are requests
+    /// the server sends *to* a client, so an inbound one names a method this server
+    /// does not serve. Each case below is a request the old dispatch table answered
+    /// — two of them with valid params, one designed to trip param validation — so
+    /// the refusal must not depend on the params.
     #[test]
-    fn test_elicitation_create_valid() {
-        let r = req(
-            br#"{"jsonrpc":"2.0","method":"elicitation/create","params":{"message":"Confirm?"},"id":1}"#,
-        );
-        let resp = handle_mcp_request(&r);
-        let result = resp.result.unwrap();
-        assert_eq!(result["action"], "accept");
-        assert_eq!(result["message"], "Confirm?");
-    }
-
-    #[test]
-    fn test_elicitation_create_missing_message() {
-        let r = req(br#"{"jsonrpc":"2.0","method":"elicitation/create","params":{},"id":1}"#);
-        let resp = handle_mcp_request(&r);
-        assert!(resp.error.is_some());
-        assert_eq!(resp.error.unwrap().code, -32602);
-    }
-
-    #[test]
-    fn test_elicitation_create_empty_message() {
-        let r = req(br#"{"jsonrpc":"2.0","method":"elicitation/create","params":{"message":""},"id":1}"#);
-        let resp = handle_mcp_request(&r);
-        assert!(resp.error.is_some());
-        assert_eq!(resp.error.unwrap().code, -32602);
-    }
-
-    #[test]
-    fn test_elicitation_create_with_schema() {
-        let r = req(
-            br#"{"jsonrpc":"2.0","method":"elicitation/create","params":{"message":"Pick","requestedSchema":{"type":"object","properties":{"choice":{"type":"string"}}}},"id":1}"#,
-        );
-        let resp = handle_mcp_request(&r);
-        assert!(resp.result.is_some());
-        assert_eq!(resp.result.unwrap()["action"], "accept");
-    }
-
-    #[test]
-    fn test_elicitation_create_invalid_schema() {
-        let r = req(
-            br#"{"jsonrpc":"2.0","method":"elicitation/create","params":{"message":"Pick","requestedSchema":"not-an-object"},"id":1}"#,
-        );
-        let resp = handle_mcp_request(&r);
-        assert!(resp.error.is_some());
-        assert_eq!(resp.error.unwrap().code, -32602);
-    }
-
-    // -- roots --
-
-    #[test]
-    fn test_roots_list_empty() {
-        let r = req(br#"{"jsonrpc":"2.0","method":"roots/list","params":{},"id":1}"#);
-        let resp = handle_mcp_request(&r);
-        let roots = resp.result.unwrap()["roots"].as_array().unwrap().clone();
-        assert!(roots.is_empty());
+    fn test_client_direction_methods_are_refused() {
+        let cases = [
+            r#"{"jsonrpc":"2.0","method":"elicitation/create","params":{"message":"Confirm?"},"id":1}"#,
+            r#"{"jsonrpc":"2.0","method":"elicitation/create","params":{},"id":2}"#,
+            r#"{"jsonrpc":"2.0","method":"elicitation/create","params":{"message":"Pick","requestedSchema":"not-an-object"},"id":3}"#,
+            r#"{"jsonrpc":"2.0","method":"roots/list","params":{},"id":4}"#,
+            r#"{"jsonrpc":"2.0","method":"sampling/createMessage","params":{"messages":[],"maxTokens":100},"id":5}"#,
+        ];
+        for raw in cases {
+            let resp = handle_mcp_request(&req(raw.as_bytes()));
+            assert!(
+                resp.result.is_none(),
+                "{raw} was answered: {:?}",
+                resp.result
+            );
+            let err = resp
+                .error
+                .unwrap_or_else(|| panic!("{raw} returned neither result nor error"));
+            assert_eq!(err.code, -32601, "wrong code for {raw}");
+        }
     }
 
     // -- completion --
@@ -910,18 +807,6 @@ mod tests {
         let resp = handle_mcp_request(&r);
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().code, -32602);
-    }
-
-    // -- sampling --
-
-    #[test]
-    fn test_sampling_not_available_on_edge() {
-        let r = req(
-            br#"{"jsonrpc":"2.0","method":"sampling/createMessage","params":{"messages":[],"maxTokens":100},"id":1}"#,
-        );
-        let resp = handle_mcp_request(&r);
-        assert!(resp.error.is_some());
-        assert_eq!(resp.error.unwrap().code, -32603);
     }
 
     // -- unknown method --

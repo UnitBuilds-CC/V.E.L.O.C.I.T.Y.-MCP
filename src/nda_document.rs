@@ -989,7 +989,7 @@ mod tests {
         compiler.add_command(1, 0xFFFFFF, 0, 0, 100, 20, "test");
         let mut data = compiler.compile();
         // Find the command area (after header + 1 triple) and set type to 0
-        let cmd_start = HEADER_SIZE + 1 * TRIPLE_SIZE;
+        let cmd_start = HEADER_SIZE + TRIPLE_SIZE;
         data[cmd_start] = 0; // Invalid type
         let result = NdaDocument::read(&data);
         assert!(result.is_err());
@@ -1138,7 +1138,7 @@ mod tests {
             }
             let truncated = &signed_data[..truncate_at];
             // Should either fail to parse or fail signature verification
-            if let Ok(_) = NdaDocument::read(truncated) {
+            if NdaDocument::read(truncated).is_ok() {
                 assert!(!NdaDocument::has_signature(truncated));
             }
         }

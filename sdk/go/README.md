@@ -5,7 +5,7 @@ A type-safe Go client for connecting to VELOCITY-MCP servers.
 ## Installation
 
 ```bash
-go get github.com/UnitBuilds-CC/velocity-mcp/sdk/go
+go get github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/sdk/go
 ```
 
 ## Quick Start
@@ -20,7 +20,7 @@ import (
     "fmt"
     "time"
     
-    velocity_mcp "github.com/UnitBuilds-CC/velocity-mcp/sdk/go"
+    velocity_mcp "github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/sdk/go"
 )
 
 func main() {
@@ -75,13 +75,13 @@ import (
     "context"
     "fmt"
     
-    velocity_mcp "github.com/UnitBuilds-CC/velocity-mcp/sdk/go"
+    velocity_mcp "github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/sdk/go"
 )
 
 func main() {
     // Create WebSocket transport
     transport := velocity_mcp.NewWebSocketTransport(
-        "ws://localhost:3000/ws",
+        "ws://localhost:3000/v1/ws",
         "your-api-key", // Optional
     )
     
@@ -140,7 +140,7 @@ WebSocket transport for bidirectional communication.
 
 ```go
 transport := velocity_mcp.NewWebSocketTransport(
-    "ws://localhost:3000/ws", // WebSocket URL
+    "ws://localhost:3000/v1/ws", // WebSocket URL
     "your-api-key",           // API key (optional)
 )
 ```

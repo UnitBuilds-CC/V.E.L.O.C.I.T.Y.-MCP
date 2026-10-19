@@ -24,26 +24,26 @@ echo ""
 
 # Test performance endpoint
 echo "Testing performance endpoint..."
-curl -s http://127.0.0.1:3000/performance | jq .
+curl -s http://127.0.0.1:3000/v1/performance | jq .
 echo ""
 
 # Test MCP endpoint
 echo "Testing MCP tools/list..."
-curl -s -X POST http://127.0.0.1:3000/mcp \
+curl -s -X POST http://127.0.0.1:3000/v1/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"tools/list","id":1}' | jq .
 echo ""
 
 # Test file_read tool
 echo "Testing file_read tool..."
-curl -s -X POST http://127.0.0.1:3000/mcp \
+curl -s -X POST http://127.0.0.1:3000/v1/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"file_read","arguments":{"path":"README.md"}},"id":2}' | jq .
 echo ""
 
 # Test shell_exec tool
 echo "Testing shell_exec tool..."
-curl -s -X POST http://127.0.0.1:3000/mcp \
+curl -s -X POST http://127.0.0.1:3000/v1/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"shell_exec","arguments":{"command":"echo Hello from HTTP!"}},"id":3}' | jq .
 echo ""

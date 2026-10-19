@@ -4,11 +4,7 @@ A type-safe Python client for connecting to VELOCITY-MCP servers.
 
 ## Installation
 
-```bash
-pip install velocity-mcp-client
-```
-
-Or install from source:
+There is no PyPI package yet, so install from source:
 
 ```bash
 cd sdk/python

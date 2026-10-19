@@ -2,7 +2,7 @@ use std::time::Instant;
 use velocity_mcp::wasm_runtime::{micropython::MicroPythonRuntime, WasmRuntime};
 
 fn main() {
-    let wasm = std::fs::read("bench_tools/micropython_wasm/micropython-1.24.1/ports/webassembly/build-wasi/micropython.wasm")
+    let wasm = std::fs::read("bench_tools/micropython_wasm/wasi-reactor/build/micropython.wasm")
         .expect("micropython.wasm not found");
     let mut rt = MicroPythonRuntime::cold_start(&wasm).expect("cold start failed");
 

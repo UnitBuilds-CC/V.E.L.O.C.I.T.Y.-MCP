@@ -276,11 +276,7 @@ impl WasmRuntime for GoWasmRuntime {
         Ok(result_str)
     }
 
-    fn call_tool_binary(
-        &mut self,
-        name: &str,
-        args_tlv: &[u8],
-    ) -> Result<String, Box<dyn Error>> {
+    fn call_tool_binary(&mut self, name: &str, args_tlv: &[u8]) -> Result<String, Box<dyn Error>> {
         use crate::protocol::nda_native::decode_json_value;
         let (value, _) = decode_json_value(args_tlv)?;
         let json_str = serde_json::to_string(&value)?;
@@ -291,6 +287,12 @@ impl WasmRuntime for GoWasmRuntime {
         self.tools.clear();
         self.compiled_tools.clear();
         Ok(())
+    }
+
+    /// Go allocates the input buffer itself (malloc, or grows linear memory
+    /// for the fallback offset), so there is no fixed slot to overrun.
+    fn args_slot_capacity(&self) -> Option<usize> {
+        None
     }
 
     fn language(&self) -> &str {

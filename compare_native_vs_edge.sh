@@ -1,7 +1,7 @@
 #!/bin/bash
 # Compare native vs Edge MCP latency
 
-NATIVE_URL="http://localhost:3000/mcp"
+NATIVE_URL="http://localhost:3000/v1/mcp"
 EDGE_URL="https://velocity-mcp-edge.wasmer.app/mcp"
 
 echo "=== Native vs Wasmer Edge MCP Comparison ==="

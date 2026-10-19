@@ -1,9 +1,10 @@
 //! Integration tests for shared memory transports.
 //!
-//! These tests require a running VELOCITY-MCP server with shmem enabled.
-//! Run with: `cargo test --test shmem_integration -- --ignored`
-//!
-//! Or set VELOCITY_SHMEM_TEST=1 to run automatically.
+//! The server-backed tests are `#[ignore]`d because they need a built server
+//! binary: `spawn_server` launches `--mode shmem` itself, looking for
+//! `target/release/velocity_mcp[.exe]` in the workspace root above this crate.
+//! Set `VELOCITY_MCP_SERVER` to point at a different binary. Run them with:
+//! `cargo test -p velocity-mcp-client --test shmem_integration_test -- --ignored`
 
 #[cfg(target_os = "windows")]
 mod shmem_tests {
@@ -149,6 +150,7 @@ mod shmem_tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_json_shmem_transport_initialize() {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -167,6 +169,7 @@ mod shmem_tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_json_shmem_transport_list_tools() {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -186,6 +189,7 @@ mod shmem_tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_cross_transport_consistency() {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -263,6 +267,7 @@ mod shmem_tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_send_after_close() {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -295,6 +300,7 @@ mod shmem_tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_close_is_idempotent() {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -45,6 +45,7 @@ LDFLAGS += -Wl,--export=mp_wasi_get_output_len
 LDFLAGS += -Wl,--export=mp_wasi_destroy
 LDFLAGS += -Wl,--export=mp_wasi_register_tool
 LDFLAGS += -Wl,--export=mp_wasi_call_tool
+LDFLAGS += -Wl,--export=mp_wasi_call_tool_binary
 LDFLAGS += -Wl,--export=mp_wasi_set_args
 LDFLAGS += -Wl,--export=malloc
 LDFLAGS += -Wl,--export=free

@@ -63,6 +63,12 @@ func (t *HttpTransport) Send(ctx context.Context, request JsonRpcRequest) (*Json
 	}
 	defer resp.Body.Close()
 
+	// A notification is answered with an empty 204 (src/transport/http.rs), so there
+	// is no JSON-RPC envelope to decode; any other non-200 status stays an error.
+	if resp.StatusCode == http.StatusNoContent {
+		return nil, nil
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, &TransportError{McpError{Message: fmt.Sprintf("HTTP error %d: %s", resp.StatusCode, string(body))}}
@@ -108,7 +114,7 @@ func (t *WebSocketTransport) Send(ctx context.Context, request JsonRpcRequest) (
 		if t.apiKey != "" {
 			header.Set("Authorization", "Bearer "+t.apiKey)
 		}
-		
+
 		conn, _, err := websocket.DefaultDialer.DialContext(ctx, t.url, header)
 		if err != nil {
 			return nil, &TransportError{McpError{Message: fmt.Sprintf("failed to connect: %v", err)}}
@@ -124,6 +130,12 @@ func (t *WebSocketTransport) Send(ctx context.Context, request JsonRpcRequest) (
 
 	if err := t.conn.WriteMessage(websocket.TextMessage, body); err != nil {
 		return nil, &TransportError{McpError{Message: fmt.Sprintf("failed to send request: %v", err)}}
+	}
+
+	// The server replies to a request only, so reading a frame after a notification
+	// would block until the connection closes.
+	if request.ID == nil {
+		return nil, nil
 	}
 
 	// Receive response
@@ -144,7 +156,7 @@ func (t *WebSocketTransport) Send(ctx context.Context, request JsonRpcRequest) (
 func (t *WebSocketTransport) Close() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	
+
 	if t.conn != nil {
 		return t.conn.Close()
 	}

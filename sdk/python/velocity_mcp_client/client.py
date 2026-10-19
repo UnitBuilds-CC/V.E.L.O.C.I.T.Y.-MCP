@@ -20,7 +20,7 @@ from .types import (
     PromptsListResult,
     PromptGetResult,
 )
-from .errors import ProtocolError, ToolExecutionError, ResourceNotFoundError, PromptNotFoundError, ServerError
+from .errors import ProtocolError, ToolExecutionError, ResourceNotFoundError, PromptNotFoundError, ServerError, TransportError
 
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -55,7 +55,12 @@ class McpClient:
         )
         
         response = await self.transport.send(request)
-        
+
+        # _send_request always stamps an id, so a missing envelope means the server
+        # answered this request like a notification.
+        if response is None:
+            raise TransportError(f"No response envelope for request {request.id}")
+
         if response.error:
             raise ProtocolError(
                 code=response.error.code,

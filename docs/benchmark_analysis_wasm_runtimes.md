@@ -74,7 +74,7 @@ Every runtime in the table hits the cache, including the toy-interpreter modules
 
 ## Toy Interpreters — FAILING Correctness (6/13)
 
-All 6 share the same C interpreter core (`interp_core/interp.c`, 277,630–277,747 bytes per module). Given real language syntax by `comprehensive_benchmark` (2026-09-17) they return empty results:
+All 6 share the same C interpreter core (`interp_core/interp.c`, 276,888–277,005 bytes per module). Given real language syntax by `comprehensive_benchmark` (2026-09-17) they return empty results:
 
 | Language | Result | Failed calls / attempts |
 |----------|--------|-------------------------|
@@ -99,7 +99,7 @@ Measured 2026-09-17 by `comprehensive_benchmark` against the Node.js tool server
 |----------|------|------------|------------|
 | JSON-RPC stdio (Node.js) | 594.5 µs | 115.2 µs | 125.1 µs |
 
-For the eight-pipeline Rust transport comparison (NDA/JSON over shmem/stdio/HTTP), see [Performance Comparison](COMPARISON.md) and the `bench_results_core5.txt`-sourced tables in the README.
+For the eight-pipeline Rust transport comparison (NDA/JSON over shmem/stdio/HTTP), see [Performance Comparison](COMPARISON.md) and the `bench_results_core5.txt`-sourced tables in the README (that capture is a local artifact — raw benchmark output is not committed; the README names its run date and the command that regenerates it).
 
 ## Recommendations
 
@@ -110,7 +110,7 @@ For the eight-pipeline Rust transport comparison (NDA/JSON over shmem/stdio/HTTP
 
 ## Benchmark Methodology
 
-- **Environment**: Windows 10 x64, Intel Core 5 210H (12 cores), Wasmer 5.0.6 with the Cranelift backend, release profile.
+- **Environment**: Windows 11 x64, Intel Core 5 210H (8 cores / 12 logical processors), Wasmer 5.0.6 with the Cranelift backend, release profile.
 - **WASM vs native**: cold start = compile/instantiate + register + first tool call; hot call = repeated `call_tool()` on a persistent instance, with the native CLI on the same input for comparison.
 - **Metering/cache**: Part A times module compile (unmetered and metered) vs deserialization of the serialized artifact; Part B times full runtime creation first-vs-cached; Part C times 5,000 calls after 200 warmups through `WasmRuntimeRegistry::call_tool`; Part D times 300 calls through the real server binary over stdio.
 - **Correctness**: the `text_analyze` / regex tool output is checked against expected word and char counts.

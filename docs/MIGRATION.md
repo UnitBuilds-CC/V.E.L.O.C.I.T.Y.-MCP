@@ -6,10 +6,11 @@ This guide covers migrating from the Node.js reference MCP implementation to VEL
 
 | Metric | Node.js MCP | VELOCITY-MCP |
 |--------|------------|--------------|
-| Average latency | Baseline | 27.7x faster (NDA/shmem) |
+| Average latency, same transport (stdio + JSON-RPC) | Baseline | 2.2x faster on `ping`, 1.4x on `tools/call`, 4.6x **slower** on `tools/list` |
+| Average latency, NDA/shmem vs Node JSON/stdio | Baseline | 9.7x–14.5x faster |
 | Memory usage | not currently measured | not currently measured |
-| Startup time | ~500ms | <50ms |
-| Binary size | ~80 MB (Node runtime) | ~5 MB (single executable) |
+| Startup time | not measured | 4.6 ms to bind with 19 plugins loaded (warm); 173 ms cold |
+| Download size | 92,825,416 bytes (`node.exe` v24.19.0 on this box) | 14,682,112 bytes (`velocity_mcp.exe`, release) |
 
 ## Transport Mapping
 
@@ -93,15 +94,17 @@ All tools registered via the Node.js `server.tool()` API work identically. VELOC
 
 ## Performance Expectations
 
-### stdio mode (fair comparison, same transport)
-- **1.0x average** (tied with Node.js)
-- **1.7x faster at p99** (better tail latency)
+### stdio mode (fair comparison: same transport, same JSON-RPC encoding)
+Measured 2026-09-17, warm p50, Core 5 210H (raw: [Performance Comparison](COMPARISON.md)):
+- **ping**: 0.044 ms vs 0.098 ms → Rust 2.2x
+- **tools/call**: 0.061 ms vs 0.083 ms → Rust 1.4x
+- **tools/list**: 0.807 ms vs 0.175 ms → **Node 4.6x**. Rust assembles 40 tools from 5 registries; the Node stub returns a static array.
 
 ### NDA/shmem mode (maximum performance)
-- **27.7x faster average**
-- **40.8x faster at p99**
+- **vs this server's own JSON/stdio path** (2026-09-17): ping 82.0x, tools/list 249.7x, tools/call 36.2x on average
+- **vs Node.js JSON/stdio** (2026-09-02 full-stack run): ping 14.5x, tools/list 11.4x, tools/call 9.7x
 
-The biggest gains come from shared memory transport, which eliminates JSON serialization overhead entirely. To use shmem, both the client and server must support it (see [Client Integration](CLIENT_INTEGRATION.md)).
+The shmem headline ratios are keyed to VELOCITY-MCP's own JSON/stdio baseline, not to Node.js — they measure the transport and encoding change, not the language. To use shmem, both the client and server must support it (see [Client Integration](CLIENT_INTEGRATION.md)).
 
 ## Step-by-Step Migration
 
@@ -115,7 +118,7 @@ The biggest gains come from shared memory transport, which eliminates JSON seria
 
 - **Config format**: Environment variables → TOML file (optional, env vars still work)
 - **Plugin system**: npm packages → VELOCITY-MCP plugin marketplace (JSON manifests)
-- **Monitoring**: None built-in → Prometheus metrics, Grafana dashboards, OpenTelemetry
+- **Monitoring**: None built-in → JSON counters at `/v1/metrics` and Prometheus exposition at `/v1/metrics/prometheus`, both needing the `http` feature the published release binary and Docker image build with, plus a Grafana dashboard JSON under `deploy/grafana/`. OpenTelemetry is library-only: the `observability` feature is compiled into neither artifact, and no code path calls `init_observability`, so spans export only for an embedder that sets up the tracer itself.
 
 ## What Stays the Same
 

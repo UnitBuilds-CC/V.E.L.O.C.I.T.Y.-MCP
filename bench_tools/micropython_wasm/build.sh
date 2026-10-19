@@ -45,4 +45,9 @@ cp "$OVERLAY_DIR/qstrdefsport.h" "$PORT_DIR/"
 echo "Building MicroPython WASI reactor..."
 cd "$PORT_DIR"
 export PATH="$(dirname "$WASI_SDK")/bin:$PATH"
-exec "$MAKE" -f Makefile.wasi WASI_SDK="$WASI_SDK"
+"$MAKE" -f Makefile.wasi WASI_SDK="$WASI_SDK"
+
+# Publish into the tracked location that src/config.rs, the tests and the
+# benchmarks read. build-wasi/ itself is gitignored.
+cp "$PORT_DIR/build-wasi/micropython.wasm" "$OVERLAY_DIR/build/micropython.wasm"
+echo "Installed: $OVERLAY_DIR/build/micropython.wasm"

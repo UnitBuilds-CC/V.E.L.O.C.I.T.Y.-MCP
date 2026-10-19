@@ -46,6 +46,12 @@ func (c *McpClient) sendRequest(ctx context.Context, method string, params inter
 		return nil, err
 	}
 
+	// sendRequest always stamps an id, so no envelope means the server answered this
+	// request like a notification. Reading .Error off the nil pointer panics instead.
+	if response == nil {
+		return nil, &TransportError{McpError{Message: fmt.Sprintf("no response envelope for request %v", request.ID)}}
+	}
+
 	if response.Error != nil {
 		return nil, &ProtocolError{
 			McpError: McpError{Message: fmt.Sprintf("Protocol error %d: %s", response.Error.Code, response.Error.Message)},
@@ -97,7 +103,9 @@ func (c *McpClient) Initialize(ctx context.Context) (*InitializeResult, error) {
 		Jsonrpc: "2.0",
 		Method:  "notifications/initialized",
 	}
-	c.transport.Send(ctx, notifRequest)
+	if _, err := c.transport.Send(ctx, notifRequest); err != nil {
+		return nil, err
+	}
 
 	c.initialized = true
 

@@ -2,10 +2,19 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+# No `rule_files:` list here, and deploy/docker-compose.yml mounts only this file into
+# the container, so deploy/prometheus/alerts.yml is never loaded and no alert evaluates.
+# Wiring it means adding `rule_files: ["alerts.yml"]` here plus a read-only bind mount of
+# that file in the compose service -- which starts firing real notifications, so it is an
+# operator decision rather than a repair. See that file's header for which of its eleven
+# rules could fire once loaded: five key on series this server does not export.
+
 scrape_configs:
   - job_name: 'velocity-mcp'
     static_configs:
       - targets: ['velocity-mcp:3000']
-    metrics_path: '/metrics'
+    metrics_path: '/v1/metrics/prometheus'
+    # Every /v1 route is behind the bearer-token middleware: when security.api_key
+    # is configured, add an `authorization: { credentials: "<key>" }` block here.
     scrape_interval: 10s
     scrape_timeout: 5s

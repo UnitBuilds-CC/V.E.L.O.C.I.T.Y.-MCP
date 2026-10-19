@@ -29,7 +29,7 @@ fn load_wasm(lang: &str) -> Vec<u8> {
             _ => panic!("unknown lang"),
         }
     );
-    std::fs::read(&path).expect(&format!("WASM not found: {}", path))
+    std::fs::read(&path).unwrap_or_else(|_| panic!("WASM not found: {}", path))
 }
 
 // Test 1: Closures with mutable captured state
@@ -500,11 +500,16 @@ fn run_test(name: &str, test_fn: fn(&mut dyn WasmRuntime, &str) -> Result<String
             Ok(result) => {
                 let parsed: serde_json::Value =
                     serde_json::from_str(&result).unwrap_or(serde_json::Value::Null);
+                // An in-band `error` payload is the guest refusing the program, not a capability pass.
+                let (verdict, field) = match parsed.get("error").and_then(|v| v.as_str()) {
+                    Some(_) => ("ERR-RESULT", "error"),
+                    None => ("OK", "message"),
+                };
                 let msg = parsed
-                    .get("message")
+                    .get(field)
                     .and_then(|v| v.as_str())
                     .unwrap_or(&result);
-                println!("  {}: OK - {}", lang, msg);
+                println!("  {}: {} - {}", lang, verdict, msg);
             }
             Err(e) => {
                 println!("  {}: FAIL - {}", lang, e);

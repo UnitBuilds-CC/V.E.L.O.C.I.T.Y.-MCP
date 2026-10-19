@@ -16,9 +16,15 @@ use tracing::info;
 pub fn run_benchmarks() {
     // Benchmarks measure raw WASM execution; metering overhead is profiled separately.
     crate::wasm_runtime::set_instruction_limit(None);
-    info!("Starting V.E.L.O.C.I.T.Y.-MCP v3.0.0 Performance Benchmark Suite");
+    info!(
+        "Starting V.E.L.O.C.I.T.Y.-MCP v{} Performance Benchmark Suite",
+        crate::VERSION
+    );
     println!("================================================================");
-    println!("     V.E.L.O.C.I.T.Y.-MCP v3.0.0 Performance Benchmark Suite");
+    println!(
+        "     V.E.L.O.C.I.T.Y.-MCP v{} Performance Benchmark Suite",
+        crate::VERSION
+    );
     println!("================================================================");
 
     bench_json_parsing();
@@ -1714,7 +1720,7 @@ fn bench_cross_language_tools() {
     // ── 6. Python via MicroPython/WASM (in-process) ─────────────────────────
     println!("\n  [6] Python via MicroPython/WASM (Wasmer, in-process):");
 
-    let mp_wasm_path = "bench_tools/micropython_wasm/micropython-1.24.1/ports/webassembly/build-wasi/micropython.wasm";
+    let mp_wasm_path = "bench_tools/micropython_wasm/wasi-reactor/build/micropython.wasm";
     if !std::path::Path::new(mp_wasm_path).exists() {
         println!("    SKIP — micropython.wasm not found.");
         println!("    Build with: cd bench_tools/micropython_wasm && bash build.sh");

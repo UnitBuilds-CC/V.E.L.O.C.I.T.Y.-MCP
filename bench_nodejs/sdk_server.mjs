@@ -12,8 +12,10 @@ import http from "http";
 import https from "https";
 
 const server = new McpServer({
+  // Benchmark peer, not the Rust server: identify as a stand-in so its
+  // serverInfo.version can never be read as a VELOCITY-MCP release number.
   name: "velocity-mcp-node",
-  version: "3.1.0",
+  version: "0.0.0-node-benchmark-peer",
 });
 
 function ok(data) {

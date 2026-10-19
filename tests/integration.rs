@@ -424,7 +424,7 @@ fn test_adversarial_xlsx_malformed_xml() {
     match result {
         Ok(nda_data) => {
             let doc = velocity_mcp::nda_document::NdaDocument::read(&nda_data).unwrap();
-            assert!(doc.triples.len() > 0, "Should have parsed some triples");
+            assert!(!doc.triples.is_empty(), "Should have parsed some triples");
         }
         Err(e) => {
             // Error should be sanitized (no internal paths)
@@ -507,13 +507,10 @@ fn test_adversarial_empty_xlsx() {
 
     let result = velocity_mcp::nda_converter::convert_to_nda(xlsx_path.to_str().unwrap());
     // Should succeed with empty data or fail gracefully
-    match &result {
-        Ok(data) => {
-            let doc = velocity_mcp::nda_document::NdaDocument::read(data).unwrap();
-            // Empty sheet = no triples is acceptable
-            assert!(doc.verify_merkle().is_ok());
-        }
-        Err(_) => {} // Graceful error is fine
+    if let Ok(data) = &result {
+        let doc = velocity_mcp::nda_document::NdaDocument::read(data).unwrap();
+        // Empty sheet = no triples is acceptable
+        assert!(doc.verify_merkle().is_ok());
     }
 
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -1039,36 +1036,10 @@ fn test_http_security_config() {
 }
 
 // ─── HTTP Auth Middleware ──────────────────────────────────────────────────────
-
-#[cfg(feature = "http")]
-mod http_auth_tests {
-    use std::sync::atomic::AtomicBool;
-    use std::sync::Arc;
-    use velocity_mcp::transport::http::HttpSecurityConfig;
-
-    #[test]
-    fn test_health_endpoint_no_auth_required() {
-        let _t = super::test_timer("test_health_endpoint_no_auth_required");
-        // /health should always be accessible without auth
-        let _shutdown = Arc::new(AtomicBool::new(false));
-        let _security = HttpSecurityConfig {
-            api_key: Some("secret_key".to_string()),
-            ..Default::default()
-        };
-        // The health endpoint should work even with API key configured
-        // This is verified by the router structure: /health is outside the protected router
-    }
-
-    #[test]
-    fn test_constant_time_eq() {
-        let _t = super::test_timer("test_constant_time_eq");
-        let key1 = "test_api_key_12345";
-        let key2 = "test_api_key_12345";
-        let key3 = "test_api_key_12346";
-        assert_eq!(key1, key2);
-        assert_ne!(key1, key3);
-    }
-}
+// The auth middleware and the /health exemption are exercised where the router
+// is constructible: `src/transport/http.rs` tests (`test_auth_middleware_with_api_key`,
+// `test_auth_empty_bearer_token_is_rejected_not_panic`,
+// `test_auth_empty_configured_key_fails_closed`, `test_health_bypasses_auth`).
 
 // ─── Batch Request Handler ─────────────────────────────────────────────────────
 
@@ -1202,7 +1173,7 @@ fn test_chaos_shell_timeout() {
         "params": {
             "name": "shell_exec",
             "arguments": {
-                "command": if cfg!(windows) { "echo test" } else { "echo test" },
+                "command": "echo test",
                 "timeout": 5
             }
         },

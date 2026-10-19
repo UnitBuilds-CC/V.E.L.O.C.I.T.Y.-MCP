@@ -7,7 +7,9 @@
 pub mod tools;
 
 // Native-only: HTTP handler functions that depend on hyper.
-// On wasm32 (Wasmer Edge), the WCGI handler in main.rs is the entry point.
+// On wasm32 the entry point lives in main.rs: the socket HTTP server for the
+// deployed WASIX build (`target_vendor = "wasmer"`), and the plain-WASI CGI
+// fallback for other wasm32 targets.
 #[cfg(not(target_arch = "wasm32"))]
 use http_body_util::Full;
 #[cfg(not(target_arch = "wasm32"))]

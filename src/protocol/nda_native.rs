@@ -562,18 +562,9 @@ pub fn parse_nda_request_inplace(frame: &[u8]) -> Result<NdaRequestRef<'_>, Box<
         let method = plaintext[0] & !FLAG_ENCRYPTED;
         let id_len = skip_tlv_value(&plaintext[1..])?;
 
-        // Safety: We create references into the `plaintext` Vec before moving it
-        // into the struct. The Vec's heap buffer is not reallocated during a move,
-        // so the references remain valid. The struct owns the Vec via `owned_payload`,
-        // so the buffer is not deallocated while the struct is alive. The lifetime
-        // `'a` is satisfied because the struct is returned and lives at least as long
-        // as the caller needs it.
-        let id_tlv_ptr = plaintext.as_ptr();
-        let id_tlv = unsafe { std::slice::from_raw_parts(id_tlv_ptr.add(1), id_len) };
-        let data_ptr = plaintext.as_ptr();
-        let data = unsafe {
-            std::slice::from_raw_parts(data_ptr.add(1 + id_len), plaintext.len() - 1 - id_len)
-        };
+        // Extract TLV fields using safe slice indexing
+        let id_tlv = &plaintext[1..1 + id_len];
+        let data = &plaintext[1 + id_len..];
 
         return Ok(NdaRequestRef {
             method,
@@ -975,28 +966,31 @@ static TOOLS_LIST_CACHE: OnceLock<Mutex<Option<(u64, Vec<u8>)>>> = OnceLock::new
 /// of ~8KB; re-encoding only happens when the tool set actually changes.
 pub fn encoded_tools_list_result() -> Vec<u8> {
     let cell = TOOLS_LIST_CACHE.get_or_init(|| Mutex::new(None));
+    
+    // Hold cache lock for entire check-and-update to prevent race condition
+    let mut cache = cell.lock().unwrap_or_else(|e| e.into_inner());
+    
     let gen = crate::registry::registry_generation();
-    {
-        let cache = cell.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((g, bytes)) = &*cache {
-            if *g == gen {
-                return bytes.clone();
-            }
+    if let Some((g, bytes)) = &*cache {
+        if *g == gen {
+            return bytes.clone();
         }
     }
+    
     let tools = crate::registry::get_tools();
     let mut bytes = Vec::with_capacity(8 * 1024);
     encode_tools_list_result(&mut bytes, &tools).unwrap_or_else(|e| {
         tracing::error!("tools_list_tlv encode failed: {}", e);
     });
+    
     // Only store if the generation was stable across the build: otherwise a
     // concurrent registration would be masked by pre-mutation bytes cached
     // under the post-mutation generation.
     let gen_after = crate::registry::registry_generation();
     if gen_after == gen {
-        let mut cache = cell.lock().unwrap_or_else(|e| e.into_inner());
         *cache = Some((gen_after, bytes.clone()));
     }
+    
     bytes
 }
 

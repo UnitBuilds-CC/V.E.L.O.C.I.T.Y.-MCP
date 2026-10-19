@@ -321,7 +321,7 @@ const TOOLS = [
   },
   {
     name: 'convert_to_nda_tool',
-    description: 'Convert a JSON-RPC tool call to NDA binary format and register it for fast execution. Subsequent calls parse about 2.8x faster than JSON (measured). The converted tool is immediately available by name.',
+    description: 'Convert a JSON-RPC tool call to NDA binary format and register it for fast execution. Converted calls are dispatched through the zero-allocation TLV frame path instead of parsing a JSON document each time. The converted tool is immediately available by name.',
     inputSchema: {
       type: 'object',
       properties: {

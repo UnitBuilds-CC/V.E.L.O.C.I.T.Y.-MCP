@@ -2,7 +2,9 @@
 //!
 //! These run the real quickjs.wasm module end-to-end: the factory path and the
 //! plugin dispatch path (which shares a cached runtime behind a global Mutex).
-//! quickjs.wasm is local-only (not tracked in git), so tests skip when absent.
+//! Both fixtures are tracked in the repository (verified 2026-10-11 with `git ls-files`), so these
+//! gates run from a clean clone; the `exists()` guards stay only for a working tree where the
+//! `bench_tools/` fixture directories were pruned, and a skip there is a local-state fact.
 
 use serde_json::json;
 use velocity_mcp::plugins::{execute_plugin_tool, PluginExecutor, PluginTool};
@@ -39,18 +41,22 @@ fn wasm_tool(name: &str, source: &str) -> PluginTool {
 #[test]
 fn test_quickjs_runs_within_default_instruction_budget() {
     if !quickjs_available() {
-        eprintln!("skipping: {} not present (not tracked in git)", QUICKJS_WASM);
+        eprintln!(
+            "skipping: {} not present in this working tree",
+            QUICKJS_WASM
+        );
         return;
     }
 
     let mut runtime = create_wasm_runtime_for_language("javascript", QUICKJS_WASM)
         .expect("QuickJS runtime should build from factory");
-    runtime
-        .init()
-        .expect("QuickJS runtime init should succeed");
+    runtime.init().expect("QuickJS runtime init should succeed");
 
     runtime
-        .register_tool("metering_echo", "function metering_echo(args) { return args; }")
+        .register_tool(
+            "metering_echo",
+            "function metering_echo(args) { return args; }",
+        )
         .expect("echo tool should register");
 
     for i in 0..5 {
@@ -73,7 +79,10 @@ fn test_quickjs_runs_within_default_instruction_budget() {
 #[test]
 fn test_plugin_trap_classified_and_runtime_recovers() {
     if !quickjs_available() {
-        eprintln!("skipping: {} not present (not tracked in git)", QUICKJS_WASM);
+        eprintln!(
+            "skipping: {} not present in this working tree",
+            QUICKJS_WASM
+        );
         return;
     }
 
@@ -100,4 +109,57 @@ fn test_plugin_trap_classified_and_runtime_recovers() {
     let parsed: serde_json::Value = serde_json::from_str(out.trim())
         .unwrap_or_else(|e| panic!("echo returned non-JSON {:?}: {}", out, e));
     assert_eq!(parsed["ok"], json!(true), "echo should round-trip args");
+}
+
+const MICROPYTHON_WASM: &str = "bench_tools/micropython_wasm/wasi-reactor/build/micropython.wasm";
+
+fn python_tool(name: &str, source: &str) -> PluginTool {
+    let mut tool = wasm_tool(name, source);
+    tool.executor.language = Some("python".to_string());
+    tool
+}
+
+/// A trap that is *not* a metering limit must evict the cached runtime too.
+///
+/// Measured on MicroPython: an infinitely recursive tool traps with
+/// `RuntimeError: out of bounds memory access` — no metering wording anywhere —
+/// and the instance is left unable to serve, every later call failing inside
+/// `nlr_push_tail`. Eviction used to key on metering strings only, so one
+/// recursive tool took Python down for the life of the process.
+#[test]
+fn test_non_metering_trap_evicts_cached_runtime() {
+    if !std::path::Path::new(MICROPYTHON_WASM).exists() {
+        eprintln!(
+            "skipping: {} not present in this working tree",
+            MICROPYTHON_WASM
+        );
+        return;
+    }
+
+    let recurse = python_tool(
+        "trap_recurse",
+        "def trap_recurse(args):\n    return trap_recurse(args)\n",
+    );
+
+    let err = execute_plugin_tool(&recurse, &json!({}))
+        .expect_err("unbounded recursion must not be reported as a success");
+
+    let echo = python_tool(
+        "trap_echo_after",
+        "def trap_echo_after(args):\n    return {'ok': True}\n",
+    );
+
+    let out = execute_plugin_tool(&echo, &json!({})).unwrap_or_else(|e| {
+        panic!(
+            "Python runtime did not recover after a non-metering trap, so the poisoned \
+             instance was left cached.\n  trap error: {err}\n  recovery error: {e}"
+        )
+    });
+    let parsed: serde_json::Value = serde_json::from_str(out.trim())
+        .unwrap_or_else(|e| panic!("echo returned non-JSON {:?}: {}", out, e));
+    assert_eq!(
+        parsed["ok"],
+        json!(true),
+        "echo should run on a fresh runtime"
+    );
 }

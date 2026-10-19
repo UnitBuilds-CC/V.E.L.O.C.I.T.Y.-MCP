@@ -12,21 +12,26 @@
 //! - **Execution timeout**: Hard deadline with process kill (30s default).
 //! - **Job Object limits** (Windows): Memory cap enforced via Windows Job Objects.
 //! - **Seccomp filters** (Linux): Syscall filtering for additional security.
-//!   The `linux_seccomp` module provides seccomp filter definitions that can be
-//!   applied in child processes for kernel-level syscall restrictions.
+//!   The `linux_seccomp` module provides seccomp filter definitions, but no
+//!   production path installs them — see *Linux Seccomp Integration* below.
 //! - **Audit trail**: Violations and executions logged to the global audit log.
 //!
 //! # Linux Seccomp Integration
 //!
-//! On Linux, the `linux_seccomp` module provides seccomp BPF filters that restrict
-//! the syscalls available to sandboxed processes. To apply these filters:
+//! The `linux_seccomp` module defines seccomp BPF filters that would restrict the
+//! syscalls available to a sandboxed child process. They are **not currently
+//! applied**: `apply_seccomp_filters()` has no production caller (only its own
+//! unit tests), because the spawn path here uses `std::process::Command` directly
+//! rather than fork-then-apply. Installing them in-process would restrict the
+//! server itself, which is why wiring this up is a deliberate decision rather than
+//! a mechanical fix. The intended sequence, once a fork-based spawn exists:
 //!
 //! 1. Fork the child process
 //! 2. In the child, call `linux_seccomp::apply_seccomp_filters()`
 //! 3. In the child, exec the target program
 //!
-//! The capability-based sandbox provides security on all platforms. Seccomp is an
-//! additional layer for Linux that provides kernel-level enforcement.
+//! The capability-based sandbox is what actually enforces security today, on all
+//! platforms.
 
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -85,6 +90,7 @@ impl ProcessCapabilities {
             allow_network: false,
             allowed_interpreters: vec![
                 "python".into(),
+                "python3".into(),
                 "node".into(),
                 "powershell".into(),
                 "bash".into(),
@@ -853,15 +859,16 @@ mod tests {
 
     #[test]
     fn test_capability_path_allowlisting() {
-        let caps = ProcessCapabilities::restricted().with_allowed_path("C:\\projects");
-        assert!(caps.is_path_allowed(Path::new("C:\\projects\\myfile.txt")));
-        assert!(!caps.is_path_allowed(Path::new("C:\\Windows\\System32")));
+        let caps = ProcessCapabilities::restricted().with_allowed_path(host_absolute("proj"));
+        assert!(caps.is_path_allowed(&host_absolute("proj/myfile.txt")));
+        assert!(!caps.is_path_allowed(&host_absolute("forbidden")));
     }
 
     #[test]
     fn test_capability_interpreter_check() {
         let caps = ProcessCapabilities::restricted();
         assert!(caps.is_interpreter_allowed("python"));
+        assert!(caps.is_interpreter_allowed("python3"));
         assert!(caps.is_interpreter_allowed("node"));
         assert!(caps.is_interpreter_allowed("dotnet"));
         assert!(!caps.is_interpreter_allowed("ruby"));
@@ -912,10 +919,10 @@ mod tests {
     #[test]
     fn test_sandbox_file_access_allowed_path() {
         let mut sandbox = Sandbox::with_capabilities(
-            ProcessCapabilities::restricted().with_allowed_path("C:\\projects"),
+            ProcessCapabilities::restricted().with_allowed_path(host_absolute("proj")),
         )
         .unwrap();
-        let result = sandbox.check_file_access(Path::new("C:\\projects\\data.csv"));
+        let result = sandbox.check_file_access(&host_absolute("proj/data.csv"));
         assert!(result.is_ok());
         assert!(sandbox.is_clean());
     }
@@ -1034,5 +1041,16 @@ mod tests {
         );
         assert_eq!(category_label(&ViolationCategory::Memory), "Memory");
         assert_eq!(category_label(&ViolationCategory::Timeout), "Timeout");
+    }
+
+    /// Root a path fixture under a prefix that is absolute on the host OS.
+    /// Windows hosts have no `/home`, POSIX hosts have no `C:\`.
+    fn host_absolute(rel: &str) -> PathBuf {
+        let root = if cfg!(windows) {
+            r"C:\Users\test"
+        } else {
+            "/home/user"
+        };
+        Path::new(root).join(rel)
     }
 }

@@ -34,6 +34,43 @@ pub mod memory_layout {
     pub const EXEC_SLOT: u64 = 512 * 1024; // 512KB - for source code / args
     pub const ARGS_SLOT: u64 = 4 * 1024; // 4KB - for tool args JSON
     pub const NAME_SLOT: u64 = 8 * 1024; // 8KB - for tool name
+
+    /// Bytes an argument payload may occupy before it runs into NAME_SLOT.
+    ///
+    /// Writes into linear memory are bounds-checked against the *memory size*,
+    /// not the slot, so an oversized payload silently overwrites the tool name
+    /// instead of failing.
+    pub const ARGS_CAPACITY: usize = (NAME_SLOT - ARGS_SLOT) as usize;
+}
+
+/// Build the refusal message for an oversized argument payload.
+///
+/// Deliberately worded so the binary fallback classifier in `registry` reads it
+/// as neither request-level nor pre-execution: nothing ran, and retrying would
+/// fail identically and then mark a healthy tool JSON-only forever.
+pub(crate) fn args_slot_error(len: usize, capacity: usize, language: &str) -> String {
+    format!("{len} bytes exceed the {capacity}-byte argument slot of the {language} runtime")
+}
+
+/// Refuse an argument payload that would run past the runtime's argument slot.
+///
+/// Runtimes that allocate their own guest buffer report no fixed capacity and
+/// always pass. Called before anything is handed to the guest, so an error here
+/// proves the tool did not run.
+pub(crate) fn check_args_fit(
+    runtime: &dyn WasmRuntime,
+    len: usize,
+    what: &str,
+) -> Result<(), String> {
+    if let Some(capacity) = runtime.args_slot_capacity() {
+        if len >= capacity {
+            return Err(format!(
+                "{what} {}",
+                args_slot_error(len, capacity, runtime.language())
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Global WASM module compilation cache.
@@ -43,7 +80,8 @@ static MODULE_CACHE: LazyLock<Mutex<HashMap<u64, Arc<Vec<u8>>>>> =
 
 /// Global WASM instruction limit (0 = metering disabled). Mirrors
 /// `WasmRuntimesConfig.instruction_limit`; set once at startup from config.
-static WASM_INSTRUCTION_LIMIT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(10_000_000);
+static WASM_INSTRUCTION_LIMIT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(10_000_000);
 
 /// Set the global instruction limit applied to every WASM runtime engine.
 /// `None` disables metering entirely.
@@ -324,6 +362,16 @@ pub trait WasmRuntime: Send {
     /// so the global instruction limit applies per call, not per process.
     fn reset_instruction_budget(&mut self) {}
 
+    /// Bytes the argument payload may occupy, or `None` if the runtime allocates
+    /// its own guest buffer and therefore has no fixed slot to overrun.
+    ///
+    /// The default matches the eight runtimes that share [`memory_layout`].
+    /// Returning `None` when unsure is wrong in the unsafe direction: an
+    /// inherited limit refuses oversized payloads instead of corrupting memory.
+    fn args_slot_capacity(&self) -> Option<usize> {
+        Some(memory_layout::ARGS_CAPACITY)
+    }
+
     /// Language identifier (e.g., "javascript", "python", "lua").
     fn language(&self) -> &str;
 }
@@ -418,6 +466,7 @@ impl WasmRuntimeRegistry {
             .runtimes
             .get_mut(&lang)
             .ok_or_else(|| format!("Runtime missing for language: {}", lang))?;
+        check_args_fit(entry.runtime.as_ref(), args_json.len(), "Tool arguments")?;
         entry.runtime.reset_instruction_budget();
         entry.runtime.call_tool(name, args_json)
     }
@@ -524,22 +573,101 @@ mod tests {
     use wasmer::{imports, Value};
     use wasmer_middlewares::metering::{get_remaining_points, MeteringPoints};
 
+    /// Stand-in runtime so the slot guard can be tested without a WASM module.
+    struct StubRuntime {
+        capacity: Option<usize>,
+    }
+
+    impl WasmRuntime for StubRuntime {
+        fn init(&mut self) -> Result<(), Box<dyn Error>> {
+            Ok(())
+        }
+        fn register_tool(&mut self, _name: &str, _source: &str) -> Result<(), Box<dyn Error>> {
+            Ok(())
+        }
+        fn call_tool(&mut self, _name: &str, args_json: &str) -> Result<String, Box<dyn Error>> {
+            Ok(args_json.to_string())
+        }
+        fn destroy(&mut self) -> Result<(), Box<dyn Error>> {
+            Ok(())
+        }
+        fn args_slot_capacity(&self) -> Option<usize> {
+            self.capacity
+        }
+        fn language(&self) -> &str {
+            "stub"
+        }
+    }
+
+    /// A payload that fills the slot must be refused before the guest runs.
+    ///
+    /// Writing past ARGS_SLOT lands in NAME_SLOT, and Wasmer's bounds check
+    /// cannot catch it because the target is still inside linear memory — the
+    /// call proceeds with a clobbered tool name.
+    #[test]
+    fn test_args_slot_guard_refuses_oversized_payload() {
+        let fixed = StubRuntime {
+            capacity: Some(memory_layout::ARGS_CAPACITY),
+        };
+        assert!(check_args_fit(&fixed, memory_layout::ARGS_CAPACITY - 1, "Tool arguments").is_ok());
+
+        let err = check_args_fit(&fixed, memory_layout::ARGS_CAPACITY, "Tool arguments")
+            .expect_err("a payload filling the slot leaves no room for the NUL");
+        assert!(err.contains("argument slot"), "{}", err);
+        assert!(err.contains("stub"), "should name the runtime: {}", err);
+
+        let growable = StubRuntime { capacity: None };
+        assert!(check_args_fit(&growable, 16 * 1024 * 1024, "Tool arguments").is_ok());
+    }
+
+    /// The eight runtimes that share `memory_layout` get the bound by default, so
+    /// a new fixed-slot runtime that forgets to override fails safe rather than
+    /// corrupting guest memory.
+    #[test]
+    fn test_default_args_slot_capacity_matches_shared_layout() {
+        assert_eq!(
+            DefaultSlotRuntime.args_slot_capacity(),
+            Some(memory_layout::ARGS_CAPACITY)
+        );
+        assert_eq!(memory_layout::ARGS_CAPACITY, 4096);
+    }
+
+    /// Minimal impl that does not override `args_slot_capacity`, to read the default.
+    struct DefaultSlotRuntime;
+
+    impl WasmRuntime for DefaultSlotRuntime {
+        fn init(&mut self) -> Result<(), Box<dyn Error>> {
+            Ok(())
+        }
+        fn register_tool(&mut self, _name: &str, _source: &str) -> Result<(), Box<dyn Error>> {
+            Ok(())
+        }
+        fn call_tool(&mut self, _name: &str, _args: &str) -> Result<String, Box<dyn Error>> {
+            Ok(String::new())
+        }
+        fn destroy(&mut self) -> Result<(), Box<dyn Error>> {
+            Ok(())
+        }
+        fn language(&self) -> &str {
+            "default"
+        }
+    }
+
     /// Metering must trap infinite loops instead of hanging the host. The
     /// trap text matters: plugins/mod.rs classifies limit errors by message,
     /// and Wasmer 5 surfaces exhaustion as a plain "unreachable" trap.
     #[test]
     fn test_metering_traps_on_budget_exhaustion() {
         let engine = build_metered_engine(Some(1_000));
-        let module = Module::new(
-            &engine,
-            r#"(module (func (export "spin") (loop (br 0))))"#,
-        )
-        .expect("WAT module should compile");
+        let module = Module::new(&engine, r#"(module (func (export "spin") (loop (br 0))))"#)
+            .expect("WAT module should compile");
         let mut store = Store::new(engine);
         let instance = Instance::new(&mut store, &module, &imports! {}).expect("instantiate");
         let spin = instance.exports.get_function("spin").expect("spin export");
 
-        let err = spin.call(&mut store, &[]).expect_err("infinite loop must trap under metering");
+        let err = spin
+            .call(&mut store, &[])
+            .expect_err("infinite loop must trap under metering");
         let msg = err.to_string();
         assert!(
             msg.contains("unreachable"),

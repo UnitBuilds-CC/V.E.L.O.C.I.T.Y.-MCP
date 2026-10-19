@@ -412,19 +412,16 @@ pub fn verify_webhook_signature(payload: &str, signature: &str, secret: &str) ->
 
 /// Constant-time byte slice comparison that does not leak length via early return.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    let max_len = a.len().max(b.len());
-    if max_len == 0 {
-        return true;
+    // An empty side has no bytes to cycle through; only two empty slices match.
+    if a.is_empty() || b.is_empty() {
+        return a.is_empty() && b.is_empty();
     }
 
-    // Pad shorter slice to match longer one (cycling through bytes).
-    // This prevents length-based timing attacks while still comparing all bytes.
-    let mut result = if a.len() != b.len() { 1u8 } else { 0u8 };
+    let max_len = a.len().max(b.len());
+    let mut result = (a.len() != b.len()) as u8;
 
     for i in 0..max_len {
-        let byte_a = a.get(i % a.len()).copied().unwrap_or(0);
-        let byte_b = b.get(i % b.len()).copied().unwrap_or(0);
-        result |= byte_a ^ byte_b;
+        result |= a[i % a.len()] ^ b[i % b.len()];
     }
 
     result == 0
@@ -517,7 +514,7 @@ pub fn send_webhook(
     })
 }
 
-/// Handle incoming webhook (for receiving webhooks from external services).
+/// Handle incoming webhook: a configured secret requires a matching signature header.
 #[cfg(feature = "oauth2")]
 pub fn handle_incoming_webhook(
     connector_id: &str,
@@ -537,11 +534,11 @@ pub fn handle_incoming_webhook(
         )
     })?;
 
-    // Verify signature if secret is configured
-    if let (Some(secret), Some(sig)) = (&webhook_config.secret, signature) {
-        if !verify_webhook_signature(payload, sig, secret) {
-            return Err("Invalid webhook signature".to_string());
-        }
+    match (&webhook_config.secret, signature) {
+        (Some(s), Some(sig)) if verify_webhook_signature(payload, sig, s) => {}
+        (Some(_), None) => return Err("Missing webhook signature".to_string()),
+        (Some(_), Some(_)) => return Err("Invalid webhook signature".to_string()),
+        _ => {} // no configured secret: nothing to verify against
     }
 
     // Parse webhook event
@@ -969,11 +966,6 @@ pub fn list_connectors() -> Vec<ConnectorConfig> {
 
 /// Handle connector/call MCP tool request.
 pub fn handle_connector_call(params: &Value) -> Result<Value, String> {
-    #[cfg(not(feature = "oauth2"))]
-    {
-        let _ = params;
-        Err("OAuth2 feature not enabled. Build with --features oauth2".to_string())
-    }
     #[cfg(feature = "oauth2")]
     {
         let connector_id = params["connectorId"]
@@ -1207,19 +1199,19 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_connector_call_no_feature() {
-        let params = json!({"connectorId": "test", "method": "GET", "path": "/users"});
+    fn test_handle_connector_call_unregistered_connector() {
+        let params =
+            json!({"connectorId": "nonexistent-connector", "method": "GET", "path": "/users"});
         let result = handle_connector_call(&params);
-        #[cfg(not(feature = "oauth2"))]
-        assert!(
-            result.is_err(),
-            "should error when oauth2 feature is disabled"
-        );
         #[cfg(feature = "oauth2")]
-        assert!(
-            result.is_err(),
-            "unregistered connector should return an error"
-        );
+        {
+            let err = result.expect_err("unregistered connector must fail");
+            assert!(
+                err.starts_with("Connector not found:"),
+                "wrong failure reason: {}",
+                err
+            );
+        }
     }
 
     #[test]
@@ -1228,7 +1220,7 @@ mod tests {
     fn test_encrypted_token_storage() {
         // Generate and set encryption key
         let key = generate_encryption_key();
-        set_encryption_key(key.clone());
+        set_encryption_key(key);
 
         // Create a test token
         let token = OAuth2Token {
@@ -1241,7 +1233,7 @@ mod tests {
         };
 
         // Ensure key is set before encrypting (protect against parallel test interference)
-        set_encryption_key(key.clone());
+        set_encryption_key(key);
 
         // Encrypt the token
         let encrypted = encrypt_token(&token).unwrap();
@@ -1266,7 +1258,7 @@ mod tests {
 
         // Generate and set encryption key
         let key = generate_encryption_key();
-        set_encryption_key(key.clone());
+        set_encryption_key(key);
 
         // Create a test token
         let token = OAuth2Token {
@@ -1282,7 +1274,7 @@ mod tests {
         let temp_path = format!("test_encrypted_token_{}.bin", std::process::id());
 
         // Ensure key is set before storing (protect against parallel test interference)
-        set_encryption_key(key.clone());
+        set_encryption_key(key);
 
         // Store encrypted token to file
         let result = store_token_encrypted("file_test", &token, &temp_path);
@@ -1340,6 +1332,25 @@ mod tests {
             &signature,
             "wrong_secret"
         ));
+
+        // A present-but-empty signature header must be refused, not panic.
+        assert!(!verify_webhook_signature(payload, "", secret));
+    }
+
+    /// The padded comparison cycles with `i % len()`, so an empty side is a
+    /// divisor of zero: HEAD panicked the caller on `Bearer`-style blank headers
+    /// instead of refusing them.
+    #[test]
+    #[cfg(feature = "oauth2")]
+    fn test_constant_time_eq_empty_and_unequal_sides() {
+        assert!(!constant_time_eq(b"", b"abcdef"));
+        assert!(!constant_time_eq(b"abcdef", b""));
+        assert!(constant_time_eq(b"", b""));
+
+        assert!(constant_time_eq(b"secret", b"secret"));
+        assert!(!constant_time_eq(b"secret", b"secrets"));
+        assert!(!constant_time_eq(b"secrets", b"secret"));
+        assert!(!constant_time_eq(b"secret", b"abcdef"));
     }
 
     #[test]
@@ -1391,6 +1402,12 @@ mod tests {
 
         // Handle webhook with invalid signature
         let result = handle_incoming_webhook("webhook_test", payload, Some("invalid"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid webhook signature"));
+
+        // A blank signature header reaches the comparison the same way a
+        // malformed one does, and must be refused rather than panic.
+        let result = handle_incoming_webhook("webhook_test", payload, Some(""));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Invalid webhook signature"));
     }
@@ -1537,5 +1554,46 @@ mod tests {
         let result = call_connector("header_test", &request);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Invalid header value"));
+    }
+    #[test]
+    #[cfg(feature = "oauth2")]
+    fn test_handle_incoming_webhook_signature_requirement() {
+        let payload = r#"{"event_type":"push","timestamp":1234567890,"data":{"ref":"main"}}"#;
+
+        register_connector(ConnectorConfig {
+            id: "webhook_secret_no_sig".to_string(),
+            name: "Webhook Secret Without Signature".to_string(),
+            base_url: "https://api.test.com".to_string(),
+            auth_type: "none".to_string(),
+            oauth2_config: None,
+            webhook_config: Some(WebhookConfig {
+                endpoint: "https://webhook.test.com/events".to_string(),
+                secret: Some("test_secret".to_string()),
+                events: Some(vec!["push".to_string()]),
+            }),
+        });
+
+        // A configured secret is what makes the header authenticate anything, so its
+        // absence is a refusal rather than an unverified pass.
+        let result = handle_incoming_webhook("webhook_secret_no_sig", payload, None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Missing webhook signature"));
+
+        register_connector(ConnectorConfig {
+            id: "webhook_no_secret".to_string(),
+            name: "Webhook Without Secret".to_string(),
+            base_url: "https://api.test.com".to_string(),
+            auth_type: "none".to_string(),
+            oauth2_config: None,
+            webhook_config: Some(WebhookConfig {
+                endpoint: "https://webhook.test.com/events".to_string(),
+                secret: None,
+                events: None,
+            }),
+        });
+
+        // No secret means there is nothing to verify against; the event still parses.
+        let event = handle_incoming_webhook("webhook_no_secret", payload, None).unwrap();
+        assert_eq!(event.event_type, "push");
     }
 }

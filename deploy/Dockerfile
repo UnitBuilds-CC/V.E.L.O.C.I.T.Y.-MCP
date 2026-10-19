@@ -70,6 +70,8 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 # Set environment variables
 ENV RUST_LOG=info
 ENV VELOCITY_HTTP_ADDR=0.0.0.0:3000
+# Decorative: plugin_dir has no environment override, and WORKDIR /app plus the
+# default value "plugins" is what actually makes the COPY'd /app/plugins directory live.
 ENV VELOCITY_PLUGIN_DIR=/app/plugins
 
 # Run the binary

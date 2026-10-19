@@ -1,10 +1,11 @@
 //! Comprehensive WASM Runtime + Transport Protocol Benchmark
 //!
 //! Single benchmark binary measuring:
-//! 1. All 12 WASM language runtimes (QuickJS, TypeScript, MicroPython, Lua, mruby, Rust, TinyGo, PHP, C#, Java, R, Julia, Perl)
-//! 2. Transport protocols (JSON-RPC stdio/HTTP, NDA shmem, JSON shmem)
-//! 3. Cold start, hot call, cached module performance
-//! 4. Memory footprint per runtime
+//! 1. The 12 languages this binary drives (mruby is skipped, see the Ruby note in main;
+//!    TypeScript rides on the QuickJS module)
+//! 2. One transport pipeline: JSON-RPC over stdio, via the Node.js reference server
+//! 3. Cold start and hot call per runtime; cached-module reuse is populated only on the Go
+//!    path, and the summary's Mem (KB) column prints "—" for every row: nothing sets it
 //!
 //! Run with: cargo bench --bench comprehensive_benchmark
 
@@ -16,7 +17,7 @@ use std::time::Instant;
 use velocity_mcp::wasm_runtime::{
     csharp::CSharpRuntime, java::JavaRuntime, julia::JuliaRuntime, lua::LuaRuntime,
     micropython::MicroPythonRuntime, perl::PerlRuntime, php::PhpRuntime, quickjs::QuickJsRuntime,
-    r::RRuntime, ruby::RubyRuntime, rust::RustRuntime, typescript::TypeScriptRuntime, WasmRuntime,
+    r::RRuntime, rust::RustRuntime, typescript::TypeScriptRuntime, WasmRuntime,
 };
 
 // Constants
@@ -27,9 +28,7 @@ const SAMPLE_TEXT: &str = "The quick brown fox jumps over the lazy dog. \
 
 const BENCH_INPUT_JSON: &str = r#"{"text":"The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs. How vexingly quick daft zebras jump. Bright vixens jump; dozy fowl quack."}"#;
 
-const COLD_ITERS: usize = 20;
 const HOT_WASM_ITERS: usize = 500;
-const HOT_NATIVE_ITERS: usize = 500;
 const WARMUP_CALLS: usize = 10;
 const RUNS: usize = 3;
 
@@ -81,26 +80,6 @@ function text_analyze(args)
     end
     return {word_count = wc, char_count = cc, line_count = lc}
 end
-"#;
-
-const RUBY_TOOL_SOURCE: &str = r#"
-def text_analyze(args)
-  text = args['text'] || ''
-  words = text.split
-  {
-    'word_count' => words.length,
-    'char_count' => text.length,
-    'line_count' => text.empty? ? 0 : text.lines.count
-  }
-end
-"#;
-
-const RUST_TOOL_SOURCE: &str = r#"
-#[no_mangle]
-pub extern "C" fn text_analyze(input_ptr: *const u8, input_len: u32) -> u64 {
-    // Simplified - actual implementation would parse JSON and return result
-    ((0x1234u64) << 32) | 64  // ptr << 32 | len
-}
 "#;
 
 const PHP_TOOL_SOURCE: &str = r#"
@@ -188,7 +167,6 @@ sub text_analyze {
 
 struct WasmRuntimeResult {
     name: &'static str,
-    wasm_label: &'static str,
     cold_start_ms: Option<f64>,
     hot_call_us: Option<f64>,
     cached_module_us: Option<f64>,
@@ -197,7 +175,6 @@ struct WasmRuntimeResult {
 
 struct TransportResult {
     protocol: &'static str,
-    label: &'static str,
     ping_us: Option<f64>,
     tools_list_us: Option<f64>,
     tools_call_us: Option<f64>,
@@ -208,7 +185,7 @@ struct TransportResult {
 fn median_of(values: &mut [f64]) -> f64 {
     values.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let mid = values.len() / 2;
-    if values.len() % 2 == 0 {
+    if values.len().is_multiple_of(2) {
         (values[mid - 1] + values[mid]) / 2.0
     } else {
         values[mid]
@@ -254,7 +231,6 @@ fn verify_wasm_result(result: &str, lang: &str) -> bool {
 
 fn bench_wasm_runtime<R: WasmRuntime>(
     name: &'static str,
-    wasm_label: &'static str,
     wasm_bytes: &[u8],
     tool_source: &str,
     mut create_rt: impl FnMut(&[u8]) -> Result<R, Box<dyn std::error::Error>>,
@@ -266,7 +242,6 @@ fn bench_wasm_runtime<R: WasmRuntime>(
 
     let mut result = WasmRuntimeResult {
         name,
-        wasm_label,
         cold_start_ms: None,
         hot_call_us: None,
         cached_module_us: None,
@@ -421,7 +396,6 @@ fn bench_go_wasm(wasm_path: &str) -> WasmRuntimeResult {
 
     let mut result = WasmRuntimeResult {
         name: "Go",
-        wasm_label: "TinyGo/WASM",
         cold_start_ms: None,
         hot_call_us: None,
         cached_module_us: None,
@@ -622,7 +596,6 @@ fn bench_transport_stdio_json(node_cmd: &str) -> Option<TransportResult> {
 
     Some(TransportResult {
         protocol: "JSON-RPC stdio",
-        label: "Node.js/stdio",
         ping_us: Some(ping_us),
         tools_list_us: Some(list_us),
         tools_call_us: Some(call_us),
@@ -797,10 +770,9 @@ fn main() {
         let wasm_bytes = std::fs::read(quickjs_wasm).unwrap();
         let result = bench_wasm_runtime(
             "JavaScript",
-            "QuickJS/WASM",
             &wasm_bytes,
             JS_TOOL_SOURCE,
-            |bytes| QuickJsRuntime::cold_start(bytes),
+            QuickJsRuntime::cold_start,
         );
         wasm_results.push(result);
     }
@@ -810,10 +782,9 @@ fn main() {
         let wasm_bytes = std::fs::read(quickjs_wasm).unwrap();
         let result = bench_wasm_runtime(
             "TypeScript",
-            "QuickJS+TS/WASM",
             &wasm_bytes,
             TS_TOOL_SOURCE,
-            |bytes| TypeScriptRuntime::new(bytes),
+            TypeScriptRuntime::new,
         );
         wasm_results.push(result);
     }
@@ -957,7 +928,6 @@ fn main() {
 
         wasm_results.push(WasmRuntimeResult {
             name: "Python",
-            wasm_label: "MicroPython/WASM",
             cold_start_ms,
             hot_call_us,
             cached_module_us: None,
@@ -968,31 +938,21 @@ fn main() {
     // Lua
     if lua_wasm.exists() {
         let wasm_bytes = std::fs::read(lua_wasm).unwrap();
-        let result = bench_wasm_runtime("Lua", "Lua/WASM", &wasm_bytes, LUA_TOOL_SOURCE, |bytes| {
+        let result = bench_wasm_runtime("Lua", &wasm_bytes, LUA_TOOL_SOURCE, |bytes| {
             LuaRuntime::cold_start(bytes)
         });
         wasm_results.push(result);
     }
 
-    // Ruby (mruby) - SKIP: WASM EH compatibility issue with Wasmer
-    // if ruby_wasm.exists() {
-    //     let wasm_bytes = std::fs::read(ruby_wasm).unwrap();
-    //     let result = bench_wasm_runtime(
-    //         "Ruby",
-    //         "mruby/WASM",
-    //         &wasm_bytes,
-    //         RUBY_TOOL_SOURCE,
-    //         |bytes| RubyRuntime::cold_start(bytes),
-    //     );
-    //     wasm_results.push(result);
-    // }
+    // Ruby (mruby) gets no measurement section: the scan above finds ruby.wasm, nothing calls it.
+    // The WASM EH blocker once cited as the reason is not live -- the current build answers a
+    // Ruby plugin tool over stdio, which docs/COMPREHENSIVE_BENCHMARK.md records.
 
     // Rust WASI - special handling: pass file path instead of source code
     if rust_wasm.exists() {
         let wasm_path_str = rust_wasm.to_str().unwrap();
         let result = bench_wasm_runtime(
             "Rust",
-            "Rust/WASI",
             &[],           // Don't need bytes for Rust - it loads from path
             wasm_path_str, // Pass path as "source"
             |_| RustRuntime::new(&[]),
@@ -1009,7 +969,7 @@ fn main() {
     // PHP
     if php_wasm.exists() {
         let wasm_bytes = std::fs::read(php_wasm).unwrap();
-        let result = bench_wasm_runtime("PHP", "PHP/WASM", &wasm_bytes, PHP_TOOL_SOURCE, |bytes| {
+        let result = bench_wasm_runtime("PHP", &wasm_bytes, PHP_TOOL_SOURCE, |bytes| {
             PhpRuntime::new(bytes)
         });
         wasm_results.push(result);
@@ -1018,33 +978,21 @@ fn main() {
     // C#
     if csharp_wasm.exists() {
         let wasm_bytes = std::fs::read(csharp_wasm).unwrap();
-        let result = bench_wasm_runtime(
-            "C#",
-            ".NET/WASM",
-            &wasm_bytes,
-            CSHARP_TOOL_SOURCE,
-            |bytes| CSharpRuntime::new(bytes),
-        );
+        let result = bench_wasm_runtime("C#", &wasm_bytes, CSHARP_TOOL_SOURCE, CSharpRuntime::new);
         wasm_results.push(result);
     }
 
     // Java
     if java_wasm.exists() {
         let wasm_bytes = std::fs::read(java_wasm).unwrap();
-        let result = bench_wasm_runtime(
-            "Java",
-            "TeaVM/WASM",
-            &wasm_bytes,
-            JAVA_TOOL_SOURCE,
-            |bytes| JavaRuntime::new(bytes),
-        );
+        let result = bench_wasm_runtime("Java", &wasm_bytes, JAVA_TOOL_SOURCE, JavaRuntime::new);
         wasm_results.push(result);
     }
 
     // R
     if r_wasm.exists() {
         let wasm_bytes = std::fs::read(r_wasm).unwrap();
-        let result = bench_wasm_runtime("R", "WebR/WASM", &wasm_bytes, R_TOOL_SOURCE, |bytes| {
+        let result = bench_wasm_runtime("R", &wasm_bytes, R_TOOL_SOURCE, |bytes| {
             RRuntime::new(bytes)
         });
         wasm_results.push(result);
@@ -1053,26 +1001,14 @@ fn main() {
     // Julia
     if julia_wasm.exists() {
         let wasm_bytes = std::fs::read(julia_wasm).unwrap();
-        let result = bench_wasm_runtime(
-            "Julia",
-            "Julia/WASM",
-            &wasm_bytes,
-            JULIA_TOOL_SOURCE,
-            |bytes| JuliaRuntime::new(bytes),
-        );
+        let result = bench_wasm_runtime("Julia", &wasm_bytes, JULIA_TOOL_SOURCE, JuliaRuntime::new);
         wasm_results.push(result);
     }
 
     // Perl
     if perl_wasm.exists() {
         let wasm_bytes = std::fs::read(perl_wasm).unwrap();
-        let result = bench_wasm_runtime(
-            "Perl",
-            "Perl/WASM",
-            &wasm_bytes,
-            PERL_TOOL_SOURCE,
-            |bytes| PerlRuntime::new(bytes),
-        );
+        let result = bench_wasm_runtime("Perl", &wasm_bytes, PERL_TOOL_SOURCE, PerlRuntime::new);
         wasm_results.push(result);
     }
 

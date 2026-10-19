@@ -56,6 +56,19 @@ benchmark_*_results.json
 benchmark_results_*.json
 *_benchmark_output.txt
 thorough_benchmark_output.txt
+# Root-level dated transport captures (bench_nda_2026-09-17.txt,
+# bench_results_core5.txt, bench_comprehensive_*, bench_nda_run, …). Repo policy is
+# that raw benchmark output stays a local artifact, but these sat in the gap between
+# "tracked" and "ignored" — which is how the bench_nda/ copies got committed by
+# accident. Anchored with a leading slash so bench_nda/*.txt keeps its own rule.
+# Docs cite these files as run provenance; the durable record is the tables in the
+# docs, regenerable with `cargo run --release --manifest-path bench_nda/Cargo.toml`.
+/bench_*.txt
+# bench_nda's own raw captures. Five such files were committed before this rule
+# existed and stay tracked until someone runs `git rm --cached` on them; nothing
+# new matching these patterns should be added.
+bench_nda/*.txt
+bench_nda/audit_*.json
 
 # Coverage artifacts
 *.profraw
@@ -78,3 +91,8 @@ crates/velocity-mcp-edge/velocity-edge-wasix.wasm
 # Nested-WASM PoC build artifact (rebuild via deploy/build-edge-poc.py)
 nested-poc/poc.wasm
 crates/velocity-mcp-edge/velocity-edge.wasm
+# Python editable-install metadata written in-tree by "pip install -e ." (regenerated on demand)
+*.egg-info/
+# Python bytecode caches written in-tree by importing the SDK package
+__pycache__/
+*.pyc

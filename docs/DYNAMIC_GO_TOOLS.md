@@ -224,7 +224,12 @@ If TinyGo is not found, tool registration fails with a clear error message point
 
 ## Testing
 
-All 724 existing tests pass, including:
+The workspace suite is green as recorded in `docs/NDA_PROTOCOL.md` §9, whose table row carries the
+current passed / failed / ignored totals for both the default and the CI feature set over
+29 test binaries. The figures are deliberately not restated here: a second copy of a number
+that moves whenever a test is added is how this document came to disagree with the source it
+cites, which is the rot `docs/NDA_PROTOCOL.md` §9 itself was rewritten for.
+(This document was written on 2026-09-12, when the suite stood at 724 tests.) Coverage includes:
 - Plugin loading across all 13 languages (7 production runtimes + 6 tree-walk interpreters)
 - Tool registration and execution
 - Cache invalidation behavior

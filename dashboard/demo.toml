@@ -1,0 +1,12 @@
+# V.E.L.O.C.I.T.Y. MCP demo server — used by dashboard/index.html
+# Start with:  target/release/velocity_mcp.exe --mode http --config dashboard/demo.toml
+[http]
+addr = "0.0.0.0:3900"
+# Demo only: the dashboard opens as a local file (Origin: null).
+# Production default (no cors_origins set) restricts to localhost origins.
+cors_origins = ["*"]
+max_request_size = 10485760
+enable_rate_limit = true
+
+[logging]
+level = "info"

@@ -397,7 +397,7 @@ pub fn build_wasi_imports(store: &mut Store, env: &FunctionEnv<WasiEnv>) -> Impo
             }
 
             // File descriptors (fd >= 3 and < SOCKET_FD_BASE)
-            if fd >= 3 && fd < SOCKET_FD_BASE {
+            if (3..SOCKET_FD_BASE).contains(&fd) {
                 let fs_state = env.data().fs_state.clone();
                 let mut guard = fs_state.lock().unwrap();
 
@@ -1460,7 +1460,7 @@ pub fn build_wasi_imports(store: &mut Store, env: &FunctionEnv<WasiEnv>) -> Impo
             view.read(host_ptr as u64, &mut host_bytes).unwrap();
             let host = match String::from_utf8(host_bytes) {
                 Ok(s) => s,
-                Err(_) => return -(ERRNO_BADF as i32),
+                Err(_) => return -ERRNO_BADF,
             };
             let state = env.data().socket_state.clone();
             let mut guard = state.lock().unwrap();
@@ -1468,7 +1468,7 @@ pub fn build_wasi_imports(store: &mut Store, env: &FunctionEnv<WasiEnv>) -> Impo
             drop(guard);
             match result {
                 Ok(fd) => fd,
-                Err(errno) => -(errno as i32),
+                Err(errno) => -errno,
             }
         },
     );
@@ -1485,7 +1485,7 @@ pub fn build_wasi_imports(store: &mut Store, env: &FunctionEnv<WasiEnv>) -> Impo
             view.read(host_ptr as u64, &mut host_bytes).unwrap();
             let host = match String::from_utf8(host_bytes) {
                 Ok(s) => s,
-                Err(_) => return -(ERRNO_BADF as i32),
+                Err(_) => return -ERRNO_BADF,
             };
             let state = env.data().socket_state.clone();
             let mut guard = state.lock().unwrap();
@@ -1493,7 +1493,7 @@ pub fn build_wasi_imports(store: &mut Store, env: &FunctionEnv<WasiEnv>) -> Impo
             drop(guard);
             match result {
                 Ok(fd) => fd,
-                Err(errno) => -(errno as i32),
+                Err(errno) => -errno,
             }
         },
     );

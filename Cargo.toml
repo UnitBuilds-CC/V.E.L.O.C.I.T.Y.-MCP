@@ -3,7 +3,7 @@ name = "velocity_mcp"
 version = "3.2.0"
 edition = "2021"
 authors = ["UnitBuilds <ian@unitbuilds.com>"]
-description = "A high-performance, zero-allocation Model Context Protocol (MCP) server in Rust"
+description = "A high-performance Model Context Protocol (MCP) server in Rust with a zero-allocation binary frame path"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP"
 homepage = "https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP"
@@ -43,10 +43,10 @@ exclude = ["bench_nda", "bench_tools"]
 
 [features]
 default = []
-http = ["axum", "tokio", "tokio-stream", "tower", "tower-http", "uuid", "rustls", "rustls-pemfile", "tokio-rustls", "hyper", "hyper-util", "http-body-util", "prometheus", "futures", "lru"]
+http = ["axum", "tokio", "tokio-stream", "tower", "tower-http", "uuid", "rustls", "rustls-pemfile", "tokio-rustls", "hyper", "hyper-util", "http-body-util", "futures", "lru"]
 oauth2 = ["ureq", "aes-gcm", "hmac"]
 database = ["rusqlite"]
-observability = ["opentelemetry", "opentelemetry-otlp", "opentelemetry-semantic-conventions", "tracing-opentelemetry"]
+observability = ["opentelemetry", "opentelemetry_sdk", "opentelemetry-otlp", "tracing-opentelemetry"]
 wasm-networking = []
 
 [dependencies]
@@ -80,9 +80,8 @@ hyper = { version = "1", features = ["server", "http1", "http2"], optional = tru
 hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http1", "http2"], optional = true }
 http-body-util = { version = "0.1", optional = true }
 uuid = { version = "1.0", features = ["v4"], optional = true }
-prometheus = { version = "0.13", optional = true }
 futures = { version = "0.3", optional = true }
-lru = { version = "0.12", optional = true }
+lru = { version = "0.18", optional = true }
 
 # Optional: OAuth2 connectors
 ureq = { version = "2.9", features = ["json"], optional = true }
@@ -95,10 +94,10 @@ hmac = { version = "0.12", optional = true }
 rusqlite = { version = "0.31", features = ["bundled"], optional = true }
 
 # Optional: Observability (OpenTelemetry)
-opentelemetry = { version = "0.22", optional = true }
-opentelemetry-otlp = { version = "0.15", optional = true }
-opentelemetry-semantic-conventions = { version = "0.14", optional = true }
-tracing-opentelemetry = { version = "0.23", optional = true }
+opentelemetry = { version = "0.33", optional = true }
+opentelemetry_sdk = { version = "0.33", features = ["trace"], optional = true }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["grpc-tonic", "trace"], optional = true }
+tracing-opentelemetry = { version = "0.34", optional = true }
 
 # Configuration management
 toml = "0.8"
@@ -128,6 +127,13 @@ proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
 serial_test = "3.0"
 tempfile = "3.10"
+
+# Declared explicitly: the auto-discovered name from src/bin/velocity_edge.rs is
+# velocity_edge, which on Windows is the same output file as the
+# velocity-mcp-edge crate's velocity-edge bin (cargo: output filename collision).
+[[bin]]
+name = "velocity-edge-wasip1"
+path = "src/bin/velocity_edge.rs"
 
 [[bench]]
 name = "protocol_bench"

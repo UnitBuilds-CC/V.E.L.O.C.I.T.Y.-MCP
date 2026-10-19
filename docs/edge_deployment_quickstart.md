@@ -16,7 +16,7 @@ This opens your browser to authenticate with Wasmer.
 
 ### Step 2: Build & Deploy
 ```bash
-deploy-edge.bat
+deploy\deploy-edge.bat
 ```
 
 Or manually:
@@ -38,7 +38,7 @@ curl https://velocity-mcp-edge.wasmer.app \
 ## Free Tier Limits
 
 - **Memory**: 128MB (optimized from default 512MB)
-- **Instructions**: 5M per request (~50ms compute budget)
+- **Instructions**: 5M per request. No time figure is attached to this on purpose: measured on this host's wasmer 5.0.6 build, 10M metered instructions is about 1 ms of guest compute and QuickJS alone consumes 1.5M-2M before a tool body runs, so 5M is a sub-millisecond budget rather than tens of milliseconds -- the Edge runtime's own per-instruction cost has not been measured here.
 - **Instances**: 0-3 (auto-scaling, scales to zero when idle)
 - **Storage**: No persistent volumes on free tier
 - **Bandwidth**: Standard CDN distribution
@@ -82,9 +82,9 @@ For typical MCP usage (100-1000 requests/day), you should stay within free tier 
 
 ## Troubleshooting
 
-**Build fails**: Ensure WASIX toolchain is installed:
+**Build fails**: `deploy/build-edge.py` runs `cargo wasix +wasix build`, so a rustup toolchain named `wasix` must already be provisioned -- `cargo-wasix` installs no toolchain and `wasix` is not a rustup channel, so verify rather than install:
 ```bash
-rustup toolchain install wasix
+rustup run wasix rustc --version  # prints a version only if the toolchain is present
 cargo install cargo-wasix
 python --version  # Python 3 required
 ```

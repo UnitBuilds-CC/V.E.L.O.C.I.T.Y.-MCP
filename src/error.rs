@@ -332,10 +332,16 @@ mod tests {
 
     #[test]
     fn test_velocity_result_type_alias() {
-        let ok_result: VelocityResult<i32> = Ok(42);
-        assert_eq!(ok_result.unwrap(), 42);
+        // Returned from helpers rather than unwrapped from a literal: the alias is
+        // only meaningful as a function signature, and clippy rejects `Ok(42).unwrap()`.
+        fn ok_case() -> VelocityResult<i32> {
+            Ok(42)
+        }
+        fn err_case() -> VelocityResult<i32> {
+            Err(VelocityError::internal("test"))
+        }
 
-        let err_result: VelocityResult<i32> = Err(VelocityError::internal("test"));
-        assert!(err_result.is_err());
+        assert_eq!(ok_case().unwrap(), 42);
+        assert!(err_case().is_err());
     }
 }

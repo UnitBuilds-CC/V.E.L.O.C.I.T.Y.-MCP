@@ -1,17 +1,20 @@
-version: '3.8'
-
 services:
   velocity-mcp:
-    build: .
+    # Relative paths in this file resolve against deploy/, the directory holding it.
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
     container_name: velocity-mcp
     ports:
       - "3000:3000"
     environment:
       - RUST_LOG=info
       - VELOCITY_HTTP_ADDR=0.0.0.0:3000
+      # Decorative: plugin_dir has no environment override; the bind mount below
+      # lands on /app/plugins, which is what the default value already resolves to.
       - VELOCITY_PLUGIN_DIR=/app/plugins
     volumes:
-      - ./plugins:/app/plugins:ro
+      - ../plugins:/app/plugins:ro
       - velocity-data:/app/data
       - velocity-marketplace:/app/marketplace
     restart: unless-stopped
@@ -31,7 +34,7 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
@@ -55,8 +58,9 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=admin
     volumes:
       - grafana-data:/var/lib/grafana
-      - ./deploy/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
-      - ./deploy/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
     restart: unless-stopped
     networks:
       - velocity-network

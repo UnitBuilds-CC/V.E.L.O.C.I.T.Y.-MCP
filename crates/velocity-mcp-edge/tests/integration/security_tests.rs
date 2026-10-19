@@ -26,7 +26,7 @@ async fn setup() -> (Client, String) {
 async fn test_security_empty_body() {
     let (client, base) = setup().await;
     let resp = client
-        .post(&format!("{}/mcp", base))
+        .post(format!("{}/mcp", base))
         .header("content-type", "application/json")
         .body("")
         .send()
@@ -42,7 +42,7 @@ async fn test_security_binary_payload() {
     let (client, base) = setup().await;
     let binary: Vec<u8> = (0..=255).collect();
     let resp = client
-        .post(&format!("{}/mcp", base))
+        .post(format!("{}/mcp", base))
         .header("content-type", "application/octet-stream")
         .body(binary)
         .send()
@@ -59,7 +59,7 @@ async fn test_security_html_injection_attempt() {
     let (client, base) = setup().await;
     let body = r#"<script>alert("xss")</script>"#;
     let resp = client
-        .post(&format!("{}/mcp", base))
+        .post(format!("{}/mcp", base))
         .header("content-type", "application/json")
         .body(body)
         .send()
@@ -79,7 +79,7 @@ async fn test_security_sql_injection_attempt() {
     let (client, base) = setup().await;
     let body = r#"{"jsonrpc":"2.0","method":"'; DROP TABLE users;--","id":1}"#;
     let resp = client
-        .post(&format!("{}/mcp", base))
+        .post(format!("{}/mcp", base))
         .header("content-type", "application/json")
         .body(body)
         .send()
@@ -97,7 +97,7 @@ async fn test_security_oversized_method_name() {
     let long_method = "x".repeat(10_000);
     let body = format!(r#"{{"jsonrpc":"2.0","method":"{}","id":1}}"#, long_method);
     let resp = client
-        .post(&format!("{}/mcp", base))
+        .post(format!("{}/mcp", base))
         .header("content-type", "application/json")
         .body(body)
         .send()
@@ -122,7 +122,7 @@ async fn test_security_large_valid_payload() {
         large_data
     );
     let resp = client
-        .post(&format!("{}/mcp", base))
+        .post(format!("{}/mcp", base))
         .header("content-type", "application/json")
         .body(body)
         .send()
@@ -142,7 +142,7 @@ async fn test_security_very_large_payload_1mb() {
         large_data
     );
     let resp = client
-        .post(&format!("{}/mcp", base))
+        .post(format!("{}/mcp", base))
         .header("content-type", "application/json")
         .body(body)
         .send()
@@ -190,12 +190,12 @@ async fn test_security_mixed_concurrent_endpoints() {
         let b = base.clone();
         handles.push(tokio::spawn(async move {
             if i % 2 == 0 {
-                let resp = c.get(&format!("{}/health", b)).send().await.unwrap();
+                let resp = c.get(format!("{}/health", b)).send().await.unwrap();
                 assert_eq!(resp.status(), 200);
             } else {
                 let body = serde_json::json!({"jsonrpc": "2.0", "method": "ping", "id": i});
                 let resp = c
-                    .post(&format!("{}/mcp", b))
+                    .post(format!("{}/mcp", b))
                     .json(&body)
                     .send()
                     .await
@@ -219,7 +219,7 @@ async fn test_security_unknown_method_returns_proper_error() {
     let (client, base) = setup().await;
     let body = serde_json::json!({"jsonrpc": "2.0", "method": "system/reboot", "id": 99});
     let resp = client
-        .post(&format!("{}/mcp", base))
+        .post(format!("{}/mcp", base))
         .json(&body)
         .send()
         .await
@@ -228,11 +228,7 @@ async fn test_security_unknown_method_returns_proper_error() {
     let result: Value = resp.json().await.unwrap();
     assert_eq!(result["error"]["code"], -32601);
     // Server should stay healthy after unknown method
-    let health = client
-        .get(&format!("{}/health", base))
-        .send()
-        .await
-        .unwrap();
+    let health = client.get(format!("{}/health", base)).send().await.unwrap();
     assert_eq!(health.status(), 200);
 }
 
@@ -253,7 +249,7 @@ async fn test_security_rapid_sequential_requests() {
 async fn test_security_no_content_type_header() {
     let (client, base) = setup().await;
     let resp = client
-        .post(&format!("{}/mcp", base))
+        .post(format!("{}/mcp", base))
         .body(r#"{"jsonrpc":"2.0","method":"ping","id":1}"#)
         .send()
         .await
@@ -286,7 +282,7 @@ async fn test_security_math_eval_depth_limit() {
     });
 
     let resp = client
-        .post(&format!("{}/mcp", base))
+        .post(format!("{}/mcp", base))
         .json(&body)
         .send()
         .await
@@ -307,86 +303,61 @@ async fn test_security_math_eval_depth_limit() {
 /// Test that text_transform replace rejects empty 'old' parameter (string amplification DoS).
 #[tokio::test]
 async fn test_security_text_transform_empty_old_parameter() {
-    // The mock server in tests/common.rs doesn't include security middleware,
-    // so this test validates the code path exists rather than testing enforcement.
-    // In production main.rs, tool_text_transform checks for empty 'old' and returns error.
-
-    // This is a regression test documenting the vulnerability fix
-    assert!(
-        true,
-        "Empty 'old' parameter rejection implemented in tools.rs tool_text_transform"
-    );
-}
-
-/// Test that rate limiting cannot be bypassed via X-Forwarded-For header spoofing.
-#[tokio::test]
-async fn test_security_rate_limit_xff_spoofing() {
-    // Try to spoof different IPs via X-Forwarded-For
-    // Since the mock server doesn't have the security middleware, this test
-    // validates the fix is in place by checking the code path exists
-    // In production, only trusted proxy peers would have XFF honored
-
-    // This is a documentation test - actual enforcement happens in main.rs
-    // The key fix: extract_client_ip now checks is_trusted_proxy before using XFF
-    assert!(
-        true,
-        "Rate limit XFF bypass fixed in main.rs extract_client_ip"
-    );
-}
-
-/// Test that CORS responses include Vary: Origin header to prevent cache poisoning.
-#[tokio::test]
-async fn test_security_cors_vary_header() {
     let (client, base) = setup().await;
 
-    // Send request with Origin header (GET works for testing headers)
+    // Control: a non-empty needle replaces normally.
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+            "name": "text_transform",
+            "arguments": {"text": "abc", "operation": "replace", "old": "a", "new": "XYZ"}
+        },
+        "id": 1
+    });
     let resp = client
-        .get(&format!("{}/health", base))
-        .header("origin", "https://example.com")
+        .post(format!("{}/mcp", base))
+        .json(&body)
         .send()
         .await
         .unwrap();
+    assert_eq!(resp.status(), 200);
+    let result: Value = resp.json().await.unwrap();
+    assert_eq!(result["result"]["content"][0]["text"], "XYZbc");
 
-    // Check for Vary: Origin header
-    let vary = resp.headers().get("vary");
-    if let Some(vary_val) = vary {
-        let vary_str = vary_val.to_str().unwrap_or("");
-        assert!(
-            vary_str.to_lowercase().contains("origin"),
-            "Vary header should include 'origin', got: {}",
-            vary_str
-        );
-    }
-}
-
-/// Test that empty API key configuration is rejected.
-#[tokio::test]
-async fn test_security_empty_api_key_rejected() {
-    // This tests the ServerConfig::from_env logic
-    // Empty VELOCITY_API_KEY should disable auth rather than allow all requests
-
-    // Set empty env var and verify it's treated as disabled
-    std::env::set_var("VELOCITY_API_KEY", "");
-
-    // Re-read config (in real code this happens at startup)
-    // For this test, we just verify the behavior is documented
+    // Empty 'old' must be rejected, never applied: applying it would interleave 'new'
+    // between every character, and with a large 'new' the result grows unbounded.
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+            "name": "text_transform",
+            "arguments": {"text": "abc", "operation": "replace", "old": "", "new": "XYZ"}
+        },
+        "id": 1
+    });
+    let resp = client
+        .post(format!("{}/mcp", base))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let result: Value = resp.json().await.unwrap();
+    let text = result["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or("");
     assert!(
-        true,
-        "Empty API key handling verified in ServerConfig::from_env"
-    );
-
-    std::env::remove_var("VELOCITY_API_KEY");
-}
-
-/// Test that memory exhaustion is prevented via Limited body collection.
-#[tokio::test]
-async fn test_security_memory_exhaustion_prevention() {
-    // The fix uses http_body_util::Limited to enforce hard cap during collection
-    // This prevents attackers from sending chunked requests without Content-Length
-
-    // Mock server doesn't enforce limits, but production main.rs does
-    assert!(
-        true,
-        "Memory exhaustion prevention implemented via Limited in handle_mcp_post"
+        text.contains("'old' argument cannot be empty"),
+        "expected the empty-'old' rejection, got: {result}"
     );
 }
+
+// The other v3.2.1 security regressions are gated in the binary's own test module
+// (`src/main.rs`, `mod tests`): `client_ip_*` cover `extract_client_ip` honoring
+// `X-Forwarded-For` only from a proxy peer, `config_from_env_*` covers the blank API key
+// disabling auth, and `cors_*` covers `Vary: origin`. They cannot be gated from this
+// binary: the mock server in `tests/integration/common.rs` runs its own request handler
+// without the hyper service layers, and `handle_mcp_post` — the only `Limited` body cap —
+// takes a `Request<hyper::body::Incoming>`, which tests cannot construct. The previous
+// versions of those tests asserted `true` instead, so they passed either way.

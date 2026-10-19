@@ -19,6 +19,7 @@ import {
   ResourceNotFoundError,
   PromptNotFoundError,
   ServerError,
+  TransportError,
 } from "./errors";
 
 const PROTOCOL_VERSION = "2024-11-05";
@@ -50,6 +51,12 @@ export class McpClient {
     };
 
     const response = await this.transport.send(request);
+
+    // sendRequest always stamps an id, so a missing envelope means the server
+    // answered this request like a notification.
+    if (!response) {
+      throw new TransportError(`No response envelope for request ${request.id}`);
+    }
 
     if (response.error) {
       throw new ProtocolError(

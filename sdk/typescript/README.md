@@ -4,15 +4,15 @@ A type-safe TypeScript client for connecting to VELOCITY-MCP servers.
 
 ## Installation
 
-```bash
-npm install @velocity-mcp/client
-```
-
-Or with yarn:
+There is no npm package yet. Build from source:
 
 ```bash
-yarn add @velocity-mcp/client
+cd sdk/typescript
+npm install
+npm run build
 ```
+
+`npm run build` runs `tsc`, which writes `dist/`; import from that directory.
 
 ## Quick Start
 
@@ -306,6 +306,20 @@ npm run build
 ```bash
 npm test
 ```
+
+`npm test` runs `jest`, and this package currently ships no `*.test.ts` files and no jest
+config, so it collects nothing. The handshake and notification arms described in
+[`docs/CLIENT_INTEGRATION.md`](../../docs/CLIENT_INTEGRATION.md) are instead enforced by a
+dependency-free gate that executes these sources under Node's own type stripper:
+
+```bash
+python scripts/check_ts_client.py
+```
+
+It needs a Node build that supports `--experimental-strip-types` (verified here on
+v24.19.0); it copies `src/` to a temp
+directory, rewrites import specifiers for ESM resolution, and runs the shipped `client.ts`
+against a transport stub.
 
 ### Lint
 

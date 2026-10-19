@@ -146,23 +146,23 @@ cargo audit
 
 ## Testing Procedures
 
-### Test Suites (284 total)
+### Test Suites (measured 2026-10-12: 30 test binaries, 1,161 passed / 55 ignored at default features)
 
 ```bash
-# All tests
-cargo test --all-features
+# All tests (the profile CI runs)
+cargo test --workspace --features http,database,oauth2
 
-# Unit tests only (210)
+# Unit tests in the root crate (760)
 cargo test --lib
 
-# Integration tests (43)
+# Integration tests (39)
 cargo test --test integration
 
-# Fuzz tests (17, 3400+ random cases)
+# Fuzz tests (19 properties, 4,650 generated cases before shrinking)
 cargo test --test fuzz_tests
 
-# Proc macro tests (8)
-cargo test -p velocity_mcp_macros
+# Proc macro suites (8 + 4; the velocity_mcp_macros crate has no test functions, only an ignored doc example)
+cargo test --test macro_test --test macro_enhanced_test
 
 # Criterion benchmarks
 cargo bench
@@ -192,7 +192,7 @@ cargo run -- --mode http --addr 127.0.0.1:3000 &
 curl http://127.0.0.1:3000/health
 
 # List tools
-curl -X POST http://127.0.0.1:3000/mcp \
+curl -X POST http://127.0.0.1:3000/v1/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
 ```

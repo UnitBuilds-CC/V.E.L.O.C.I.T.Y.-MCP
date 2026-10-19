@@ -1,12 +1,12 @@
 # Comprehensive WASM + Transport Protocol Benchmark Guide
 
-This guide explains how to run and interpret the comprehensive benchmark suite that measures performance across all 7 production WASM language runtimes (and 6 planned runtimes) and transport protocols.
+This guide explains how to run and interpret the comprehensive benchmark suite, which measures 12 of the 13 WASM language runtimes the server registers: all 6 planned interpreters plus 6 of the 7 production engines, over the JSON-RPC stdio pipeline. mruby (Ruby) is the exception -- this binary finds its module but never calls it, which is stated per runtime below.
 
 ## Overview
 
 The `comprehensive_benchmark` binary provides unified performance measurement for:
 
-- **7 Production WASM Language Runtimes**: QuickJS (JavaScript), TypeScript (QuickJS), MicroPython (Python), Lua, mruby (Ruby), Rust WASI, TinyGo (Go)
+- **7 Production WASM Language Runtimes**: QuickJS (JavaScript), TypeScript (QuickJS), MicroPython (Python), Lua, mruby (Ruby), Rust WASI, TinyGo (Go) — measured here for six of the seven; mruby is registered and shipped but this harness never calls it
 - **6 Planned WASM Language Runtimes** (currently toy interpreters): PHP, C#/.NET, Java/TeaVM, R/WebR, Julia, Perl
 - **Transport Protocols**: JSON-RPC stdio, with extensibility for HTTP, NDA shmem, and JSON shmem
 - **Multiple Metrics**: Cold start, hot call latency, cached module reuse, P50/P95/P99 percentiles
@@ -25,23 +25,23 @@ cargo bench --release --bench comprehensive_benchmark
 
 Before running the benchmark, ensure you have:
 
-1. **WASM modules compiled** in `bench_tools/` (paths as checked by `benches/comprehensive_benchmark.rs`, sizes on disk 2026-09-17):
+1. **WASM modules compiled** in `bench_tools/` (paths as checked by `benches/comprehensive_benchmark.rs`, sizes on disk 2026-10-11):
 
    *Production runtimes:*
    - `quickjs_wasm/quickjs.wasm` (754,433 bytes — also used by TypeScript)
-   - `micropython_wasm/wasi-reactor/build/micropython.wasm` (587,776 bytes)
-   - `lua_wasm/lua.wasm` (680,094 bytes)
+   - `micropython_wasm/wasi-reactor/build/micropython.wasm` (588,146 bytes)
+   - `lua_wasm/lua.wasm` (680,060 bytes)
    - `tinygo_wasm/tool.wasm` (909,213 bytes)
-   - `mruby_wasm/ruby.wasm` (1,583,417 bytes)
-   - `rust_wasm/target/wasm32-wasip1/release/rust_wasm_tool.wasm` (56,310 bytes)
+   - `mruby_wasm/ruby.wasm` (1,583,417 bytes — listed because the harness's module scan checks it; no measurement section uses it)
+   - `bench_tools/rust_wasm/target/wasm32-wasip1/release/rust_wasm_tool.wasm` (56,310 bytes)
 
    *Planned runtimes (toy interpreters):*
-   - `php_wasm/php.wasm` (277,664 bytes)
-   - `csharp_wasm/dotnet.wasm` (277,747 bytes)
-   - `java_wasm/java.wasm` (277,713 bytes)
-   - `r_wasm/r.wasm` (277,630 bytes)
-   - `julia_wasm/julia.wasm` (277,698 bytes)
-   - `perl_wasm/perl.wasm` (277,681 bytes)
+   - `php_wasm/php.wasm` (276,938 bytes)
+   - `csharp_wasm/dotnet.wasm` (277,005 bytes)
+   - `java_wasm/java.wasm` (276,987 bytes)
+   - `r_wasm/r.wasm` (276,888 bytes)
+   - `julia_wasm/julia.wasm` (276,972 bytes)
+   - `perl_wasm/perl.wasm` (276,955 bytes)
 
 2. **Node.js installed** (for transport protocol benchmarks)
 
@@ -124,13 +124,13 @@ The "Fastest WASM runtime" line ranks by this benchmark's own hot-call numbers, 
 
 **Lua**: Fastest WASM hot call measured on this machine (11.1 µs, 90.3K calls/s). Memory footprint is not currently measured by any of these benchmarks, so treat size-related claims as unverified.
 
-**mruby (Ruby)**: Ruby syntax with WASM-native execution. Good for Ruby developers who want familiar syntax without MRI overhead. Not covered by the 2026-09-17 WASM-vs-native run, so no latency figure is stated here.
+**mruby (Ruby)**: Ruby syntax with WASM-native execution, and the one registered runtime this binary never calls — the module scan finds `ruby.wasm`, no measurement section uses it, so no latency figure is stated here; the 2026-09-17 `wasm_vs_native` run skipped it too. Ruby has a measurement section in each of the two other harnesses that read the same module (`wasm_tool_latency` at its `Ruby/WASM` call, `metering_cache_bench` in both of its per-language tables), and on 2026-10-14 it answered through the server's own stdio plugin path on the current build (`rb_text_stats` on "one two three" → `{"chars":13,"words":3,"upper":"ONE TWO THREE"}`, `isError` false), so the WASM EH incompatibility the harness's comment still cites as the reason for skipping it is not a live constraint.
 
 **Rust WASI**: Cheapest module to compile in `metering_cache_bench` Part A (11,378 µs, vs 76,712–324,541 µs for MicroPython/QuickJS/Lua/Ruby) and the cheapest runtime create (9,791 µs first, 1,181 µs cached). No 2026-09-17 Rust hot-call figure exists — the `comprehensive_benchmark` WASM numbers from that run are unusable, so no ranking claim is made.
 
 **TinyGo (Go)**: Compiles ahead of time to a real WASM module, but has no persistent instance in this harness, so every call pays instantiation: 257.3 µs/call cached (3.9K calls/s) vs 11.1–15.7 µs/call for the in-process scripting engines. Cached module mode is mandatory, and goroutine-style concurrency is limited under WASM.
 
-**PHP/C#/Java/R/Julia/Perl** (planned, not production-ready): Tree-walk interpreters sharing a common C core. Currently toy interpreters with hardcoded demo wrappers, not suitable for production workloads: in the 2026-09-17 run all six returned `wc=0 cc=0` for real language syntax. No performance comparison against the production runtimes is meaningful when the tool never produces a result. These are targets for future development toward production readiness.
+**PHP/C#/Java/R/Julia/Perl** (planned, not production-ready): Tree-walk interpreters sharing a common C core. They are not stubs — a tool's source is registered at run time and interpreted by that core, measured 2026-10-11 with a registered `while`-loop tool returning its count and a registered recursive `fib` returning its value — but they parse only the shared DSL, not real language syntax, which is why in the 2026-09-17 run all six returned `wc=0 cc=0`. No performance comparison against the production runtimes is meaningful when the tool never produces a result. These are targets for future development toward production readiness.
 
 ### Performance Trade-offs
 
@@ -200,7 +200,7 @@ To add new measurements:
 
 ## Troubleshooting
 
-**"WASM module not found"**: Ensure you've built all WASM modules using the build scripts in `bench_tools/`. Run `./bench_tools/build_all.sh` (Linux/macOS) or equivalent batch files.
+**"WASM module not found"**: Each language module is built by a script under `bench_tools/` -- most `*_wasm` directories carry a `build.sh`, and the one for your runtime is the script to run (Linux/macOS). There is no build-all script and no Windows twin.
 
 **"Node.js not found"**: Install Node.js v16+ and ensure it's in your PATH. The benchmark uses it for transport protocol baselines.
 

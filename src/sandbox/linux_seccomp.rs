@@ -55,6 +55,11 @@ use std::convert::TryInto;
 /// - The filter cannot be created or compiled
 /// - The filter cannot be applied to the current process
 #[cfg(target_os = "linux")]
+// No production path installs these filters yet: the fork-then-apply design
+// described in `src/sandbox.rs` is not implemented, so nothing calls this outside
+// this module's own tests. Wiring it up is an operator decision — seccomp filters
+// cannot be removed once applied to a process.
+#[allow(dead_code)]
 pub fn apply_seccomp_filters() -> Result<(), String> {
     // Define allowed syscalls for basic plugin operation
     // (mut is required when the wasm-networking feature extends the list below)
@@ -205,6 +210,8 @@ pub fn apply_seccomp_filters() -> Result<(), String> {
 /// to allow the code to compile and run on all platforms. The capability-based
 /// sandbox still provides security on non-Linux platforms.
 #[cfg(not(target_os = "linux"))]
+// Same status as the Linux arm above: no production caller on any platform.
+#[allow(dead_code)]
 pub fn apply_seccomp_filters() -> Result<(), String> {
     // Seccomp is Linux-only, return success on other platforms
     Ok(())

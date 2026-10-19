@@ -19,6 +19,10 @@ pub use shmem_transport::ShmemTransport;
 #[async_trait::async_trait]
 pub trait Transport: Send + Sync {
     /// Send a JSON-RPC request and receive a response
+    ///
+    /// A request with no `id` is a notification, which the server answers only on the
+    /// shared memory transports. Implementations must report it as accepted rather than
+    /// waiting for an envelope, the way `ShmemTransport` already does.
     async fn send(&self, request: JsonRpcRequest) -> Result<JsonRpcResponse>;
 
     /// Close the transport connection
@@ -60,6 +64,12 @@ impl Transport for StdioTransport {
         stdin.write_all(request_json.as_bytes()).await?;
         stdin.write_all(b"\n").await?;
         stdin.flush().await?;
+
+        if request.id.is_none() {
+            child.stdin = Some(stdin);
+            child.stdout = Some(stdout);
+            return Ok(notification_acked());
+        }
 
         // Read response
         let mut reader = BufReader::new(&mut stdout);
@@ -116,6 +126,16 @@ impl Transport for HttpTransport {
 
         let response = req_builder.send().await?;
 
+        if response.status() == reqwest::StatusCode::NO_CONTENT {
+            return match &request.id {
+                None => Ok(notification_acked()),
+                Some(id) => Err(Error::Transport(format!(
+                    "No response envelope for request {}",
+                    id
+                ))),
+            };
+        }
+
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
@@ -129,5 +149,17 @@ impl Transport for HttpTransport {
     async fn close(&self) -> Result<()> {
         // HTTP transport doesn't need explicit close
         Ok(())
+    }
+}
+
+/// The reply reported for a notification: accepted, with an empty result, because no
+/// JSON-RPC envelope arrives. `McpClient::send_request` always stamps an id, so only a
+/// caller that sends a notification itself observes this value.
+fn notification_acked() -> JsonRpcResponse {
+    JsonRpcResponse {
+        jsonrpc: "2.0".to_string(),
+        result: Some(serde_json::json!({})),
+        error: None,
+        id: None,
     }
 }

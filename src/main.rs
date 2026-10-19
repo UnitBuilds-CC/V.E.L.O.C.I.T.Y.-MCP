@@ -5,7 +5,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
-use velocity_mcp::{audit, benchmark, config::ServerConfig, plugins, protocol, registry, wasm_runtime};
+use velocity_mcp::{
+    audit, benchmark, config::ServerConfig, plugins, protocol, registry, wasm_runtime,
+};
 
 /// Server version string, referenced by all protocol handlers and help text.
 pub const VERSION: &str = velocity_mcp::VERSION;
@@ -14,16 +16,6 @@ pub const VERSION: &str = velocity_mcp::VERSION;
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 fn main() {
-    // Initialize structured logging
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .with_target(false)
-        .init();
-
     let args: Vec<String> = env::args().collect();
     let mut config_path: Option<String> = None;
     let mut cli_mode: Option<&str> = None;
@@ -110,11 +102,6 @@ fn main() {
         }
     }
 
-    if benchmark_mode {
-        benchmark::run_benchmarks();
-        return;
-    }
-
     // Load configuration: file -> env vars -> CLI overrides
     let config = if let Some(ref path) = config_path {
         match ServerConfig::from_file(path) {
@@ -133,6 +120,22 @@ fn main() {
             eprintln!("Config error: {}", e);
         }
         process::exit(1);
+    }
+
+    // Initialize structured logging once the config is known, so [logging].level
+    // and VELOCITY_LOG_LEVEL reach the live filter. RUST_LOG still wins.
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&config.logging.level)),
+        )
+        .with_target(false)
+        .init();
+
+    if benchmark_mode {
+        benchmark::run_benchmarks();
+        return;
     }
 
     plugins::set_wasm_runtimes_config(config.wasm_runtimes.clone());
@@ -230,7 +233,11 @@ fn main() {
                 (None, None) => None,
             };
             let security_config = velocity_mcp::transport::http::HttpSecurityConfig {
-                api_key: config.http.api_key.clone(),
+                api_key: config
+                    .http
+                    .api_key
+                    .as_deref()
+                    .and_then(velocity_mcp::config::normalize_api_key),
                 max_request_size: config.http.max_request_size,
                 enable_rate_limit: config.http.enable_rate_limit,
                 cors_origins: config.http.cors_origins.clone(),

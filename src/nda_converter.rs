@@ -858,8 +858,8 @@ mod tests {
 
         // Verify it's a valid NDA document
         let doc = NdaDocument::read(&nda_data).unwrap();
-        assert!(doc.triples.len() > 0, "Should have triples");
-        assert!(doc.commands.len() > 0, "Should have commands");
+        assert!(!doc.triples.is_empty(), "Should have triples");
+        assert!(!doc.commands.is_empty(), "Should have commands");
 
         // Check for spreadsheet type triple
         let has_type = doc.triples.iter().any(|t| {
@@ -905,7 +905,7 @@ mod tests {
     fn test_convert_binary_round_trip() {
         let dir = std::env::temp_dir();
         let bin_path = dir.join("test_velocity_convert.dat");
-        std::fs::write(&bin_path, &[0x00, 0x01, 0x02, 0xFF, 0xFE, 0x41, 0x42]).unwrap();
+        std::fs::write(&bin_path, [0x00, 0x01, 0x02, 0xFF, 0xFE, 0x41, 0x42]).unwrap();
 
         let result = convert_to_nda(bin_path.to_str().unwrap());
         assert!(
@@ -980,7 +980,7 @@ mod tests {
                 && doc.get_string(t.object_offset).unwrap_or_default() == "PdfDocument"
         });
         assert!(has_type, "Should have TYPE=PdfDocument triple");
-        assert!(doc.commands.len() > 0, "Should have display commands");
+        assert!(!doc.commands.is_empty(), "Should have display commands");
 
         let _ = std::fs::remove_file(&pdf_path);
     }
@@ -1108,7 +1108,7 @@ mod tests {
         let nda_data = result.unwrap();
         let doc = NdaDocument::read(&nda_data).unwrap();
         assert!(
-            doc.commands.len() > 0,
+            !doc.commands.is_empty(),
             "Should have display commands for CSV with +/- values"
         );
 

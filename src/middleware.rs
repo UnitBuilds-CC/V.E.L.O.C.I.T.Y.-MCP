@@ -205,10 +205,21 @@ pub async fn handle_batch_request(
     let mut responses = Vec::new();
 
     for request in batch.requests {
-        let result = crate::protocol::json_rpc::handle_request(&request);
-        match result {
-            Some(response) => responses.push(response),
-            None => responses.push(serde_json::json!({"status": "notification processed"})),
+        if !crate::protocol::json_rpc::is_request_shaped(&request) {
+            responses.push(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": null,
+                "error": {
+                    "code": -32600,
+                    "message": "Invalid Request: batch element is not a JSON-RPC request object"
+                }
+            }));
+            continue;
+        }
+        // A notification must not generate a response object, so it is omitted rather
+        // than acknowledged; the batch response carries one entry per request with an id.
+        if let Some(response) = crate::protocol::json_rpc::handle_request(&request) {
+            responses.push(response);
         }
     }
 
@@ -452,7 +463,50 @@ mod tests {
             .await
             .unwrap();
         let responses: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        // JSON-RPC 2.0: a notification must not generate a response object.
+        assert_eq!(responses.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_batch_request_notification_does_not_swallow_response() {
+        let _t = test_timer("test_batch_request_notification_does_not_swallow_response");
+        let batch = BatchRequest {
+            requests: vec![
+                serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+                serde_json::json!({"jsonrpc": "2.0", "method": "ping", "id": 7}),
+            ],
+        };
+
+        let headers = axum::http::HeaderMap::new();
+        let response = handle_batch_request(headers, axum::Json(batch)).await;
+
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let responses: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
         assert_eq!(responses.len(), 1);
-        assert_eq!(responses[0]["status"], "notification processed");
+        assert_eq!(responses[0]["id"], 7);
+        assert!(responses[0].get("status").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_batch_request_invalid_element_is_rejected_not_acked() {
+        let _t = test_timer("test_batch_request_invalid_element_is_rejected_not_acked");
+        let batch = BatchRequest {
+            requests: vec![serde_json::json!(42), serde_json::json!("just a string")],
+        };
+
+        let headers = axum::http::HeaderMap::new();
+        let response = handle_batch_request(headers, axum::Json(batch)).await;
+
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let responses: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(responses.len(), 2);
+        for entry in responses {
+            assert_eq!(entry["error"]["code"], -32600);
+            assert!(entry["jsonrpc"].is_string());
+        }
     }
 }

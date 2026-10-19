@@ -83,6 +83,20 @@ impl Default for HttpConfig {
     }
 }
 
+/// Normalize a configured API key.
+///
+/// A blank key means "authentication not configured", never "authentication
+/// enabled and satisfied by an empty token": `Some("")` would let any client
+/// through with a bare `Authorization: Bearer ` header.
+pub fn normalize_api_key(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 /// Logging configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoggingConfig {
@@ -179,7 +193,7 @@ pub struct WasmRuntimesConfig {
 
     /// Global instruction limit for all WASM runtimes (meters execution to prevent infinite loops).
     /// Set to None to disable metering (NOT recommended for production).
-    /// Default: 10,000,000 instructions (~1-5 seconds of computation depending on workload).
+    /// Default: 10,000,000 instructions — about 1 ms of measured guest compute per call.
     /// Env override: VELOCITY_WASM_INSTRUCTION_LIMIT (set to 0 to disable metering).
     #[serde(default = "default_wasm_instruction_limit")]
     pub instruction_limit: Option<u64>,
@@ -326,7 +340,7 @@ fn default_true() -> bool {
 }
 
 fn default_wasm_instruction_limit() -> Option<u64> {
-    Some(10_000_000) // 10 million instructions (~1-5 seconds of computation)
+    Some(10_000_000) // 10 million instructions (~1 ms of measured guest compute)
 }
 
 fn default_quickjs_wasm_path() -> String {
@@ -461,7 +475,7 @@ impl ServerConfig {
         }
 
         if let Ok(api_key) = std::env::var("VELOCITY_API_KEY") {
-            self.http.api_key = Some(api_key);
+            self.http.api_key = normalize_api_key(&api_key);
         }
 
         if let Ok(max_size) = std::env::var("VELOCITY_MAX_REQUEST_SIZE") {
@@ -535,7 +549,7 @@ impl ServerConfig {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -607,19 +621,21 @@ mod tests {
 
     #[test]
     fn test_load_with_env_missing_file_uses_defaults() {
+        let _e = EnvGuard::clear("VELOCITY_MODE");
         let config = ServerConfig::load_with_env(Some("/nonexistent/config.toml"));
         assert_eq!(config.mode, "stdio");
     }
 
     #[test]
     fn test_load_with_env_none_uses_defaults() {
+        let _e = EnvGuard::clear("VELOCITY_MODE");
         let config: ServerConfig = ServerConfig::load_with_env(None::<&str>);
         assert_eq!(config.mode, "stdio");
     }
 
     #[test]
     fn test_apply_env_overrides_mode() {
-        std::env::set_var("VELOCITY_MODE", "http");
+        let _e = EnvGuard::set("VELOCITY_MODE", "http");
         let config = ServerConfig::default().apply_env_overrides();
         assert_eq!(config.mode, "http");
         std::env::remove_var("VELOCITY_MODE");
@@ -627,7 +643,7 @@ mod tests {
 
     #[test]
     fn test_apply_env_overrides_buffer_path() {
-        std::env::set_var("VELOCITY_BUFFER_PATH", "/custom/buffer.bin");
+        let _e = EnvGuard::set("VELOCITY_BUFFER_PATH", "/custom/buffer.bin");
         let config = ServerConfig::default().apply_env_overrides();
         assert_eq!(config.buffer_path, "/custom/buffer.bin");
         std::env::remove_var("VELOCITY_BUFFER_PATH");
@@ -635,7 +651,7 @@ mod tests {
 
     #[test]
     fn test_apply_env_overrides_csharp_path() {
-        std::env::set_var("VELOCITY_CSHARP_PATH", "/custom/engine.exe");
+        let _e = EnvGuard::set("VELOCITY_CSHARP_PATH", "/custom/engine.exe");
         let config = ServerConfig::default().apply_env_overrides();
         assert_eq!(config.csharp_path, "/custom/engine.exe");
         std::env::remove_var("VELOCITY_CSHARP_PATH");
@@ -643,7 +659,7 @@ mod tests {
 
     #[test]
     fn test_apply_env_overrides_log_level() {
-        std::env::set_var("VELOCITY_LOG_LEVEL", "debug");
+        let _e = EnvGuard::set("VELOCITY_LOG_LEVEL", "debug");
         let config = ServerConfig::default().apply_env_overrides();
         assert_eq!(config.logging.level, "debug");
         std::env::remove_var("VELOCITY_LOG_LEVEL");
@@ -651,23 +667,40 @@ mod tests {
 
     #[test]
     fn test_apply_env_overrides_http_addr() {
-        std::env::set_var("VELOCITY_HTTP_ADDR", "127.0.0.1:9999");
+        let _e = EnvGuard::set("VELOCITY_HTTP_ADDR", "127.0.0.1:9999");
         let config = ServerConfig::default().apply_env_overrides();
         assert_eq!(config.http.addr, "127.0.0.1:9999");
         std::env::remove_var("VELOCITY_HTTP_ADDR");
     }
 
+    // Single test so the shared env var can't race across parallel tests.
     #[test]
     fn test_apply_env_overrides_api_key() {
-        std::env::set_var("VELOCITY_API_KEY", "secret-key-123");
+        let _e = EnvGuard::set("VELOCITY_API_KEY", "secret-key-123");
         let config = ServerConfig::default().apply_env_overrides();
         assert_eq!(config.http.api_key.as_deref(), Some("secret-key-123"));
+
+        // A blank key means "not configured", not "any empty token passes".
+        std::env::set_var("VELOCITY_API_KEY", "   ");
+        let config = ServerConfig::default().apply_env_overrides();
+        assert_eq!(config.http.api_key, None);
+
         std::env::remove_var("VELOCITY_API_KEY");
     }
 
     #[test]
+    fn test_normalize_api_key() {
+        assert_eq!(normalize_api_key(""), None);
+        assert_eq!(normalize_api_key(" \t\n"), None);
+        assert_eq!(
+            normalize_api_key("  secret-key-123 "),
+            Some("secret-key-123".to_string())
+        );
+    }
+
+    #[test]
     fn test_apply_env_overrides_max_request_size() {
-        std::env::set_var("VELOCITY_MAX_REQUEST_SIZE", "2048");
+        let _e = EnvGuard::set("VELOCITY_MAX_REQUEST_SIZE", "2048");
         let config = ServerConfig::default().apply_env_overrides();
         assert_eq!(config.http.max_request_size, 2048);
         std::env::remove_var("VELOCITY_MAX_REQUEST_SIZE");
@@ -675,7 +708,7 @@ mod tests {
 
     #[test]
     fn test_apply_env_overrides_rate_limit() {
-        std::env::set_var("VELOCITY_ENABLE_RATE_LIMIT", "false");
+        let _e = EnvGuard::set("VELOCITY_ENABLE_RATE_LIMIT", "false");
         let config = ServerConfig::default().apply_env_overrides();
         assert!(!config.http.enable_rate_limit);
         std::env::remove_var("VELOCITY_ENABLE_RATE_LIMIT");
@@ -684,7 +717,7 @@ mod tests {
     // Single test (not three) so the shared env var can't race across parallel tests.
     #[test]
     fn test_apply_env_overrides_wasm_instruction_limit() {
-        std::env::set_var("VELOCITY_WASM_INSTRUCTION_LIMIT", "5000000");
+        let _e = EnvGuard::set("VELOCITY_WASM_INSTRUCTION_LIMIT", "5000000");
         let config = ServerConfig::default().apply_env_overrides();
         assert_eq!(config.wasm_runtimes.instruction_limit, Some(5_000_000));
 
@@ -709,8 +742,10 @@ mod tests {
 
     #[test]
     fn test_validate_http_max_request_size_zero() {
-        let mut config = ServerConfig::default();
-        config.mode = "http".to_string();
+        let mut config = ServerConfig {
+            mode: "http".to_string(),
+            ..ServerConfig::default()
+        };
         config.http.max_request_size = 0;
         let errors = config.validate().unwrap_err();
         assert!(errors.iter().any(|e| e.contains("Max request size")));
@@ -718,8 +753,10 @@ mod tests {
 
     #[test]
     fn test_validate_all_errors_collected() {
-        let mut config = ServerConfig::default();
-        config.mode = "invalid".to_string();
+        let mut config = ServerConfig {
+            mode: "invalid".to_string(),
+            ..ServerConfig::default()
+        };
         config.logging.level = "bogus".to_string();
         let errors = config.validate().unwrap_err();
         assert!(errors.len() >= 2);
@@ -814,5 +851,51 @@ mod tests {
         let mut config = ServerConfig::default();
         config.wasm_runtimes.lua.wasm_path = "/custom/lua.wasm".to_string();
         assert_eq!(config.wasm_runtimes.lua.wasm_path, "/custom/lua.wasm");
+    }
+
+    /// A process-environment write that stays locked until its test returns.
+    ///
+    /// `set_var`/`remove_var` mutate one global that every test in this binary reads, so two
+    /// unsynchronised writers can observe each other's value mid-assertion. The guard
+    /// serialises all env writers the way `registry::tests::lock_registries` serialises the
+    /// process-global registries, and restores the previous value on drop, including when an
+    /// assertion panics, which the explicit trailing `remove_var` cleanups cannot do.
+    pub(crate) struct EnvGuard {
+        name: &'static str,
+        prev: Option<String>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    impl EnvGuard {
+        fn lock(name: &'static str) -> Self {
+            EnvGuard {
+                name,
+                prev: std::env::var(name).ok(),
+                _lock: ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner()),
+            }
+        }
+
+        pub(crate) fn set(name: &'static str, value: &str) -> Self {
+            let guard = Self::lock(name);
+            std::env::set_var(name, value);
+            guard
+        }
+
+        pub(crate) fn clear(name: &'static str) -> Self {
+            let guard = Self::lock(name);
+            std::env::remove_var(name);
+            guard
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(value) => std::env::set_var(self.name, value),
+                None => std::env::remove_var(self.name),
+            }
+        }
     }
 }

@@ -37,7 +37,8 @@ impl RustRuntime {
     /// Load a pre-compiled Rust WASM module as a tool.
     /// The WASM module must export: prepare_call(), tool_execute(ptr, len), malloc(size)
     pub fn load_tool(&mut self, name: &str, wasm_bytes: &[u8]) -> Result<(), Box<dyn Error>> {
-        let module = compile_module_cached(self.store.engine(), wasm_bytes, super::instruction_limit())?;
+        let module =
+            compile_module_cached(self.store.engine(), wasm_bytes, super::instruction_limit())?;
         self.modules.insert(name.to_string(), module);
         Ok(())
     }
@@ -128,6 +129,12 @@ impl WasmRuntime for RustRuntime {
         self.instances.clear();
         self.modules.clear();
         Ok(())
+    }
+
+    /// The guest hands back its own buffer via `get_input_ptr`; the host has no
+    /// way to learn its size, so it cannot bound the write.
+    fn args_slot_capacity(&self) -> Option<usize> {
+        None
     }
 
     fn language(&self) -> &str {

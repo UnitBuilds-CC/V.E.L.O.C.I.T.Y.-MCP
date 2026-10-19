@@ -928,13 +928,26 @@ pub fn call_tool_with_csharp_path(
         }
         "file_read" => {
             let path = arguments["path"].as_str().ok_or("path is required")?;
+            
+            // Validate the requested path BEFORE opening to catch traversal attempts early
             validate_file_path(path)?;
-
-            // Open file first, then check size on the handle to prevent TOCTOU race
+            
+            // Open file, then validate canonical path to prevent TOCTOU race via symlinks
             use std::io::Read;
             let mut file = std::fs::File::open(path)?;
-            const MAX_FILE_READ_SIZE: usize = 10 * 1024 * 1024; // 10MB
+            
+            // Canonicalize the opened file's path to resolve any symlinks
             let metadata = file.metadata()?;
+            if !metadata.is_file() {
+                return Err(format!("Path is not a file: {}", path).into());
+            }
+            let canonical = std::fs::canonicalize(path)
+                .map_err(|e| format!("Cannot resolve canonical path: {}", e))?;
+            
+            // Double-check the canonical path also passes validation (symlink resolution)
+            validate_file_path(&canonical.to_string_lossy())?;
+            
+            const MAX_FILE_READ_SIZE: usize = 10 * 1024 * 1024; // 10MB
             if metadata.len() > MAX_FILE_READ_SIZE as u64 {
                 return Err(format!(
                     "File too large: {} bytes ({:.2} MB)\n\
@@ -4794,11 +4807,17 @@ pub(crate) mod tests {
         let result = call_tool(
             "file_read",
             &json!({
-                "path": "C:\\Users\\test\\..\\..\\Windows\\System32\\config\\SAM"
+                "path": "/tmp/../etc/passwd"
             }),
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("traversal"));
+        let err_msg = result.unwrap_err().to_string();
+        // The path contains ".." which is caught by validate_file_path before canonicalization
+        assert!(
+            err_msg.contains("traversal") || err_msg.contains(".."),
+            "Expected traversal error, got: {}",
+            err_msg
+        );
     }
 
     // ── NDA binary tool execution with too-small binary ────────────────

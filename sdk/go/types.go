@@ -17,10 +17,10 @@ type JsonRpcError struct {
 
 // JsonRpcResponse represents a JSON-RPC 2.0 response
 type JsonRpcResponse struct {
-	Jsonrpc string          `json:"jsonrpc"`
-	Result  interface{}     `json:"result,omitempty"`
-	Error   *JsonRpcError   `json:"error,omitempty"`
-	ID      interface{}     `json:"id,omitempty"`
+	Jsonrpc string        `json:"jsonrpc"`
+	Result  interface{}   `json:"result,omitempty"`
+	Error   *JsonRpcError `json:"error,omitempty"`
+	ID      interface{}   `json:"id,omitempty"`
 }
 
 // ClientInfo represents client information
@@ -54,11 +54,11 @@ type ServerInfo struct {
 
 // ServerCapabilities represents server capabilities
 type ServerCapabilities struct {
-	Tools    *ToolsCapability    `json:"tools,omitempty"`
+	Tools     *ToolsCapability     `json:"tools,omitempty"`
 	Resources *ResourcesCapability `json:"resources,omitempty"`
-	Prompts  *PromptsCapability  `json:"prompts,omitempty"`
-	Sampling interface{}         `json:"sampling,omitempty"`
-	Logging  interface{}         `json:"logging,omitempty"`
+	Prompts   *PromptsCapability   `json:"prompts,omitempty"`
+	Sampling  interface{}          `json:"sampling,omitempty"`
+	Logging   interface{}          `json:"logging,omitempty"`
 }
 
 // InitializeResult represents initialize response
@@ -86,9 +86,9 @@ type PromptsCapability struct {
 
 // Tool represents a tool definition
 type Tool struct {
-	Name         string                 `json:"name"`
-	Description  string                 `json:"description"`
-	InputSchema  map[string]interface{} `json:"inputSchema"`
+	Name        string                 `json:"name"`
+	Description string                 `json:"description"`
+	InputSchema map[string]interface{} `json:"inputSchema"`
 }
 
 // ToolsListResult represents tools list result

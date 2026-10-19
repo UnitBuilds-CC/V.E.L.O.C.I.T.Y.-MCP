@@ -20,11 +20,7 @@ async fn setup() -> (Client, String) {
 #[tokio::test]
 async fn test_health_endpoint_returns_200() {
     let (client, base) = setup().await;
-    let resp = client
-        .get(&format!("{}/health", base))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(format!("{}/health", base)).send().await.unwrap();
     assert_eq!(resp.status(), 200);
 }
 
@@ -32,7 +28,7 @@ async fn test_health_endpoint_returns_200() {
 async fn test_healthz_endpoint_returns_200() {
     let (client, base) = setup().await;
     let resp = client
-        .get(&format!("{}/healthz", base))
+        .get(format!("{}/healthz", base))
         .send()
         .await
         .unwrap();
@@ -42,11 +38,7 @@ async fn test_healthz_endpoint_returns_200() {
 #[tokio::test]
 async fn test_health_returns_json_content_type() {
     let (client, base) = setup().await;
-    let resp = client
-        .get(&format!("{}/health", base))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(format!("{}/health", base)).send().await.unwrap();
     let ct = resp
         .headers()
         .get("content-type")
@@ -59,11 +51,7 @@ async fn test_health_returns_json_content_type() {
 #[tokio::test]
 async fn test_health_body_contains_healthy_status() {
     let (client, base) = setup().await;
-    let resp = client
-        .get(&format!("{}/health", base))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(format!("{}/health", base)).send().await.unwrap();
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "healthy");
 }
@@ -71,11 +59,7 @@ async fn test_health_body_contains_healthy_status() {
 #[tokio::test]
 async fn test_health_body_contains_version() {
     let (client, base) = setup().await;
-    let resp = client
-        .get(&format!("{}/health", base))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(format!("{}/health", base)).send().await.unwrap();
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["version"], "3.2.0");
 }
@@ -89,7 +73,7 @@ async fn test_post_mcp_ping() {
     let (client, base) = setup().await;
     let body = serde_json::json!({"jsonrpc": "2.0", "method": "ping", "id": 1});
     let resp = client
-        .post(&format!("{}/mcp", base))
+        .post(format!("{}/mcp", base))
         .json(&body)
         .send()
         .await
@@ -105,7 +89,7 @@ async fn test_post_root_mcp() {
     let (client, base) = setup().await;
     let body = serde_json::json!({"jsonrpc": "2.0", "method": "ping", "id": 1});
     let resp = client
-        .post(&format!("{}/", base))
+        .post(format!("{}/", base))
         .json(&body)
         .send()
         .await
@@ -125,7 +109,7 @@ async fn test_post_mcp_initialize() {
         "id": 1
     });
     let resp = client
-        .post(&format!("{}/mcp", base))
+        .post(format!("{}/mcp", base))
         .json(&body)
         .send()
         .await
@@ -141,7 +125,7 @@ async fn test_post_mcp_tools_list() {
     let (client, base) = setup().await;
     let body = serde_json::json!({"jsonrpc": "2.0", "method": "tools/list", "id": 2});
     let resp = client
-        .post(&format!("{}/mcp", base))
+        .post(format!("{}/mcp", base))
         .json(&body)
         .send()
         .await
@@ -155,7 +139,7 @@ async fn test_post_mcp_tools_list() {
 async fn test_post_mcp_invalid_json() {
     let (client, base) = setup().await;
     let resp = client
-        .post(&format!("{}/mcp", base))
+        .post(format!("{}/mcp", base))
         .header("content-type", "application/json")
         .body("not valid json!!!")
         .send()
@@ -173,7 +157,7 @@ async fn test_post_mcp_invalid_json() {
 #[tokio::test]
 async fn test_get_mcp_returns_404() {
     let (client, base) = setup().await;
-    let resp = client.get(&format!("{}/mcp", base)).send().await.unwrap();
+    let resp = client.get(format!("{}/mcp", base)).send().await.unwrap();
     assert_eq!(resp.status(), 404);
 }
 
@@ -181,7 +165,7 @@ async fn test_get_mcp_returns_404() {
 async fn test_unknown_path_returns_404() {
     let (client, base) = setup().await;
     let resp = client
-        .get(&format!("{}/unknown", base))
+        .get(format!("{}/unknown", base))
         .send()
         .await
         .unwrap();
@@ -191,7 +175,7 @@ async fn test_unknown_path_returns_404() {
 #[tokio::test]
 async fn test_unknown_path_body_has_error() {
     let (client, base) = setup().await;
-    let resp = client.get(&format!("{}/nope", base)).send().await.unwrap();
+    let resp = client.get(format!("{}/nope", base)).send().await.unwrap();
     let body: Value = resp.json().await.unwrap();
     assert!(body.get("error").is_some());
 }
@@ -200,7 +184,7 @@ async fn test_unknown_path_body_has_error() {
 async fn test_put_mcp_returns_404() {
     let (client, base) = setup().await;
     let resp = client
-        .put(&format!("{}/mcp", base))
+        .put(format!("{}/mcp", base))
         .body("{}")
         .send()
         .await
@@ -211,11 +195,7 @@ async fn test_put_mcp_returns_404() {
 #[tokio::test]
 async fn test_delete_mcp_returns_404() {
     let (client, base) = setup().await;
-    let resp = client
-        .delete(&format!("{}/mcp", base))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.delete(format!("{}/mcp", base)).send().await.unwrap();
     assert_eq!(resp.status(), 404);
 }
 
@@ -228,7 +208,7 @@ async fn test_mcp_response_has_json_content_type() {
     let (client, base) = setup().await;
     let body = serde_json::json!({"jsonrpc": "2.0", "method": "ping", "id": 1});
     let resp = client
-        .post(&format!("{}/mcp", base))
+        .post(format!("{}/mcp", base))
         .json(&body)
         .send()
         .await
@@ -247,7 +227,7 @@ async fn test_mcp_response_has_jsonrpc_version() {
     let (client, base) = setup().await;
     let body = serde_json::json!({"jsonrpc": "2.0", "method": "ping", "id": 1});
     let resp = client
-        .post(&format!("{}/mcp", base))
+        .post(format!("{}/mcp", base))
         .json(&body)
         .send()
         .await
@@ -261,7 +241,7 @@ async fn test_mcp_response_preserves_id() {
     let (client, base) = setup().await;
     let body = serde_json::json!({"jsonrpc": "2.0", "method": "ping", "id": 42});
     let resp = client
-        .post(&format!("{}/mcp", base))
+        .post(format!("{}/mcp", base))
         .json(&body)
         .send()
         .await

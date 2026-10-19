@@ -34,7 +34,9 @@ pub struct QuickJsRuntime {
     batched: bool,
     /// Cached JS handles for the direct-call path (bypasses qjs_eval parsing).
     global_handle: Option<i32>,
-    wrapper_handle: Option<i32>,
+    /// Per-tool wrapper function handles. A single instance hosts multiple tools;
+    /// one shared handle would let the last-registered wrapper hijack the others.
+    tool_wrappers: HashMap<String, i32>,
     /// Fixed memory slot for length pointer (avoids malloc/free per call).
     len_ptr_slot: u64,
 }
@@ -46,6 +48,21 @@ const PROP_NAME_SLOT: u64 = ARGV_SLOT + 16;
 /// 16-byte output area for qjs_tool_call:
 /// [result_ptr: u32][result_len: u32][error_ptr: u32][error_len: u32]
 const OUT_SLOT: u64 = PROP_NAME_SLOT + 16;
+
+/// Usable bytes at EXEC_SLOT before LEN_PTR_SLOT starts. A write past this
+/// silently clobbers the guest's own slot state rather than failing, so every
+/// caller-supplied buffer is measured against it before being copied in.
+const EXEC_SLOT_CAPACITY: usize = (LEN_PTR_SLOT - EXEC_SLOT) as usize;
+
+fn check_exec_slot_fit(len: usize, what: &str) -> Result<(), Box<dyn Error>> {
+    if len >= EXEC_SLOT_CAPACITY {
+        return Err(format!(
+            "{what} of {len} bytes exceeds the {EXEC_SLOT_CAPACITY}-byte EXEC_SLOT"
+        )
+        .into());
+    }
+    Ok(())
+}
 
 impl QuickJsRuntime {
     /// Create a new QuickJS runtime from WASM module bytes.
@@ -78,7 +95,7 @@ impl QuickJsRuntime {
             qjs_free_cstring_fn: None,
             batched: false,
             global_handle: None,
-            wrapper_handle: None,
+            tool_wrappers: HashMap::new(),
             len_ptr_slot: LEN_PTR_SLOT,
         })
     }
@@ -111,6 +128,8 @@ impl QuickJsRuntime {
 
     fn exec(&mut self, src: &str) -> Result<i32, Box<dyn Error>> {
         let data = src.as_bytes();
+        // +1 for the NUL terminator written just past the source.
+        check_exec_slot_fit(data.len() + 1, "JS source")?;
         let view = self.memory.view(&self.store);
         view.write(EXEC_SLOT, data)?;
         view.write(EXEC_SLOT + data.len() as u64, &[0u8])?;
@@ -119,6 +138,7 @@ impl QuickJsRuntime {
     }
 
     pub fn write_to_exec_slot(&mut self, data: &[u8]) -> Result<(), Box<dyn Error>> {
+        check_exec_slot_fit(data.len() + 1, "JS payload")?;
         self.memory.view(&self.store).write(EXEC_SLOT, data)?;
         self.memory
             .view(&self.store)
@@ -300,14 +320,20 @@ impl QuickJsRuntime {
     /// qjs_tool_call performs new_string + call + exception check + string
     /// extraction + value frees inside the module, returning caller-owned
     /// cstring refs that we read once and release via qjs_free_cstring.
-    fn call_tool_batched(&mut self, args_json: &str) -> Result<String, Box<dyn Error>> {
+    fn wrapper_for(&self, name: &str) -> Result<i32, Box<dyn Error>> {
+        self.tool_wrappers.get(name).copied().ok_or_else(|| {
+            format!(
+                "wrapper not cached for tool '{}' — call register_tool first",
+                name
+            )
+            .into()
+        })
+    }
+
+    fn call_tool_batched(&mut self, name: &str, args_json: &str) -> Result<String, Box<dyn Error>> {
         let args_bytes = args_json.as_bytes();
-        if args_bytes.len() >= 64 * 1024 {
-            return Err("JS tool arguments exceed 64KB EXEC_SLOT".into());
-        }
-        let wrapper = self
-            .wrapper_handle
-            .ok_or("wrapper not cached — call register_tool first")?;
+        check_exec_slot_fit(args_bytes.len(), "JS tool arguments")?;
+        let wrapper = self.wrapper_for(name)?;
         let global = self.global_handle.unwrap_or(0);
 
         {
@@ -454,15 +480,20 @@ impl WasmRuntime for QuickJsRuntime {
     fn register_tool(&mut self, name: &str, source: &str) -> Result<(), Box<dyn Error>> {
         // Check if source changed (skip re-execution if unchanged)
         if let Some(existing_source) = self.tools.get(name) {
-            if existing_source == source {
+            if existing_source == source && self.tool_wrappers.contains_key(name) {
                 return Ok(()); // No change, skip re-execution
             }
         }
 
         self.eval_to_string(source)?;
 
+        // Each tool gets its own wrapper global: one shared `__wrapper` would
+        // be overwritten by every register, making all calls run the last
+        // registered tool's function.
+        let ident = name.replace(|c: char| !c.is_ascii_alphanumeric(), "_");
+        let wrapper_var = format!("__wrapper_{}", ident);
         let wrapper = format!(
-            "var __wrapper = function(a) {{ return JSON.stringify({name}(JSON.parse(a))); }};"
+            "var {wrapper_var} = function(a) {{ return JSON.stringify({name}(JSON.parse(a))); }};"
         );
         self.eval_to_string(&wrapper)?;
 
@@ -472,16 +503,19 @@ impl WasmRuntime for QuickJsRuntime {
         self.global_handle = Some(global_handle);
 
         let get_prop_fn = self.instance.exports.get_function("qjs_get_prop_string")?;
-        let prop_name = b"__wrapper\0";
+        let mut prop_name = wrapper_var.as_bytes().to_vec();
+        prop_name.push(0);
         self.memory
             .view(&self.store)
-            .write(PROP_NAME_SLOT, prop_name)?;
+            .write(PROP_NAME_SLOT, &prop_name)?;
         let wrapper_result = get_prop_fn.call(
             &mut self.store,
             &[Value::I32(global_handle), Value::I32(PROP_NAME_SLOT as i32)],
         )?;
         let wrapper_handle = wrapper_result[0].unwrap_i32();
-        self.wrapper_handle = Some(wrapper_handle);
+        if let Some(old) = self.tool_wrappers.insert(name.to_string(), wrapper_handle) {
+            let _ = self.free_value(old);
+        }
 
         self.tools.insert(name.to_string(), source.to_string());
         Ok(())
@@ -493,10 +527,11 @@ impl WasmRuntime for QuickJsRuntime {
         }
 
         if self.batched {
-            return self.call_tool_batched(args_json);
+            return self.call_tool_batched(name, args_json);
         }
 
         let args_bytes = args_json.as_bytes();
+        check_exec_slot_fit(args_bytes.len(), "JS tool arguments")?;
         self.memory.view(&self.store).write(EXEC_SLOT, args_bytes)?;
 
         let new_str_fn = self
@@ -518,9 +553,7 @@ impl WasmRuntime for QuickJsRuntime {
             .write(ARGV_SLOT, &argv_bytes)?;
 
         let global = self.global_handle.unwrap_or(0);
-        let wrapper = self
-            .wrapper_handle
-            .ok_or("wrapper not cached — call register_tool first")?;
+        let wrapper = self.wrapper_for(name)?;
 
         let call_fn = self.qjs_call_fn.as_ref().ok_or("qjs_call not cached")?;
         let result = call_fn.call(
@@ -565,9 +598,8 @@ impl WasmRuntime for QuickJsRuntime {
         };
 
         // Write TLV bytes to EXEC_SLOT and tool name to NAME_SLOT
-        let wrapper = self
-            .wrapper_handle
-            .ok_or("wrapper not cached — call register_tool first")?;
+        check_exec_slot_fit(args_tlv.len(), "binary TLV arguments")?;
+        let wrapper = self.wrapper_for(name)?;
         let global = self.global_handle.unwrap_or(0);
 
         {
@@ -624,19 +656,29 @@ impl WasmRuntime for QuickJsRuntime {
     }
 
     fn destroy(&mut self) -> Result<(), Box<dyn Error>> {
-        if let Some(wrapper) = self.wrapper_handle.take() {
-            self.free_value(wrapper)?;
+        // Teardown is best-effort: the instance is dropped right after and
+        // wasmer reclaims its memory. Individual handle frees and qjs_destroy
+        // can trap depending on refcount state; that must not surface as an
+        // error to callers evicting a runtime.
+        let wrappers: Vec<i32> = self.tool_wrappers.drain().map(|(_, h)| h).collect();
+        for wrapper in wrappers {
+            let _ = self.free_value(wrapper);
         }
         if let Some(global) = self.global_handle.take() {
-            self.free_value(global)?;
+            let _ = self.free_value(global);
         }
-        let destroy_fn = self.instance.exports.get_function("qjs_destroy")?;
-        destroy_fn.call(&mut self.store, &[])?;
+        if let Ok(destroy_fn) = self.instance.exports.get_function("qjs_destroy") {
+            let _ = destroy_fn.call(&mut self.store, &[]);
+        }
         Ok(())
     }
 
     fn reset_instruction_budget(&mut self) {
         super::reset_instruction_budget(&mut self.store, &self.instance);
+    }
+
+    fn args_slot_capacity(&self) -> Option<usize> {
+        Some(EXEC_SLOT_CAPACITY)
     }
 
     fn language(&self) -> &str {
@@ -654,6 +696,22 @@ mod tests {
         p
     }
 
+    /// EXEC_SLOT is followed immediately by LEN_PTR_SLOT, so an oversized write
+    /// clobbers the interpreter's own slot state instead of trapping. Every
+    /// caller-supplied buffer is measured before being copied in; the runtime
+    /// tests that would exercise this are ignored without the prebuilt WASM, so
+    /// the bound is asserted here directly.
+    #[test]
+    fn test_exec_slot_fit_is_bounded_by_len_ptr_slot() {
+        assert_eq!(EXEC_SLOT_CAPACITY, 64 * 1024);
+        assert!(check_exec_slot_fit(EXEC_SLOT_CAPACITY - 1, "JS payload").is_ok());
+        let err = check_exec_slot_fit(EXEC_SLOT_CAPACITY, "JS payload")
+            .expect_err("a full slot leaves no room for the NUL")
+            .to_string();
+        assert!(err.contains("JS payload"), "{}", err);
+        assert!(err.contains("EXEC_SLOT"), "{}", err);
+    }
+
     #[test]
     #[ignore]
     fn test_quickjs_basic_exec() {
@@ -665,6 +723,54 @@ mod tests {
             .expect("exec failed");
         assert_eq!(output, "hello from quickjs");
 
+        rt.destroy().unwrap();
+    }
+
+    #[test]
+    #[ignore]
+    fn test_quickjs_multiple_tools_do_not_hijack_each_other() {
+        // Regression: one shared wrapper_handle made every tool on the
+        // instance run the last-registered tool's function.
+        let wasm = std::fs::read(wasm_path()).expect("QuickJS WASM not found");
+        let mut rt = QuickJsRuntime::cold_start(&wasm).expect("cold start failed");
+
+        // Mirror the production registry, which resets the metered budget
+        // before every register/call (see WasmRuntimeRegistry::call_tool).
+        rt.reset_instruction_budget();
+        rt.register_tool(
+            "add_tool",
+            "function add_tool(a){ return { sum: a.x + a.y }; }",
+        )
+        .expect("register failed");
+        rt.reset_instruction_budget();
+        rt.register_tool(
+            "mul_tool",
+            "function mul_tool(a){ return { product: a.x * a.y }; }",
+        )
+        .expect("register failed");
+
+        rt.reset_instruction_budget();
+        let a = rt
+            .call_tool("add_tool", r#"{"x": 2, "y": 3}"#)
+            .expect("add call failed");
+        assert!(a.contains("\"sum\":5") || a.contains("5"), "add got: {}", a);
+        rt.reset_instruction_budget();
+        let m = rt
+            .call_tool("mul_tool", r#"{"x": 2, "y": 3}"#)
+            .expect("mul call failed");
+        assert!(
+            m.contains("\"product\":6") || m.contains("6"),
+            "mul got: {}",
+            m
+        );
+        // Interleave again — both must still be intact after the other registered.
+        rt.reset_instruction_budget();
+        let a2 = rt
+            .call_tool("add_tool", r#"{"x": 10, "y": 1}"#)
+            .expect("add2 failed");
+        assert!(a2.contains("11"), "add2 got: {}", a2);
+
+        rt.reset_instruction_budget();
         rt.destroy().unwrap();
     }
 
@@ -771,13 +877,14 @@ mod tests {
         let save = rt.batched;
         // Modes: "legacy" | "batched" run one path; "both" = legacy then
         // batched; "both_rev" = batched then legacy (matches A/B bench order).
-        let phase1_batched = match mode.as_str() {
-            "legacy" | "both" => false,
-            _ => true,
-        };
+        let phase1_batched = !matches!(mode.as_str(), "legacy" | "both");
         rt.batched = phase1_batched;
 
         for i in 0..iters {
+            // Production registry resets the metered budget before every call
+            // (WasmRuntimeRegistry::call_tool); mirror that or the 10M limit
+            // traps after ~130 calls.
+            rt.reset_instruction_budget();
             rt.call_tool("bench_tool", r#"{"text": "hello"}"#)
                 .unwrap_or_else(|e| panic!("call {} failed: {}", i, e));
         }
@@ -792,6 +899,7 @@ mod tests {
         if mode == "both" || mode == "both_rev" {
             rt.batched = !phase1_batched;
             for i in 0..iters {
+                rt.reset_instruction_budget();
                 rt.call_tool("bench_tool", r#"{"text": "hello"}"#)
                     .unwrap_or_else(|e| panic!("call {} failed: {}", i, e));
             }
@@ -832,6 +940,9 @@ mod tests {
             let mut checksum: u32 = 0;
             let start = std::time::Instant::now();
             for _ in 0..iterations {
+                // Mirror production: the registry resets the metered budget
+                // before every call (applied to both paths equally).
+                rt.reset_instruction_budget();
                 let result = rt.call_tool("bench_tool", args).expect("call failed");
                 checksum = checksum.wrapping_add(result.len() as u32);
             }

@@ -229,6 +229,10 @@ impl WasmRuntime for RubyRuntime {
         super::reset_instruction_budget(&mut self.store, &self.instance);
     }
 
+    fn args_slot_capacity(&self) -> Option<usize> {
+        Some((SLOT_NAME - SLOT_ARGS) as usize)
+    }
+
     fn language(&self) -> &str {
         "ruby"
     }

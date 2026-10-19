@@ -15,6 +15,8 @@ use std::time::Instant;
 const WARM_ITERS: u64 = 100_000;
 const INPUT_PTR: usize = 1024;
 
+type BenchFn = fn(&[u8]) -> f64;
+
 fn load_wasm() -> Vec<u8> {
     let path = "bench_tools/wasm_tool/target/wasm32-unknown-unknown/release/wasm_text_tool.wasm";
     std::fs::read(path).expect("WASM file not found — build with: cd bench_tools/wasm_tool && cargo build --target wasm32-unknown-unknown --release")
@@ -155,7 +157,7 @@ fn main() {
     println!("Module size: {} bytes", wasm_bytes.len());
     println!("Iterations:  {}\n", WARM_ITERS);
 
-    let tests: &[(&str, fn(&[u8]) -> f64)] = &[
+    let tests: &[(&str, BenchFn)] = &[
         ("Memory (write+read, no calls)", bench_memory),
         ("Trampoline (prepare_call only)", bench_trampoline),
         ("Execute (prepare+call, no read)", bench_execute),
@@ -167,8 +169,8 @@ fn main() {
 
     for (name, bench_fn) in tests {
         let mut results = [0.0f64; 3];
-        for i in 0..3 {
-            results[i] = bench_fn(&wasm_bytes);
+        for slot in results.iter_mut() {
+            *slot = bench_fn(&wasm_bytes);
         }
         results.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let median = results[1];

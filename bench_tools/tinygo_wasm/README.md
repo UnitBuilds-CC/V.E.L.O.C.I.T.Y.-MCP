@@ -13,7 +13,7 @@ The Go WASM module now supports **dynamic tool dispatch** via the `_tool_name` f
 ```json
 {
   "_tool_name": "analyze_logs_go",
-  "log_lines": ["INFO: request completed response_time=123ms", ...]
+  "log_lines": ["INFO: request completed response_time=123ms", "ERROR: db unreachable response_time=0ms"]
 }
 ```
 

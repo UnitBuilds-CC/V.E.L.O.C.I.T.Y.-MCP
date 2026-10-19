@@ -154,8 +154,9 @@ fn execute_source_code(
     let script_path = sandbox.work_dir().join(&file_name);
     let (program, mut cmd_args) = interpreter_command(ext, &script_path);
     cmd_args.extend_from_slice(args);
+    let program = resolve_interpreter(program);
 
-    let result = sandbox.execute(program, &cmd_args);
+    let result = sandbox.execute(&program, &cmd_args);
 
     if result.timed_out {
         return Err(format!("Execution timed out after {} seconds", 30));
@@ -200,6 +201,29 @@ fn interpreter_command(ext: &str, script_path: &std::path::Path) -> (&'static st
             )],
         ),
     }
+}
+
+/// Resolve the mapped interpreter against what the host actually provides.
+/// POSIX hosts commonly ship `python3` with no `python` alias, which would
+/// otherwise make every `.py` SourceCode document unexecutable.
+/// Revert: delete this function and the `resolve_interpreter` call in
+/// `execute_source_code`, and drop `"python3"` from the restricted profile.
+fn resolve_interpreter(program: &str) -> String {
+    if program == "python"
+        && !cfg!(windows)
+        && !program_on_path("python")
+        && program_on_path("python3")
+    {
+        return "python3".to_string();
+    }
+    program.to_string()
+}
+
+fn program_on_path(program: &str) -> bool {
+    let Some(path_var) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path_var).any(|dir| dir.join(program).is_file())
 }
 
 /// Generate a short random suffix for temp file names.

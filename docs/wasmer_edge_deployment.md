@@ -188,6 +188,18 @@ name = "velocity-edge"
 path = "src/bin/velocity_edge.rs"
 ```
 
+That plan is superseded, and its bin name was a defect. What shipped is a separate crate
+(`crates/velocity-mcp-edge`, whose bin `velocity-edge` comes from its own `src/main.rs`), not a
+root target. Worse, cargo auto-discovers the root's `src/bin/velocity_edge.rs` as bin
+`velocity_edge`, and Windows normalizes `-` to `_` in output filenames, so the two bin targets
+already resolve to the same `target/debug/velocity_edge.exe`: cargo prints `output filename
+collision` three times on every workspace build here and one binary silently overwrites the
+other. The root manifest now declares that file explicitly as bin `velocity-edge-wasip1`, so the
+plain-WASI adapter and the live WASIX Edge server get distinct artifacts. That file is the
+superseded `wasm32-wasip1` CGI adapter: its request handling compiles only under
+`cfg(target_arch = "wasm32")`, and a native build of it prints "This binary is designed for
+wasm32-wasip1 target." and exits 1.
+
 ### Phase 4: Deployment Configuration
 Create `wasmer.toml`:
 ```toml
@@ -210,7 +222,7 @@ instruction_limit = 10_000_000  # 10M instructions per request
 
 ### Phase 5: Benchmarking & Validation
 Measured comparison (not targets):
-- Local NDA/shmem: ~7µs baseline (`tools/list`, `bench_results_core5.txt`)
+- Local NDA/shmem: ~7µs baseline (`tools/list`, `bench_results_core5.txt` — the 2026-09-13 run, whose banner stamps v3.0.0; a local capture, not committed)
 - Local WASM vs native (`wasm_vs_native`, 2026-09-17): WASM is **faster**, not slower — QuickJS 15.7 µs/call vs Node.js 68.3 µs/call on `text_analyze` (printed as 4.4x; 4.36x in the summary table). Lua 3.69x and MicroPython 3.16x over their native CLIs. An earlier "~4.1x overhead vs native" figure in this document was a misread of the Node-vs-Rust tools/list p99 in the core5 transport run and has been removed.
 - Wasmer Edge (measured 2026-09-17 from a transatlantic client, see [Edge Nested-WASM vs Relay — Findings](edge_nested_relay_findings.md)): 2150 ms cold vs ~740 ms warm — a **~1.4 s scale-from-zero penalty**; warm totals **740–880 ms**, which is ~3 WAN round-trips and not backend work; **server compute ≈ 4 ms** (ttfb minus network). Edge latency is network-bound from this vantage point, so sub-millisecond cold-start expectations from the original planning notes are replaced by these measurements.
 
@@ -256,7 +268,7 @@ The following VELOCITY-MCP features would need adaptation:
 - [Wasmer Edge Documentation](https://docs.wasmer.io/edge/)
 - [Wasmer Edge Product Page](https://wasmer.io/products/edge)
 - [WASI HTTP Proposal](https://github.com/WebAssembly/wasi-http)
-- VELOCITY-MCP Memory: [WASM vs Native Benchmark](project-wasm-vs-native-benchmark.md)
+- [WASM vs Native Benchmark Analysis](benchmark_analysis_wasm_runtimes.md)
 
 Sources:
 - [Edge Introduction - Wasmer Docs](https://docs.wasmer.io/edge/)

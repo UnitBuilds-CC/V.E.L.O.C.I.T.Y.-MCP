@@ -1,6 +1,6 @@
 //! WASM tool call latency benchmark
 //! Measures first-call (cold), second-call (warm), and P99 over 100 calls
-//! Compares native tools vs WASM tools
+//! Times 12 WASM runtimes; the three native figures printed at the end are transcribed estimates
 
 use std::time::Instant;
 use velocity_mcp::wasm_runtime::{
@@ -89,7 +89,7 @@ fn main() {
     bench_runtime("Lua/WASM", &mut lua_rt, lua_source, r#"{"text": "hello"}"#);
 
     // MicroPython
-    let mp_wasm = std::fs::read("bench_tools/micropython_wasm/micropython-1.24.1/ports/webassembly/build-wasi/micropython.wasm")
+    let mp_wasm = std::fs::read("bench_tools/micropython_wasm/wasi-reactor/build/micropython.wasm")
         .expect("micropython.wasm not found");
     let mut mp_rt = MicroPythonRuntime::new(&mp_wasm).expect("MicroPythonRuntime::new");
     mp_rt.init().expect("init failed");
@@ -221,7 +221,7 @@ fn main() {
     );
 
     println!("\n=================================");
-    println!("Native tool baselines (from benchmark.rs):");
+    println!("Native tool baselines (transcribed estimates; no native tool runs in this binary):");
     println!("  Rust native:  ~950 ns/call");
     println!("  Python (CPython subprocess): ~50-100 ms/call");
     println!("  Lua (native): ~1-2 µs/call");

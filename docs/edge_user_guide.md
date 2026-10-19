@@ -131,7 +131,7 @@ The HTTP implementation is enabled with `cfg(any(not(target_arch = "wasm32"), ta
 | Module compilation caching | No | Yes |
 | NDA binary protocol | No | Yes |
 | Shared memory IPC | No | Yes |
-| Process-based sandbox (seccomp) | No | Yes |
+| Process-based sandbox (seccomp) | No | No (filters defined, never installed) |
 | shell_exec (process spawning) | No | Yes |
 | Local filesystem access | Limited | Full |
 | Database resources (SQLite) | No | Yes |
@@ -176,9 +176,9 @@ Client Request
 
 ```toml
 [package]
-name = "velocity-mcp-edge"
-version = "3.2.0"
-description = "VELOCITY-MCP WASIX HTTP server"
+name = "unitbuilds/velocity-mcp-edge"
+version = "3.19.4"
+description = "VELOCITY-MCP serverless deployment on Wasmer Edge - Model Context Protocol with 10 pure-Rust edge tools"
 
 [[module]]
 name = "velocity-edge"
@@ -194,7 +194,7 @@ runner = "https://webc.org/runner/wasi"
 env = ["PORT=80"]
 ```
 
-Use `[[module]]` with `source`, not the old `[module] main` layout. Keep `PORT=80` for Edge's HTTP listener. Supply other variables through the command environment or deployment-time environment/secrets, rather than `[edge.env]`.
+Use `[[module]]` with `source`, not the old `[module] main` layout. Keep `PORT=80` for Edge's HTTP listener. Supply other variables through the command environment or deployment-time environment/secrets, rather than `[edge.env]`. The block above is copied from the tracked `wasmer.toml`, and its `[package]` version is the Edge package version (3.19.4), bumped per deploy and deliberately independent of the crate version (3.2.0 in every `Cargo.toml`) -- do not "align" the two, and note that this manifest sets no memory or instruction limits: per-request metering for this build is not established by it -- see [Instruction Limits (Metering)](#instruction-limits-metering).
 
 ### Environment Variables Reference
 
@@ -204,7 +204,7 @@ Use `[[module]]` with `source`, not the old `[module] main` layout. Keep `PORT=8
 | `VELOCITY_API_KEY` | (none) | API key for request authentication (X-API-Key header) |
 | `MAX_BODY_SIZE` | `1048576` | Maximum request body in bytes (1MB default) |
 | `ALLOWED_ORIGINS` | (none) | Comma-separated CORS origins, or "*" for all |
-| `RATE_LIMIT_PER_MINUTE` | `100` | Max requests per minute per IP (0 to disable) |
+| `RATE_LIMIT_PER_MINUTE` | `100` | Max requests per minute per client IP (0 to disable). `X-Forwarded-For` is honored only when the TCP peer is localhost or a private address; otherwise the peer address is the bucket key |
 | `PORT` | `8080` | HTTP listen port; explicitly set to `80` in the Edge command annotations |
 
 ### Configuration Examples
@@ -295,9 +295,7 @@ Establish a session and negotiate capabilities.
     "capabilities": {
       "tools": {},
       "resources": {"subscribe": false, "listChanged": false},
-      "prompts": {"listChanged": false},
-      "elicitation": {},
-      "roots": {"listChanged": false}
+      "prompts": {"listChanged": false}
     },
     "serverInfo": {
       "name": "velocity-mcp-edge",
@@ -329,8 +327,8 @@ List all available tools.
   "result": {
     "tools": [
       {
-        "name": "bench_echo",
-        "description": "Echo tool for benchmarking latency and throughput",
+        "name": "echo",
+        "description": "Echo back the input message",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -357,7 +355,7 @@ Execute a tool by name with the given arguments.
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "bench_echo",
+    "name": "echo",
     "arguments": {
       "message": "Hello from Edge!"
     }
@@ -649,7 +647,7 @@ If you are currently running VELOCITY-MCP as a native binary, here is what chang
 
 ### What Works Without Changes
 
-- All 14 MCP JSON-RPC methods (initialize, notifications/initialized, notifications/cancelled, ping, tools/list, tools/call, resources/list, resources/read, resources/templates/list, prompts/list, prompts/get, elicitation/create, roots/list, completion/complete, sampling/createMessage)
+- All 12 MCP JSON-RPC methods the Edge server dispatches (initialize, notifications/initialized, notifications/cancelled, ping, tools/list, tools/call, resources/list, resources/read, resources/templates/list, prompts/list, prompts/get, completion/complete). `elicitation/create`, `roots/list` and `sampling/createMessage` are requests the server sends to a client, so this server refuses them with `-32601` rather than answering them locally.
 - WASM plugin manifests and tool definitions
 - Client SDK configurations (just change the URL)
 

@@ -309,7 +309,7 @@ function benchHttpSingleMethod(name, cmd, args, port, requestJson, iterations) {
 async function main() {
   const iterations = parseInt(process.argv[2] || '200');
   console.log('='.repeat(72));
-  console.log('  MCP Server Benchmark: Node.js vs Rust (VELOCITY-MCP v3.0.0)');
+  console.log('  MCP Server Benchmark: Node.js peer vs Rust server');
   console.log(`  ${iterations} requests per method per server`);
   console.log('  stdio + HTTP transports');
   console.log('='.repeat(72));

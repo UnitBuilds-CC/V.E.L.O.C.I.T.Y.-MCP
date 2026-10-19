@@ -5,7 +5,7 @@ REM ============================================================================
 REM VELOCITY-MCP Edge Deployment Script (Windows)
 REM Builds, validates, tests, deploys, and verifies a Wasmer Edge deployment.
 REM Idempotent: safe to run multiple times.
-REM Usage: deploy-edge.bat [--skip-tests] [--skip-build] [--dry-run]
+REM Usage: deploy\deploy-edge.bat [--skip-tests] [--skip-build] [--dry-run]   (from the repository root)
 REM ============================================================================
 
 REM --- Configuration ---
@@ -28,8 +28,8 @@ echo Unknown argument: %~1
 exit /b 1
 :args_done
 
-REM --- Helper: timestamp ---
-for /f "tokens=2 delims==" %%I in ('wmic os get localdatetime /value 2^>nul') do set "dt=%%I"
+REM --- Helper: timestamp (UTC, because the format below labels it Z; wmic is gone from Windows 11) ---
+for /f "delims=" %%I in ('powershell -NoProfile -Command "(Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmss')"') do set "dt=%%I"
 set "DEPLOY_TIMESTAMP=%dt:~0,4%-%dt:~4,2%-%dt:~6,2%T%dt:~8,2%:%dt:~10,2%:%dt:~12,2%Z"
 
 echo ============================================================================
@@ -92,7 +92,7 @@ echo.
 
 REM --- Step 2: Build WASM binary ---
 if "%SKIP_BUILD%"=="1" (
-    echo [2/6] Skipping build (--skip-build flag set)
+    echo [2/6] Skipping build (--skip-build flag set^)
     if not exist "%WASM_BINARY%" (
         echo [ERROR] WASM binary not found at %WASM_BINARY% and --skip-build was specified.
         exit /b 1
@@ -122,7 +122,7 @@ for %%F in ("%WASM_BINARY%") do set "WASM_SIZE=%%~zF"
 echo   Binary size: %WASM_SIZE% bytes
 
 if %WASM_SIZE% GTR %MAX_WASM_SIZE_BYTES% (
-    echo [WARNING] Binary size %WASM_SIZE% exceeds recommended limit of %MAX_WASM_SIZE_BYTES% bytes (5MB).
+    echo [WARNING] Binary size %WASM_SIZE% exceeds recommended limit of %MAX_WASM_SIZE_BYTES% bytes (5MB^).
     echo   Consider optimizing dependencies or using cargo features to reduce size.
     echo   Deployment will continue, but large binaries may cause slow cold starts.
 ) else (
@@ -136,7 +136,7 @@ echo.
 
 REM --- Step 4: Run tests ---
 if "%SKIP_TESTS%"=="1" (
-    echo [4/6] Skipping tests (--skip-tests flag set)
+    echo [4/6] Skipping tests (--skip-tests flag set^)
 ) else (
     echo [4/6] Running tests...
     cargo test --locked -p velocity-mcp-core -p velocity-mcp-edge
@@ -162,7 +162,7 @@ if "%DRY_RUN%"=="1" (
         echo   Check Wasmer CLI output above for errors.
         echo   Common causes:
         echo     - wasmer.toml misconfiguration
-        echo     - Authentication issues (run: wasmer login)
+        echo     - Authentication issues (run: wasmer login^)
         echo     - Binary too large for plan limits
         echo     - Network connectivity issues
         exit /b 1
@@ -172,7 +172,7 @@ echo.
 
 REM --- Step 6: Verify deployment ---
 if "%DRY_RUN%"=="1" (
-    echo [6/6] Skipping verification (dry run mode)
+    echo [6/6] Skipping verification (dry run mode^)
 ) else (
     echo [6/6] Verifying deployment health...
 

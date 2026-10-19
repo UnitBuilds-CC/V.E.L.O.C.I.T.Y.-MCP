@@ -1,0 +1,15 @@
+apiVersion: 1
+
+# Provider for the dashboard JSON in deploy/grafana/dashboards/, which the compose file
+# mounts read-only at the options.path below. Grafana scans this directory for provider
+# YAML only -- a dashboard file placed here is read by nobody.
+providers:
+  - name: 'velocity-mcp'
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards

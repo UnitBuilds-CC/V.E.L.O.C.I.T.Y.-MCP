@@ -122,7 +122,7 @@ impl AuditLog {
         merkle_root: Option<String>,
         session_id: Option<String>,
     ) {
-        let seq = AUDIT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let seq = AUDIT_SEQUENCE.fetch_add(1, Ordering::SeqCst);
         let timestamp_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()

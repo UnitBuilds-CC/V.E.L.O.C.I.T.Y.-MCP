@@ -315,7 +315,7 @@ wasmer edge list
 wasmer edge logs <app-name> --tail 50
 
 # Step 5: If platform is healthy but deployment is broken, redeploy
-./deploy-edge.sh
+./deploy/deploy-edge.sh
 ```
 
 **If redeployment does not fix it:**
@@ -548,7 +548,7 @@ wasmer edge metrics <app-name>
 | View logs | `wasmer edge logs <app-name>` |
 | View metrics | `wasmer edge metrics <app-name>` |
 | List deployments | `wasmer edge list` |
-| Redeploy | `./deploy-edge.sh` |
+| Redeploy | `./deploy/deploy-edge.sh` |
 | Rollback | `git checkout <tag> && python deploy/build-edge.py && wasmer deploy` |
 | Increase memory | Edit `wasmer.toml`, set `memory_mb`, redeploy |
 | Increase instances | Edit `wasmer.toml`, set `max_instances`, redeploy |

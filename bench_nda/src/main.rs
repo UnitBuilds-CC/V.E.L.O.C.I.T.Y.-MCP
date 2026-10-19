@@ -664,10 +664,11 @@ fn resolve_node_server() -> String {
         return cwd_path.to_string();
     }
 
-    // Try relative to the executable (bench_nda/target/release/bench_nda.exe -> ../../bench_nodejs/server.js)
+    // Try relative to the executable (bench_nda/target/release/bench_nda.exe ->
+    // ../../../bench_nodejs/server.js: release, target and bench_nda are each one hop).
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let candidate = dir.join("../../bench_nodejs/server.js");
+            let candidate = dir.join("../../../bench_nodejs/server.js");
             if candidate.exists() {
                 return candidate.to_string_lossy().to_string();
             }
@@ -1279,10 +1280,6 @@ impl BenchResult {
 
     fn second_call_ms(&self) -> Option<f64> {
         self.second_call_us.map(|us| us / 1000.0)
-    }
-
-    fn warm_avg_ms(&self) -> f64 {
-        self.avg_ms()
     }
 
     fn percentile(&self, p: f64) -> f64 {
@@ -1984,10 +1981,31 @@ fn main() {
 
     println!("========================================================================");
     println!("  NDA-Native Benchmark: Binary-over-Shmem vs JSON-RPC-over-Stdio");
-    println!("  VELOCITY-MCP v3.0.0 — {} iterations × {} rounds (median) per method", iterations, ROUNDS);
+    println!(
+        "  bench_nda v{} — {} iterations × {} rounds (median) per method",
+        env!("CARGO_PKG_VERSION"),
+        iterations,
+        ROUNDS
+    );
     println!("========================================================================");
     println!();
     println!("  Server: {}", server_path);
+    match std::fs::metadata(&server_path) {
+        Ok(meta) => {
+            let mtime = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            println!(
+                "  Server binary: {} bytes, mtime epoch {}",
+                meta.len(),
+                mtime
+            );
+        }
+        Err(_) => println!("  Server binary: size/mtime unavailable"),
+    }
     println!("  Buffer: {}", buffer_path);
     println!("  Shmem input limit: {} bytes, output limit: {} bytes",
              OUTPUT_BUFFER_OFFSET - INPUT_BUFFER_OFFSET,

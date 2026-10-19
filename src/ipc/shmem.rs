@@ -333,6 +333,7 @@ impl SharedMemoryBuffer {
 
     pub fn write_output_raw(&mut self, data: &[u8]) -> Result<(), Box<dyn Error>> {
         if data.len() > (TOTAL_BUFFER_SIZE - OUTPUT_BUFFER_OFFSET) {
+            self.set_output_len(0); // else the caller's error carries the previous response
             return Err("Response length exceeds output buffer limit".into());
         }
         self.mmap[OUTPUT_BUFFER_OFFSET..OUTPUT_BUFFER_OFFSET + data.len()].copy_from_slice(data);
@@ -363,6 +364,7 @@ impl SharedMemoryBuffer {
     pub fn write_output(&mut self, response: &str) -> Result<(), Box<dyn Error>> {
         let bytes = response.as_bytes();
         if bytes.len() > (TOTAL_BUFFER_SIZE - OUTPUT_BUFFER_OFFSET) {
+            self.set_output_len(0); // else the caller's error carries the previous response
             return Err("Response length exceeds output buffer limit".into());
         }
         self.mmap[OUTPUT_BUFFER_OFFSET..OUTPUT_BUFFER_OFFSET + bytes.len()].copy_from_slice(bytes);
@@ -504,6 +506,23 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("exceeds output buffer limit"));
+
+        // A rejected write must not leave the previous response's length behind:
+        // the client reads OUTPUT_LEN on STATE_ERROR and would report that older
+        // body as this request's error.
+        buffer.write_output("first response").unwrap();
+        assert!(buffer.get_output_len() > 0);
+        assert!(buffer.write_output(&oversized).is_err());
+        assert_eq!(buffer.get_output_len(), 0);
+
+        buffer.write_output("second response").unwrap();
+        assert!(buffer.get_output_len() > 0);
+        assert!(buffer.write_output_raw(oversized.as_bytes()).is_err());
+        assert_eq!(
+            buffer.get_output_len(),
+            0,
+            "oversized raw write must clear the stale length too"
+        );
         cleanup(&path);
     }
 

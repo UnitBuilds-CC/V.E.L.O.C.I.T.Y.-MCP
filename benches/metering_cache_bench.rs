@@ -71,8 +71,12 @@ const TOOL_ARGS: &str = r#"{"input":"hello wasm metering benchmark"}"#;
 const EXPECTED_RESULT: &str = "HELLO WASM METERING BENCHMARK";
 
 fn load_wasm(path: &str) -> Vec<u8> {
-    std::fs::read(path)
-        .unwrap_or_else(|e| panic!("WASM file not found: {} — {} (build bench_tools first)", path, e))
+    std::fs::read(path).unwrap_or_else(|e| {
+        panic!(
+            "WASM file not found: {} — {} (build bench_tools first)",
+            path, e
+        )
+    })
 }
 
 /// (mean ns, p50 ns, p99 ns)
@@ -292,7 +296,10 @@ fn part_b_runtime_cold_start() -> Vec<CacheResult> {
 
     // Summary table
     println!("\n  ┌──────────────────────────┬────────────┬────────────┬─────────┐");
-    println!("  │ {:<24} │ {:>10} │ {:>10} │ {:>7} │", "Language", "First (µs)", "Cache (µs)", "Speedup");
+    println!(
+        "  │ {:<24} │ {:>10} │ {:>10} │ {:>7} │",
+        "Language", "First (µs)", "Cache (µs)", "Speedup"
+    );
     println!("  ├──────────────────────────┼────────────┼────────────┼─────────┤");
     for r in &results {
         let speedup = r.first_us / r.cached_us;
@@ -392,13 +399,23 @@ fn part_c_metering_overhead(js_bytes: &[u8], lua_bytes: &[u8]) {
     set_instruction_limit(None);
 
     for (lang, m, m50, m99, u, u50, u99) in [
-        ("QuickJS", m_js, m_js_p50, m_js_p99, u_js, u_js_p50, u_js_p99),
-        ("Lua", m_lua, m_lua_p50, m_lua_p99, u_lua, u_lua_p50, u_lua_p99),
+        (
+            "QuickJS", m_js, m_js_p50, m_js_p99, u_js, u_js_p50, u_js_p99,
+        ),
+        (
+            "Lua", m_lua, m_lua_p50, m_lua_p99, u_lua, u_lua_p50, u_lua_p99,
+        ),
     ] {
         let delta_pct = (m / u - 1.0) * 100.0;
         println!("  {}:", lang);
-        println!("    metered ({}):  mean {:>9.1} ns  p50 {:>9.1} ns  p99 {:>9.1} ns", LIMIT, m, m50, m99);
-        println!("    unmetered:          mean {:>9.1} ns  p50 {:>9.1} ns  p99 {:>9.1} ns", u, u50, u99);
+        println!(
+            "    metered ({}):  mean {:>9.1} ns  p50 {:>9.1} ns  p99 {:>9.1} ns",
+            LIMIT, m, m50, m99
+        );
+        println!(
+            "    unmetered:          mean {:>9.1} ns  p50 {:>9.1} ns  p99 {:>9.1} ns",
+            u, u50, u99
+        );
         println!("    overhead:           {:+.1}% mean\n", delta_pct);
     }
 }
@@ -500,7 +517,10 @@ fn part_d_e2e_sanity() {
     const E2E_WARMUP: usize = 20;
     const E2E_ITERS: usize = 300;
 
-    for (label, limit_env) in [("metered (limit 10M)", "10000000"), ("metering disabled (0)", "0")] {
+    for (label, limit_env) in [
+        ("metered (limit 10M)", "10000000"),
+        ("metering disabled (0)", "0"),
+    ] {
         let mut server = ServerProcess::spawn_with_env(&[
             ("VELOCITY_WASM_INSTRUCTION_LIMIT", limit_env),
             ("VELOCITY_RATE_LIMIT", "1000000"),
@@ -511,7 +531,11 @@ fn part_d_e2e_sanity() {
             "js_string_transform",
             json!({"action": "upper", "input": "hello"}),
         );
-        assert_eq!(result["result"], "HELLO", "unexpected E2E result: {}", result);
+        assert_eq!(
+            result["result"], "HELLO",
+            "unexpected E2E result: {}",
+            result
+        );
 
         for _ in 0..E2E_WARMUP {
             black_box(server.call_tool(

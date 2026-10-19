@@ -44,9 +44,9 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Install WASIX Rust toolchain
+      - name: Verify WASIX Rust toolchain
         run: |
-          rustup toolchain install wasix --profile minimal
+          rustup run wasix rustc --version
           rustup default wasix
 
       - name: Install cargo-wasix

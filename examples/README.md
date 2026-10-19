@@ -42,8 +42,8 @@ Run VELOCITY-MCP as an HTTP server. Demonstrates:
 
 **Access endpoints:**
 - Health: http://localhost:3000/health
-- Performance: http://localhost:3000/performance
-- Metrics: http://localhost:3000/metrics
+- Performance: http://localhost:3000/v1/performance
+- Metrics: http://localhost:3000/v1/metrics
 - MCP: http://localhost:3000/v1/mcp (POST)
 
 ### 3. File Operations (`file-operations.sh`)
@@ -78,7 +78,7 @@ NDA document format processing. Demonstrates:
 - Converting files to NDA format
 - Reading NDA documents
 - Understanding NDA structure
-- Converting JSON tools to NDA for 2.8x faster parsing (measured)
+- Converting JSON tools to NDA so calls dispatch through the binary TLV frame path
 
 **Run:**
 ```bash
@@ -184,9 +184,9 @@ Use a different port:
 
 After running the examples:
 
-1. **Read the Getting Started Guide** - `../GETTING_STARTED.md`
-2. **Try the Migration Guide** - `../MIGRATION.md` (if coming from Node.js)
-3. **Set up your MCP client** - `../CLIENT_INTEGRATION.md`
+1. **Read the Getting Started Guide** - `../docs/GETTING_STARTED.md`
+2. **Try the Migration Guide** - `../docs/MIGRATION.md` (if coming from Node.js)
+3. **Set up your MCP client** - `../docs/CLIENT_INTEGRATION.md`
 4. **Explore the API** - `../docs/API.md`
 
 ## Contributing Examples

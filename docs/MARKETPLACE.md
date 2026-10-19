@@ -5,7 +5,7 @@ The plugin marketplace provides a centralized registry for discovering, installi
 ## Features
 
 - **Plugin Discovery**: Search and browse available plugins
-- **One-Click Installation**: Install plugins with a single API call (downloads the archive and verifies its SHA-256 checksum)
+- **One-Click Installation**: Install plugins with a single API call (downloads the archive and verifies its SHA-256 checksum when the index entry carries one; the installed files land under `marketplace/plugins/<id>`, which is a different directory from the loader's `plugin_dir` - see Installation Failed)
 - **Version Management**: Track plugin versions and check/apply updates
 - **Ratings and Reviews**: Submit a 1-5 star review per plugin
 - **Statistics**: Track downloads, ratings, and installed plugins
@@ -68,7 +68,7 @@ GET /v1/marketplace/plugins/:id
   "documentation": "# Full documentation in markdown...",
   "tags": ["tag1", "tag2"],
   "download_url": "https://example.com/plugin.zip",
-  "checksum": "sha256:...",
+  "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "min_velocity_version": "3.2.0",
   "dependencies": ["other.plugin"],
   "downloads": 1000,
@@ -87,10 +87,10 @@ POST /v1/marketplace/install/:id
 ```
 
 **Response:**
-```json
+```text
 {
   "metadata": { ... },
-  "install_path": "/path/to/plugins/author.plugin-name",
+  "install_path": "marketplace/plugins/author.plugin-name",
   "installed_at": "2026-01-20T00:00:00Z",
   "enabled": true
 }
@@ -111,11 +111,11 @@ GET /v1/marketplace/installed
 ```
 
 **Response:**
-```json
+```text
 [
   {
     "metadata": { ... },
-    "install_path": "/path/to/plugins/author.plugin-name",
+    "install_path": "marketplace/plugins/author.plugin-name",
     "installed_at": "2026-01-20T00:00:00Z",
     "enabled": true
   }
@@ -257,7 +257,7 @@ Supported WASM languages (13 total — 7 production runtimes + 6 tree-walk inter
 
 ### Marketplace Metadata
 
-For marketplace listing, create a `marketplace.json` file:
+The listing the server actually reads is `<current working directory>/marketplace/index.json`; no code reads a `marketplace.json` out of a plugin directory. The shape stored per plugin is:
 
 ```json
 {
@@ -269,7 +269,7 @@ For marketplace listing, create a `marketplace.json` file:
   "documentation": "# Full documentation...",
   "tags": ["utility", "example"],
   "download_url": "https://github.com/author/my-plugin/releases/download/v1.0.0/plugin.zip",
-  "checksum": "sha256:abc123...",
+  "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "min_velocity_version": "3.2.0",
   "dependencies": [],
   "verified": false
@@ -281,7 +281,7 @@ For marketplace listing, create a `marketplace.json` file:
 ```
 my-plugin/
 ├── manifest.json       # Plugin manifest (required)
-├── marketplace.json    # Marketplace metadata (for marketplace listing)
+├── marketplace.json    # Author-side metadata copy (the server reads ./marketplace/index.json, not this file)
 ├── my_tool.py          # Tool implementation
 └── README.md           # Documentation
 ```
@@ -344,14 +344,14 @@ echo "Processed: $PARAM1"
 ### Plugin Not Loading
 
 1. Check that `manifest.json` is valid JSON
-2. Verify the plugin directory is in the configured `plugin_dir`
+2. Verify the plugin directory is in the configured `plugin_dir` - installation writes under `marketplace/plugins/<id>` relative to the server's working directory, so the two coincide only when `plugin_dir` is set to that path
 3. Check server logs for error messages
 4. Ensure tool names are unique
 
 ### Installation Failed
 
 1. Verify the download URL is accessible
-2. Check the checksum matches
+2. Check the checksum matches - the stored value is compared verbatim against the archive's lowercase hex digest, so a `sha256:` prefix never matches and an empty checksum skips verification entirely
 3. Ensure sufficient disk space
 4. Check server logs for detailed error
 
@@ -445,5 +445,5 @@ Still to come:
 
 - Plugin dependency resolution (a `dependencies` list is stored in the manifest but not resolved or installed)
 - Plugin marketplace web UI
-- Plugin signing (installation verifies a SHA-256 checksum only; there is no publisher signature scheme)
+- Plugin signing (installation compares a SHA-256 checksum only, and only when the index entry carries one; there is no publisher signature scheme)
 - Plugin analytics and metrics

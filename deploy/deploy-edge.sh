@@ -3,7 +3,7 @@
 # VELOCITY-MCP Edge Deployment Script (Linux/macOS)
 # Builds, validates, tests, deploys, and verifies a Wasmer Edge deployment.
 # Idempotent: safe to run multiple times.
-# Usage: ./deploy-edge.sh [--skip-tests] [--skip-build] [--dry-run]
+# Usage: ./deploy/deploy-edge.sh [--skip-tests] [--skip-build] [--dry-run]   (from the repository root)
 # ============================================================================
 
 set -euo pipefail

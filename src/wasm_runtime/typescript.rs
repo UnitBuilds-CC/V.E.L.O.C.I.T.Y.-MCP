@@ -216,6 +216,10 @@ impl WasmRuntime for TypeScriptRuntime {
         self.inner.reset_instruction_budget();
     }
 
+    fn args_slot_capacity(&self) -> Option<usize> {
+        self.inner.args_slot_capacity()
+    }
+
     fn language(&self) -> &str {
         "typescript"
     }

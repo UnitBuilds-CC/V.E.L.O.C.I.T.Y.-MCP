@@ -7,7 +7,7 @@
 //! - Session management with session IDs
 //! - Request ID correlation
 //! - Connection lifecycle management
-//! - Rate limiting per session/IP
+//! - Rate limiting per peer IP (one token bucket per client)
 //! - API key authentication
 //! - Configurable CORS
 //! - Request size limits
@@ -19,7 +19,10 @@ use axum::{
     extract::{Query, State, WebSocketUpgrade},
     http::{Request, StatusCode},
     middleware::{self, Next},
-    response::sse::{Event, Sse},
+    response::{
+        sse::{Event, Sse},
+        IntoResponse,
+    },
     routing::{delete, get, post},
     Json, Router,
 };
@@ -42,6 +45,9 @@ const MAX_SESSIONS: usize = 10000;
 
 /// Maximum number of SSE broadcast subscribers (prevents unbounded growth)
 const MAX_BROADCAST_SUBSCRIBERS: usize = 1000;
+
+/// Rate-limit bucket for requests that carry no peer address.
+const UNKNOWN_PEER: &str = "unknown";
 
 pub(crate) fn sanitize_session_id(raw: &str) -> Result<String, String> {
     if raw.len() > 128 || raw.is_empty() {
@@ -254,13 +260,33 @@ struct ServerState {
     shutdown: Arc<AtomicBool>,
     sessions: Arc<RwLock<HashMap<String, Session>>>,
     /// Channel for broadcasting events to SSE clients
-    event_broadcast: Arc<RwLock<Vec<mpsc::Sender<String>>>>,
+    event_broadcast: Arc<RwLock<Vec<mpsc::Sender<SseFrame>>>>,
     /// Security configuration
     security: HttpSecurityConfig,
     /// Server metrics
     metrics: Arc<HttpMetrics>,
     /// Server start time for uptime calculation
     start_time: std::time::Instant,
+    /// Whether this instance is serving HTTPS (a TLS config was supplied)
+    tls_enabled: bool,
+}
+
+impl ServerState {
+    fn new(
+        shutdown: Arc<AtomicBool>,
+        security: HttpSecurityConfig,
+        tls_enabled: bool,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            shutdown,
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+            event_broadcast: Arc::new(RwLock::new(Vec::new())),
+            security,
+            metrics: Arc::new(HttpMetrics::default()),
+            start_time: std::time::Instant::now(),
+            tls_enabled,
+        })
+    }
 }
 
 /// Query parameters for SSE endpoint.
@@ -293,8 +319,11 @@ async fn auth_middleware(
             .and_then(|v| v.to_str().ok());
 
         match auth_header {
+            // An empty configured key fails closed: it must never authenticate
+            // an empty `Bearer ` token.
             Some(header)
-                if header.starts_with("Bearer ")
+                if !expected_key.is_empty()
+                    && header.starts_with("Bearer ")
                     && constant_time_eq(&header[7..], expected_key) => {}
             _ => {
                 state.metrics.record_auth_failure();
@@ -313,22 +342,34 @@ async fn auth_middleware(
     Ok(next.run(request).await)
 }
 
-/// Rate limiting middleware — rejects requests when the bucket is empty.
+/// Rate limiting middleware — rejects requests when the peer's bucket is empty.
+///
+/// Each peer address gets its own bucket so one client cannot throttle the
+/// others. Requests without connection info (in-process router calls in tests)
+/// share a single fallback bucket.
 async fn rate_limit_middleware(
     State(state): State<Arc<ServerState>>,
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Result<axum::response::Response, (StatusCode, Json<Value>)> {
-    if state.security.enable_rate_limit && !rate_limit::check_rate_limit() {
-        state.metrics.record_rate_limit_hit();
-        return Err((
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(json!({
-                "jsonrpc": "2.0",
-                "error": { "code": -32000, "message": "Rate limit exceeded" },
-                "id": null
-            })),
-        ));
+    if state.security.enable_rate_limit {
+        let peer = request
+            .extensions()
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .map(|connect_info| connect_info.0.ip().to_string())
+            .unwrap_or_else(|| UNKNOWN_PEER.to_string());
+
+        if !rate_limit::check_rate_limit_for_peer(&peer) {
+            state.metrics.record_rate_limit_hit();
+            return Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({
+                    "jsonrpc": "2.0",
+                    "error": { "code": -32000, "message": "Rate limit exceeded" },
+                    "id": null
+                })),
+            ));
+        }
     }
 
     Ok(next.run(request).await)
@@ -339,7 +380,7 @@ async fn handle_json_rpc(
     State(state): State<Arc<ServerState>>,
     headers: axum::http::HeaderMap,
     Json(request): Json<Value>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Result<axum::response::Response, (StatusCode, Json<Value>)> {
     let start_time = std::time::Instant::now();
 
     let session_id = headers
@@ -349,6 +390,9 @@ async fn handle_json_rpc(
         .unwrap_or_else(|| Uuid::new_v4().to_string());
     crate::audit::set_session_context(session_id);
     crate::audit::set_transport_context("http".to_string());
+    
+    // Ensure session context is cleared when this request completes
+    let _guard = SessionGuard;
 
     if state.shutdown.load(Ordering::Relaxed) {
         let latency_us = start_time.elapsed().as_micros() as u64;
@@ -369,15 +413,74 @@ async fn handle_json_rpc(
     match response {
         Some(res) => {
             state.metrics.record_request(latency_us, true);
-            Ok(Json(res))
+            Ok(axum::Json(res).into_response())
+        }
+        None if json_rpc::is_request_shaped(&request) => {
+            state.metrics.record_request(latency_us, true);
+            // A JSON-RPC notification gets no response body; 204 must not carry one.
+            Ok(StatusCode::NO_CONTENT.into_response())
         }
         None => {
-            state.metrics.record_request(latency_us, true);
+            state.metrics.record_request(latency_us, false);
+            let message = if request.is_array() {
+                "Invalid Request: batch requests must be posted to /v1/mcp/batch"
+            } else {
+                "Invalid Request: expected a JSON-RPC 2.0 request object"
+            };
             Err((
-                StatusCode::NO_CONTENT,
-                Json(json!({"message": "Notification processed"})),
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "jsonrpc": "2.0",
+                    "error": { "code": -32600, "message": message },
+                    "id": Value::Null
+                })),
             ))
         }
+    }
+}
+
+/// Batch JSON-RPC endpoint.
+///
+/// Wraps the shared handler so the batch path gets the same shutdown refusal and
+/// request metrics as the single-request path. A batch counts as one request with
+/// the whole batch's latency.
+async fn handle_batch(
+    State(state): State<Arc<ServerState>>,
+    headers: axum::http::HeaderMap,
+    body: axum::Json<crate::middleware::BatchRequest>,
+) -> axum::response::Response {
+    let start_time = std::time::Instant::now();
+    
+    // Ensure session context is cleared when this request completes
+    let _guard = SessionGuard;
+
+    if state.shutdown.load(Ordering::Relaxed) {
+        state.metrics.record_request(0, false);
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "jsonrpc": "2.0",
+                "error": { "code": -32603, "message": "Server shutting down" },
+                "id": null
+            })),
+        )
+            .into_response();
+    }
+
+    let response = crate::middleware::handle_batch_request(headers, body).await;
+    state.metrics.record_request(
+        start_time.elapsed().as_micros() as u64,
+        response.status().is_success(),
+    );
+    response
+}
+
+/// RAII guard to clear session context when request completes
+struct SessionGuard;
+
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        crate::audit::clear_session_context();
     }
 }
 
@@ -401,6 +504,9 @@ async fn handle_nda_rpc(
         .unwrap_or_else(|| Uuid::new_v4().to_string());
     crate::audit::set_session_context(session_id);
     crate::audit::set_transport_context("nda_http".to_string());
+    
+    // Ensure session context is cleared when this request completes
+    let _guard = SessionGuard;
 
     if state.shutdown.load(Ordering::Relaxed) {
         let latency_us = start_time.elapsed().as_micros() as u64;
@@ -434,7 +540,7 @@ async fn handle_streamable(
     Query(query): Query<SseQuery>,
     Json(request): Json<StreamableRequest>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>> {
-    let (tx, rx) = mpsc::channel::<String>(100);
+    let (tx, rx) = mpsc::channel::<SseFrame>(100);
 
     // Get or create session
     let session_id = match query.session_id {
@@ -484,10 +590,16 @@ async fn handle_streamable(
     tokio::spawn(async move {
         crate::audit::set_session_context(session_id_clone.clone());
         crate::audit::set_transport_context("sse".to_string());
+        
+        // Ensure session context is cleared when this request completes
+        let _guard = SessionGuard;
 
         // Send session ID as first event
         if tx
-            .send(format!("event: session\ndata: {}\n\n", session_id_clone))
+            .send(SseFrame::Event {
+                name: "session",
+                data: session_id_clone.clone(),
+            })
             .await
             .is_err()
         {
@@ -496,14 +608,24 @@ async fn handle_streamable(
         }
 
         // Process the request
+        let start_time = std::time::Instant::now();
         let response = json_rpc::handle_request(&request_json);
+        state_clone.metrics.record_request(
+            start_time.elapsed().as_micros() as u64,
+            // A notification (None) still served fine; JSON-RPC errors are carried
+            // inside the response value, exactly as on the plain POST path.
+            true,
+        );
 
         match response {
             Some(res) => {
                 // Stream the response
                 let response_str = serde_json::to_string(&res).unwrap_or_default();
                 if tx
-                    .send(format!("event: response\ndata: {}\n\n", response_str))
+                    .send(SseFrame::Event {
+                        name: "response",
+                        data: response_str,
+                    })
                     .await
                     .is_err()
                 {
@@ -525,7 +647,10 @@ async fn handle_streamable(
             None => {
                 // Notification, no response needed
                 if tx
-                    .send("event: notification\ndata: {\"status\": \"processed\"}\n\n".to_string())
+                    .send(SseFrame::Event {
+                        name: "notification",
+                        data: "{\"status\": \"processed\"}".to_string(),
+                    })
                     .await
                     .is_err()
                 {
@@ -536,7 +661,10 @@ async fn handle_streamable(
 
         // Send completion event
         if tx
-            .send("event: complete\ndata: {}\n\n".to_string())
+            .send(SseFrame::Event {
+                name: "complete",
+                data: "{}".to_string(),
+            })
             .await
             .is_err()
         {
@@ -544,7 +672,7 @@ async fn handle_streamable(
         }
     });
 
-    let stream = ReceiverStream::new(rx).map(|msg| Ok(Event::default().data(msg)));
+    let stream = ReceiverStream::new(rx).map(|frame| Ok(frame.into_event()));
 
     Sse::new(stream).keep_alive(
         axum::response::sse::KeepAlive::new()
@@ -564,7 +692,8 @@ async fn sse_handler(
     State(state): State<Arc<ServerState>>,
     Query(query): Query<SseQuery>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>> {
-    let (tx, rx) = mpsc::channel::<String>(100);
+    let (tx, rx) = mpsc::channel::<SseFrame>(100);
+    state.metrics.record_sse_connect();
 
     // Register this client for event broadcasts
     {
@@ -616,10 +745,10 @@ async fn sse_handler(
     let session_id_init = session_id.clone();
     tokio::spawn(async move {
         if tx_init
-            .send(format!(
-                "event: connected\ndata: {{\"sessionId\": \"{}\"}}\n\n",
-                session_id_init
-            ))
+            .send(SseFrame::Event {
+                name: "connected",
+                data: format!("{{\"sessionId\": \"{}\"}}", session_id_init),
+            })
             .await
             .is_err()
         {
@@ -629,22 +758,31 @@ async fn sse_handler(
 
     // Spawn heartbeat task
     let tx_heartbeat = tx.clone();
+    let state_heartbeat = state.clone();
     tokio::spawn(async move {
         use tokio::time::{interval, Duration};
         let mut interval = interval(Duration::from_secs(15));
         loop {
             interval.tick().await;
             if tx_heartbeat
-                .send(":heartbeat\n\n".to_string())
+                .send(SseFrame::Comment("heartbeat"))
                 .await
                 .is_err()
             {
+                // Client is gone: drop the gauge and unsubscribe here rather than
+                // leaving a dead sender for `broadcast_event` to trip over.
+                state_heartbeat.metrics.record_sse_disconnect();
+                state_heartbeat
+                    .event_broadcast
+                    .write()
+                    .await
+                    .retain(|sender| !sender.same_channel(&tx_heartbeat));
                 break;
             }
         }
     });
 
-    let stream = ReceiverStream::new(rx).map(|msg| Ok(Event::default().data(msg)));
+    let stream = ReceiverStream::new(rx).map(|frame| Ok(frame.into_event()));
 
     Sse::new(stream).keep_alive(
         axum::response::sse::KeepAlive::new()
@@ -653,23 +791,77 @@ async fn sse_handler(
     )
 }
 
+/// One frame queued for an SSE client, before framing is applied.
+///
+/// The event name and payload travel separately because axum writes the wire
+/// format itself: handing it an already-framed `"event: x\ndata: y\n\n"` string
+/// made it treat the whole thing as one *payload*, so every newline came back out
+/// as another `data:` line and no browser `EventSource` ever saw a named event.
+#[derive(Clone)]
+enum SseFrame {
+    Event { name: &'static str, data: String },
+    Comment(&'static str),
+}
+
+impl SseFrame {
+    fn into_event(self) -> Event {
+        match self {
+            SseFrame::Event { name, data } => Event::default().event(name).data(data),
+            SseFrame::Comment(text) => Event::default().comment(text),
+        }
+    }
+}
+
 /// Maximum session idle time before eviction (30 minutes).
 const SESSION_TTL: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
 /// Broadcast an event to all connected SSE clients, removing dead senders.
-async fn broadcast_event(state: &ServerState, event_type: &str, data: &Value) {
-    let event_str = format!(
-        "event: {}\ndata: {}\n\n",
-        event_type,
-        serde_json::to_string(data).unwrap_or_default()
-    );
+async fn broadcast_event(state: &ServerState, event_type: &'static str, data: &Value) {
+    let frame = SseFrame::Event {
+        name: event_type,
+        data: serde_json::to_string(data).unwrap_or_default(),
+    };
 
     let mut broadcasts = state.event_broadcast.write().await;
     broadcasts.retain(|sender| !sender.is_closed());
     for sender in broadcasts.iter() {
-        if let Err(e) = sender.send(event_str.clone()).await {
+        if let Err(e) = sender.send(frame.clone()).await {
             tracing::debug!(error = %e, "SSE broadcast send failed, removing dead sender");
         }
+    }
+}
+
+/// Broadcast `notifications/tools/list_changed` when the tool registry changes.
+///
+/// `register_tool_lazy` bumps the registry generation, which is the same signal
+/// the `tools/list` TLV cache uses to invalidate itself. Watching it here is what
+/// makes the advertised `tools.listChanged` capability true; a client that
+/// receives the notification refetches `tools/list` and sees the new tool set.
+///
+/// The tick bounds how long a registration can go unnoticed (1 s) and doubles as
+/// the shutdown check, so no separate wake-up channel is needed in the registry.
+async fn watch_registry_changes(state: &ServerState, shutdown: &AtomicBool) {
+    let mut last_generation = crate::registry::registry_generation();
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+    loop {
+        interval.tick().await;
+        if shutdown.load(Ordering::Relaxed) {
+            break;
+        }
+        let generation = crate::registry::registry_generation();
+        if generation == last_generation {
+            continue;
+        }
+        last_generation = generation;
+        broadcast_event(
+            state,
+            "notification",
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/tools/list_changed"
+            }),
+        )
+        .await;
     }
 }
 
@@ -726,6 +918,22 @@ async fn metrics_prometheus(
     )
 }
 
+/// NDA executor capability report — which tools receive TLV bytes directly and
+/// which are served through the decoded-JSON fallback path.
+async fn nda_capabilities() -> Json<Value> {
+    let tools = crate::registry::nda_binary_capabilities();
+    let binary = tools
+        .iter()
+        .filter(|t| t["binaryExecutor"].as_bool() == Some(true))
+        .count();
+    Json(json!({
+        "protocol": "NDA",
+        "binary_executors": binary,
+        "json_fallback": tools.len() - binary,
+        "tools": tools
+    }))
+}
+
 /// Performance endpoint — comprehensive real-time performance metrics.
 async fn performance(State(state): State<Arc<ServerState>>) -> Json<Value> {
     let uptime_secs = state.start_time.elapsed().as_secs_f64();
@@ -769,7 +977,8 @@ async fn performance(State(state): State<Arc<ServerState>>) -> Json<Value> {
         "security": {
             "auth_failures": state.metrics.auth_failures.load(Ordering::Relaxed),
             "rate_limit_hits": state.metrics.rate_limit_hits.load(Ordering::Relaxed),
-            "tls_enabled": state.security.api_key.is_some(),
+            "auth_enabled": state.security.api_key.is_some(),
+            "tls_enabled": state.tls_enabled,
             "cors_restricted": state.security.cors_origins.is_some(),
             "body_size_limit_bytes": state.security.max_request_size
         }
@@ -1049,6 +1258,9 @@ async fn handle_websocket(socket: axum::extract::ws::WebSocket, state: Arc<Serve
     let recv_task = tokio::spawn(async move {
         crate::audit::set_session_context(session_for_task);
         crate::audit::set_transport_context("websocket".to_string());
+        
+        // Ensure session context is cleared when this connection completes
+        let _guard = SessionGuard;
 
         // Per-connection rate limiter: 50 msg/sec with burst of 100
         let mut last_refill = std::time::Instant::now();
@@ -1089,7 +1301,7 @@ async fn handle_websocket(socket: axum::extract::ws::WebSocket, state: Arc<Serve
                             "id": null
                         });
                         let _ = sender.send(Message::Text(err_res.to_string())).await;
-                        // Continue processing but log the violation
+                        // The request is dropped, not deferred, and the frame's `id: null` is uncorrelatable.
                         tracing::warn!(session = %ws_session_id, "WebSocket rate limit exceeded");
                         continue;
                     }
@@ -1153,7 +1365,7 @@ async fn handle_websocket(socket: axum::extract::ws::WebSocket, state: Arc<Serve
 
 async fn delete_session(
     State(state): State<Arc<ServerState>>,
-    raw_session_id: String,
+    axum::extract::Path(raw_session_id): axum::extract::Path<String>,
 ) -> StatusCode {
     let session_id = match sanitize_session_id(&raw_session_id) {
         Ok(id) => id,
@@ -1288,15 +1500,32 @@ async fn marketplace_update_plugin(
 fn build_router(state: Arc<ServerState>) -> Router {
     // Configure CORS based on security config
     let cors = if let Some(origins) = &state.security.cors_origins {
-        let mut cors = CorsLayer::new().allow_methods(Any).allow_headers(Any);
-
-        // Parse and add allowed origins
-        for origin in origins {
-            if let Ok(origin_header) = origin.parse::<axum::http::HeaderValue>() {
-                cors = cors.allow_origin(origin_header);
-            }
-        }
-        cors
+        // One `allow_origin` call for the whole list: each call replaces the
+        // previous setting, so a loop silently kept only the last origin.
+        let wildcard = origins.iter().any(|origin| origin.trim() == "*");
+        let allowed: Vec<axum::http::HeaderValue> = origins
+            .iter()
+            .filter(|origin| origin.trim() != "*")
+            .filter_map(|origin| match origin.parse::<axum::http::HeaderValue>() {
+                Ok(value) => Some(value),
+                Err(e) => {
+                    tracing::warn!(origin = %origin, error = %e, "Ignoring unparsable CORS origin");
+                    None
+                }
+            })
+            .collect();
+        // tower-http panics on a `*` entry inside a list (allow_origin.rs:61), so a
+        // wildcard in config selects AllowOrigin::any(); the list is then unused.
+        let allow_origin = if wildcard {
+            tracing::warn!("CORS is open to any origin because cors_origins contains \"*\"");
+            tower_http::cors::AllowOrigin::any()
+        } else {
+            tower_http::cors::AllowOrigin::list(allowed)
+        };
+        CorsLayer::new()
+            .allow_methods(Any)
+            .allow_headers(Any)
+            .allow_origin(allow_origin)
     } else {
         // Restrictive default: only allow localhost origins
         CorsLayer::new()
@@ -1315,13 +1544,14 @@ fn build_router(state: Arc<ServerState>) -> Router {
     let protected = Router::new()
         .route("/mcp", post(handle_json_rpc))
         .route("/mcp/nda", post(handle_nda_rpc))
-        .route("/mcp/batch", post(crate::middleware::handle_batch_request))
+        .route("/mcp/batch", post(handle_batch))
         .route("/mcp/stream", post(handle_streamable))
         .route("/sse", get(sse_handler))
         .route("/ws", get(websocket_handler))
         .route("/metrics", get(metrics))
         .route("/metrics/prometheus", get(metrics_prometheus))
         .route("/performance", get(performance))
+        .route("/nda/capabilities", get(nda_capabilities))
         .route("/audit/export/json", get(audit_export_json))
         .route("/audit/export/csv", get(audit_export_csv))
         .route("/audit/flush", post(audit_flush))
@@ -1389,21 +1619,18 @@ pub async fn run_http_server(
     security_config: Option<HttpSecurityConfig>,
     tls_config: Option<TlsConfig>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let state = Arc::new(ServerState {
-        shutdown: shutdown.clone(),
-        sessions: Arc::new(RwLock::new(HashMap::new())),
-        event_broadcast: Arc::new(RwLock::new(Vec::new())),
-        security: security_config.unwrap_or_default(),
-        metrics: Arc::new(HttpMetrics::default()),
-        start_time: std::time::Instant::now(),
-    });
+    let state = ServerState::new(
+        shutdown.clone(),
+        security_config.unwrap_or_default(),
+        tls_config.is_some(),
+    );
 
     // Security warning: alert if no API key is configured
     if state.security.api_key.is_none() {
         tracing::warn!(
             "HTTP server starting without API key authentication. \
             The server is open to unauthenticated access. \
-            Set http.api_key in config or VELOCITY_HTTP_API_KEY environment variable to enable authentication."
+            Set http.api_key in config or VELOCITY_API_KEY environment variable to enable authentication."
         );
     }
 
@@ -1419,6 +1646,14 @@ pub async fn run_http_server(
             }
             cleanup_sessions(&cleanup_state).await;
         }
+    });
+
+    // Spawn tool-registry change watcher so `tools.listChanged` is a promise we
+    // keep. `state` is cloned here because `build_router` below consumes it.
+    let watcher_state = state.clone();
+    let watcher_shutdown = shutdown.clone();
+    tokio::spawn(async move {
+        watch_registry_changes(&watcher_state, &watcher_shutdown).await;
     });
 
     let app = build_router(state);
@@ -1450,7 +1685,16 @@ pub async fn run_http_server(
             };
 
             let tls_acceptor = tls_acceptor.clone();
-            let app = app.clone();
+            // This accept loop is ours rather than axum's, so the peer address has to be
+            // put into the request extensions per connection for the rate limiter to see it.
+            let app = app.clone().layer(axum::middleware::from_fn(
+                move |mut request: axum::extract::Request, next: axum::middleware::Next| {
+                    request
+                        .extensions_mut()
+                        .insert(axum::extract::ConnectInfo(addr));
+                    next.run(request)
+                },
+            ));
 
             tokio::spawn(async move {
                 let tls_stream = match tls_acceptor.accept(stream).await {
@@ -1478,9 +1722,12 @@ pub async fn run_http_server(
         info!(addr = addr, "Starting HTTP server");
 
         let listener = tokio::net::TcpListener::bind(addr).await?;
-        axum::serve(listener, app)
-            .with_graceful_shutdown(shutdown_signal(shutdown))
-            .await?;
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown_signal(shutdown))
+        .await?;
     }
 
     info!("Draining in-flight connections...");
@@ -1520,22 +1767,20 @@ fn load_tls_config(
     Ok(config)
 }
 
-/// Constant-time string comparison to prevent timing side-channel attacks.
 /// Constant-time string comparison that does not leak length via early return.
 fn constant_time_eq(a: &str, b: &str) -> bool {
-    let max_len = a.len().max(b.len());
-    if max_len == 0 {
-        return true;
+    let (ab, bb) = (a.as_bytes(), b.as_bytes());
+
+    // An empty side has no bytes to cycle through; only two empty strings match.
+    if ab.is_empty() || bb.is_empty() {
+        return ab.is_empty() && bb.is_empty();
     }
 
-    // Pad shorter string to match longer one (cycling through bytes).
-    // This prevents length-based timing attacks while still comparing all bytes.
-    let mut result = if a.len() != b.len() { 1u8 } else { 0u8 };
+    let max_len = ab.len().max(bb.len());
+    let mut result = (ab.len() != bb.len()) as u8;
 
     for i in 0..max_len {
-        let byte_a = a.as_bytes().get(i % a.len()).copied().unwrap_or(0);
-        let byte_b = b.as_bytes().get(i % b.len()).copied().unwrap_or(0);
-        result |= byte_a ^ byte_b;
+        result |= ab[i % ab.len()] ^ bb[i % bb.len()];
     }
 
     result == 0
@@ -1556,16 +1801,60 @@ mod tests {
     use tower::ServiceExt;
 
     #[tokio::test]
+    async fn test_registry_change_broadcasts_list_changed() {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let state = ServerState::new(shutdown.clone(), HttpSecurityConfig::default(), false);
+        let (tx, mut rx) = mpsc::channel::<SseFrame>(4);
+        state.event_broadcast.write().await.push(tx);
+
+        let watcher_state = state.clone();
+        let watcher_shutdown = shutdown.clone();
+        let handle = tokio::spawn(async move {
+            watch_registry_changes(&watcher_state, &watcher_shutdown).await;
+        });
+
+        // The watcher samples the generation on its first tick, which may land
+        // before or after the bump below, so keep bumping until it notices.
+        let mut frame = None;
+        for _ in 0..3 {
+            crate::registry::bump_registry_generation();
+            if let Ok(received) =
+                tokio::time::timeout(std::time::Duration::from_millis(1500), rx.recv()).await
+            {
+                frame = received;
+                break;
+            }
+        }
+        let frame = frame.expect("no SSE event after registry generation bumps");
+        // The payload must be the bare JSON-RPC notification: name and data travel
+        // separately so axum writes the framing, otherwise the wire bytes are
+        // double-framed and no `EventSource` matches a named event.
+        let (name, data) = match frame {
+            SseFrame::Event { name, data } => (name, data),
+            SseFrame::Comment(text) => panic!("expected an event frame, got comment: {text}"),
+        };
+        assert_eq!(name, "notification");
+        assert!(
+            data.contains("notifications/tools/list_changed"),
+            "unexpected SSE payload: {data}"
+        );
+        assert!(
+            data.contains("\"jsonrpc\":\"2.0\""),
+            "unexpected SSE payload: {data}"
+        );
+        assert!(
+            !data.contains("event:") && !data.contains('\n'),
+            "payload carries its own framing: {data}"
+        );
+
+        shutdown.store(true, Ordering::Relaxed);
+        handle.abort();
+    }
+
+    #[tokio::test]
     async fn test_health_check() {
         let shutdown = Arc::new(AtomicBool::new(false));
-        let state = Arc::new(ServerState {
-            shutdown,
-            sessions: Arc::new(RwLock::new(HashMap::new())),
-            event_broadcast: Arc::new(RwLock::new(Vec::new())),
-            security: HttpSecurityConfig::default(),
-            metrics: Arc::new(HttpMetrics::default()),
-            start_time: std::time::Instant::now(),
-        });
+        let state = ServerState::new(shutdown, HttpSecurityConfig::default(), false);
         let app = build_router(state);
 
         let response = app
@@ -1584,14 +1873,7 @@ mod tests {
     #[tokio::test]
     async fn test_json_rpc_initialize() {
         let shutdown = Arc::new(AtomicBool::new(false));
-        let state = Arc::new(ServerState {
-            shutdown,
-            sessions: Arc::new(RwLock::new(HashMap::new())),
-            event_broadcast: Arc::new(RwLock::new(Vec::new())),
-            security: HttpSecurityConfig::default(),
-            metrics: Arc::new(HttpMetrics::default()),
-            start_time: std::time::Instant::now(),
-        });
+        let state = ServerState::new(shutdown, HttpSecurityConfig::default(), false);
         let app = build_router(state);
 
         let request_body = json!({
@@ -1623,14 +1905,7 @@ mod tests {
     #[tokio::test]
     async fn test_shutdown_rejects_requests() {
         let shutdown = Arc::new(AtomicBool::new(true));
-        let state = Arc::new(ServerState {
-            shutdown,
-            sessions: Arc::new(RwLock::new(HashMap::new())),
-            event_broadcast: Arc::new(RwLock::new(Vec::new())),
-            security: HttpSecurityConfig::default(),
-            metrics: Arc::new(HttpMetrics::default()),
-            start_time: std::time::Instant::now(),
-        });
+        let state = ServerState::new(shutdown, HttpSecurityConfig::default(), false);
         let app = build_router(state);
 
         let request_body = json!({
@@ -1657,14 +1932,7 @@ mod tests {
     #[tokio::test]
     async fn test_metrics_endpoint() {
         let shutdown = Arc::new(AtomicBool::new(false));
-        let state = Arc::new(ServerState {
-            shutdown,
-            sessions: Arc::new(RwLock::new(HashMap::new())),
-            event_broadcast: Arc::new(RwLock::new(Vec::new())),
-            security: HttpSecurityConfig::default(),
-            metrics: Arc::new(HttpMetrics::default()),
-            start_time: std::time::Instant::now(),
-        });
+        let state = ServerState::new(shutdown, HttpSecurityConfig::default(), false);
 
         // Record some metrics
         state.metrics.record_request(100, true);
@@ -1727,18 +1995,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_auth_middleware_with_api_key() {
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let state = Arc::new(ServerState {
-            shutdown,
-            sessions: Arc::new(RwLock::new(HashMap::new())),
-            event_broadcast: Arc::new(RwLock::new(Vec::new())),
-            security: HttpSecurityConfig {
+        let state = ServerState::new(
+            Arc::new(AtomicBool::new(false)),
+            HttpSecurityConfig {
                 api_key: Some("test-api-key".to_string()),
                 ..Default::default()
             },
-            metrics: Arc::new(HttpMetrics::default()),
-            start_time: std::time::Instant::now(),
-        });
+            false,
+        );
         let app = build_router(state);
 
         // Test without auth header - should fail
@@ -1797,17 +2061,181 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
+    #[test]
+    fn test_constant_time_eq_empty_sides() {
+        assert!(constant_time_eq("", ""));
+        assert!(!constant_time_eq("", "secret"));
+        assert!(!constant_time_eq("secret", ""));
+        assert!(constant_time_eq("secret", "secret"));
+        assert!(!constant_time_eq("secret", "secrets"));
+        assert!(!constant_time_eq("secretx", "secrety"));
+    }
+
+    fn app_with_api_key(key: &str) -> axum::Router {
+        let state = ServerState::new(
+            Arc::new(AtomicBool::new(false)),
+            HttpSecurityConfig {
+                api_key: Some(key.to_string()),
+                ..Default::default()
+            },
+            false,
+        );
+        build_router(state)
+    }
+
+    async fn post_with_auth(app: axum::Router, authorization: &str) -> StatusCode {
+        let body = json!({"jsonrpc": "2.0", "method": "ping", "id": 1});
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/mcp")
+                .header("Content-Type", "application/json")
+                .header("Authorization", authorization)
+                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+    }
+
+    /// An empty Bearer token used to reach `i % a.len()` with `a.len() == 0`
+    /// and panic the connection task.
+    #[tokio::test]
+    async fn test_auth_empty_bearer_token_is_rejected_not_panic() {
+        let app = app_with_api_key("test-api-key");
+        assert_eq!(
+            post_with_auth(app, "Bearer ").await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    /// A blank configured key must fail closed rather than accept a blank token.
+    #[tokio::test]
+    async fn test_auth_empty_configured_key_fails_closed() {
+        let app = app_with_api_key("");
+        assert_eq!(
+            post_with_auth(app.clone(), "Bearer ").await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            post_with_auth(app, "Bearer anything").await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    /// `/health` sits outside the protected router, so it answers without a key.
+    #[tokio::test]
+    async fn test_health_bypasses_auth() {
+        let app = app_with_api_key("test-api-key");
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// Every configured origin must be allowed, not just the last one parsed.
+    #[tokio::test]
+    async fn test_cors_allows_every_configured_origin() {
+        let state = ServerState::new(
+            Arc::new(AtomicBool::new(false)),
+            HttpSecurityConfig {
+                cors_origins: Some(vec![
+                    "https://first.example".to_string(),
+                    "https://second.example".to_string(),
+                ]),
+                ..Default::default()
+            },
+            false,
+        );
+        let app = build_router(state);
+
+        for origin in ["https://first.example", "https://second.example"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri("/health")
+                        .header("Origin", origin)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response
+                    .headers()
+                    .get("access-control-allow-origin")
+                    .and_then(|v| v.to_str().ok()),
+                Some(origin),
+                "configured origin {} was not allowed",
+                origin
+            );
+        }
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/health")
+                    .header("Origin", "https://evil.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(response
+            .headers()
+            .get("access-control-allow-origin")
+            .is_none());
+    }
+
+    /// A `*` entry in `cors_origins` must not panic router construction (tower-http
+    /// rejects it inside AllowOrigin::list) and must echo the wildcard back.
+    #[tokio::test]
+    async fn test_cors_wildcard_origin_builds_router_and_allows_any_origin() {
+        let state = ServerState::new(
+            Arc::new(AtomicBool::new(false)),
+            HttpSecurityConfig {
+                cors_origins: Some(vec!["*".to_string()]),
+                ..Default::default()
+            },
+            false,
+        );
+        let app = build_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/health")
+                    .header("Origin", "https://any.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|v| v.to_str().ok()),
+            Some("*")
+        );
+    }
+
     #[tokio::test]
     async fn test_performance_endpoint() {
         let shutdown = Arc::new(AtomicBool::new(false));
-        let state = Arc::new(ServerState {
-            shutdown,
-            sessions: Arc::new(RwLock::new(HashMap::new())),
-            event_broadcast: Arc::new(RwLock::new(Vec::new())),
-            security: HttpSecurityConfig::default(),
-            metrics: Arc::new(HttpMetrics::default()),
-            start_time: std::time::Instant::now(),
-        });
+        let state = ServerState::new(shutdown, HttpSecurityConfig::default(), false);
 
         // Record some metrics
         state.metrics.record_request(100, true);
@@ -1842,14 +2270,7 @@ mod tests {
     #[tokio::test]
     async fn test_batch_endpoint() {
         let shutdown = Arc::new(AtomicBool::new(false));
-        let state = Arc::new(ServerState {
-            shutdown,
-            sessions: Arc::new(RwLock::new(HashMap::new())),
-            event_broadcast: Arc::new(RwLock::new(Vec::new())),
-            security: HttpSecurityConfig::default(),
-            metrics: Arc::new(HttpMetrics::default()),
-            start_time: std::time::Instant::now(),
-        });
+        let state = ServerState::new(shutdown, HttpSecurityConfig::default(), false);
         let app = build_router(state);
 
         let batch_request = json!({
@@ -1889,5 +2310,234 @@ mod tests {
         // Should return array of results
         assert!(results.is_array());
         assert_eq!(results.as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_batch_records_metrics_and_refuses_after_shutdown() {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let state = ServerState::new(shutdown.clone(), HttpSecurityConfig::default(), false);
+        let app = build_router(state.clone());
+
+        let before = state.metrics.total_requests.load(Ordering::Relaxed);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/mcp/batch")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(
+                        r#"{"requests":[{"jsonrpc":"2.0","method":"ping","id":1}]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            state.metrics.total_requests.load(Ordering::Relaxed),
+            before + 1,
+            "batch requests were not counted in metrics"
+        );
+
+        shutdown.store(true, Ordering::Relaxed);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/mcp/batch")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(
+                        r#"{"requests":[{"jsonrpc":"2.0","method":"ping","id":1}]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn test_notification_returns_bodyless_204() {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let state = ServerState::new(shutdown, HttpSecurityConfig::default(), false);
+        let app = build_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/mcp")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(body.is_empty(), "204 must not carry a body, got {body:?}");
+    }
+
+    #[tokio::test]
+    async fn test_batch_body_on_single_endpoint_is_refused() {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let state = ServerState::new(shutdown, HttpSecurityConfig::default(), false);
+        let app = build_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/mcp")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(r#"[{"jsonrpc":"2.0","method":"ping","id":1}]"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Silence here was indistinguishable from an accepted notification.
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["error"]["code"], -32600);
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("/v1/mcp/batch"),
+            "message was: {}",
+            value["error"]["message"]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_is_per_peer() {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let state = ServerState::new(shutdown, HttpSecurityConfig::default(), false);
+        let app = build_router(state);
+
+        let noisy: std::net::SocketAddr = "203.0.113.40:51000".parse().unwrap();
+        let quiet: std::net::SocketAddr = "203.0.113.41:51001".parse().unwrap();
+
+        let call = |app: Router, peer: std::net::SocketAddr| async move {
+            app.oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/mcp")
+                    .header("Content-Type", "application/json")
+                    .extension(axum::extract::ConnectInfo(peer))
+                    .body(Body::from(r#"{"jsonrpc":"2.0","method":"ping","id":1}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+        };
+
+        // The quiet peer must keep working no matter how the noisy one behaves, so
+        // check it first and again after the noisy peer is throttled.
+        assert_eq!(call(app.clone(), quiet).await.status(), StatusCode::OK);
+
+        let mut throttled = false;
+        for _ in 0..10_000 {
+            if call(app.clone(), noisy).await.status() == StatusCode::TOO_MANY_REQUESTS {
+                throttled = true;
+                break;
+            }
+        }
+        assert!(throttled, "peer bucket never ran dry");
+
+        assert_eq!(
+            call(app.clone(), quiet).await.status(),
+            StatusCode::OK,
+            "one peer exhausting its allowance throttled a different peer"
+        );
+    }
+
+    // #525 fixed: cancellations are now scoped by session ID. A cancellation from one HTTP
+    // session no longer affects another session's request with the same numeric ID. The key is
+    // now "session_id:request_id" instead of just "request_id", so every client can safely number
+    // its requests from 1 without cross-session interference. Binary transports remain unaffected:
+    // they ack and log a cancellation without recording it, as `docs/NDA_PROTOCOL.md` section 2 states.
+    #[tokio::test]
+    async fn cancelled_notification_isolated_by_http_session() {
+        use axum::body::to_bytes;
+
+        async fn mcp(app: Router, session: &str, body: &str) -> (axum::http::StatusCode, Value) {
+            let resp = app
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v1/mcp")
+                        .header("Content-Type", "application/json")
+                        .header("X-Session-ID", session)
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = resp.status();
+            let bytes = to_bytes(resp.into_body(), 1 << 20)
+                .await
+                .unwrap_or_default();
+            (
+                status,
+                serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+            )
+        }
+
+        fn first_text(value: &Value) -> String {
+            value["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or("")
+                .to_string()
+        }
+
+        // One request document on both sides of the cancellation, verifying that different
+        // sessions are isolated. Session-A's cancellation must not affect session-B's request.
+        let victim = r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"file_read","arguments":{"path":"/etc/hosts"}},"id":4242}"#;
+        let cancel = r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":4242,"reason":"another session"}}"#;
+
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let state = ServerState::new(shutdown, HttpSecurityConfig::default(), false);
+        let app = build_router(state);
+
+        // Control: verify the call works normally before any cancellation
+        let (status, before) = mcp(app.clone(), "pin-session-B", victim).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            !first_text(&before).contains("cancelled"),
+            "the control call was already cancelled: {}",
+            first_text(&before)
+        );
+
+        // Cancel from session-A (different session)
+        let (cancel_status, cancel_body) = mcp(app.clone(), "pin-session-A", cancel).await;
+        assert_eq!(cancel_status, StatusCode::NO_CONTENT);
+        assert_eq!(cancel_body, Value::Null);
+
+        // Verify session-B is NOT affected by session-A's cancellation
+        let (_, isolated) = mcp(app.clone(), "pin-session-B", victim).await;
+        assert!(
+            !first_text(&isolated).contains("cancelled"),
+            "session-B was incorrectly affected by session-A's cancellation: {}",
+            first_text(&isolated)
+        );
+
+        // Verify session-A IS affected by its own cancellation
+        let (_, self_affected) = mcp(app.clone(), "pin-session-A", victim).await;
+        assert_eq!(
+            first_text(&self_affected),
+            "Request was cancelled",
+            "session-A should be affected by its own cancellation"
+        );
     }
 }

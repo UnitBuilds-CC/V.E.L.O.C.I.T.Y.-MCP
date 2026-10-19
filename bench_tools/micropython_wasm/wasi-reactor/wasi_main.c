@@ -717,13 +717,21 @@ static mp_obj_t tlv_decode_value(TlvParser* parser) {
         case TLV_TAG_NULL:
             return mp_const_none;
         
-        case TLV_TAG_ARRAY:
+        case TLV_TAG_ARRAY: {
+            /* Nesting depth, not a container tally: siblings must see it
+             * restored or the 33rd sibling decodes as an error string. */
             parser->depth++;
-            return tlv_decode_array(parser);
+            mp_obj_t arr = tlv_decode_array(parser);
+            parser->depth--;
+            return arr;
+        }
         
-        case TLV_TAG_OBJECT:
+        case TLV_TAG_OBJECT: {
             parser->depth++;
-            return tlv_decode_object(parser);
+            mp_obj_t obj = tlv_decode_object(parser);
+            parser->depth--;
+            return obj;
+        }
         
         case TLV_TAG_FLOAT: {
             double val = read_f64_be(parser);

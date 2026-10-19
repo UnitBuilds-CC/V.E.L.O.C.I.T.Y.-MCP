@@ -8,7 +8,7 @@ import { JsonRpcRequest, JsonRpcResponse } from "./types";
 import { TransportError, ConnectionClosedError } from "./errors";
 
 export interface Transport {
-  send(request: JsonRpcRequest): Promise<JsonRpcResponse>;
+  send(request: JsonRpcRequest): Promise<JsonRpcResponse | undefined>;
   close(): Promise<void>;
 }
 
@@ -34,9 +34,13 @@ export class HttpTransport implements Transport {
     });
   }
 
-  async send(request: JsonRpcRequest): Promise<JsonRpcResponse> {
+  async send(request: JsonRpcRequest): Promise<JsonRpcResponse | undefined> {
     try {
       const response = await this.client.post(this.url, request);
+      if (!response.data) {
+        // A notification is answered with an empty 204, so there is no envelope.
+        return undefined;
+      }
       return response.data;
     } catch (error: any) {
       if (error.code === "ECONNABORTED") {
@@ -85,16 +89,23 @@ export class StdioTransport implements Transport {
     return this.process;
   }
 
-  async send(request: JsonRpcRequest): Promise<JsonRpcResponse> {
+  async send(request: JsonRpcRequest): Promise<JsonRpcResponse | undefined> {
     const process = this.ensureProcess();
 
     if (!process.stdin || !process.stdout) {
       throw new ConnectionClosedError("Process stdin/stdout not available");
     }
 
+    const requestJson = JSON.stringify(request);
+
+    if (request.id === undefined) {
+      // The server writes nothing to stdout for a notification, so waiting for a
+      // line here would leave the initialize handshake pending forever.
+      process.stdin!.write(requestJson + "\n");
+      return;
+    }
+
     return new Promise((resolve, reject) => {
-      const requestJson = JSON.stringify(request);
-      
       process.stdin!.write(requestJson + "\n");
 
       let responseData = "";

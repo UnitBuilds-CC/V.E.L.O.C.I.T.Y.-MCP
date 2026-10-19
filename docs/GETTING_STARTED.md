@@ -6,15 +6,15 @@ Welcome! This guide will get you up and running with VELOCITY-MCP in under 5 min
 
 VELOCITY-MCP is a high-performance Model Context Protocol (MCP) server written in Rust. It's:
 
-- **Up to 27.7x faster** than Node.js MCP servers (NDA/shmem transport)
-- **8x smaller** memory footprint
+- **Faster than a Node.js MCP server on the same transport** — measured `ping` 2.2x and `tools/call` 1.4x; Node is faster on `tools/list` (4.6x), see [Performance Comparison](COMPARISON.md)
+- **Up to 14.5x faster end-to-end** with the NDA/shmem pipeline vs Node JSON/stdio (9.7x on `tools/call`)
 - **Zero-config** - works out of the box
 - **Production-hardened** - timeouts, rate limiting, security built-in
 - **Cross-platform** - Windows, macOS, Linux
 
 ## Quick Start (30 seconds)
 
-### 1. Download the binary
+### 1. Get the binary
 
 **Windows:**
 ```powershell
@@ -24,15 +24,15 @@ Invoke-WebRequest -Uri "https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/re
 
 **macOS/Linux:**
 ```bash
-# Download latest release
-curl -L https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/releases/latest/download/velocity_mcp -o velocity_mcp
-chmod +x velocity_mcp
+# No Linux or macOS release asset is published yet -- the download URL for those names
+# answers HTTP 404 -- so build the same binary from crates.io:
+cargo install velocity_mcp
 ```
 
 ### 2. Run the server
 
 ```bash
-./velocity_mcp
+velocity_mcp
 ```
 
 That's it! The server starts in stdio mode by default, ready to accept MCP connections.
@@ -92,7 +92,7 @@ VELOCITY-MCP comes with 16 powerful tools ready to use:
 }
 ```
 
-**http_request** - Make HTTP requests (with retry logic)
+**http_request** - Make HTTP requests (with retry logic; requires the `oauth2` feature)
 ```json
 {
   "name": "http_request",
@@ -109,7 +109,7 @@ VELOCITY-MCP comes with 16 powerful tools ready to use:
 **convert_to_nda_document** - Convert files to NDA format
 **read_nda** - Read NDA documents
 **execute_nda** - Execute NDA containers
-**convert_to_nda_tool** - Convert JSON tools to NDA for 2.8x faster parsing (measured)
+**convert_to_nda_tool** - Convert JSON tools to NDA binary frames, dispatched through the zero-alloc TLV path
 
 ## Configuration
 
@@ -119,16 +119,16 @@ VELOCITY-MCP works with zero configuration, but you can customize it:
 
 ```bash
 # HTTP mode with custom port
-./velocity_mcp --mode http --addr 0.0.0.0:8080
+velocity_mcp --mode http --addr 0.0.0.0:8080
 
 # With TLS/HTTPS
-./velocity_mcp --mode http --tls-cert cert.pem --tls-key key.pem
+velocity_mcp --mode http --tls-cert cert.pem --tls-key key.pem
 
 # With API key authentication (no CLI flag - use the environment or config file)
-VELOCITY_API_KEY=your-secret-key ./velocity_mcp --mode http
+VELOCITY_API_KEY=your-secret-key velocity_mcp --mode http
 
 # Custom config file
-./velocity_mcp --config config.toml
+velocity_mcp --config config.toml
 ```
 
 ### Configuration file (config.toml)
@@ -156,17 +156,17 @@ command line.
 
 ```bash
 # 1. Read a source file
-./velocity_mcp --mode stdio <<EOF
+velocity_mcp --mode stdio <<EOF
 {"jsonrpc":"2.0","method":"tools/call","params":{"name":"file_read","arguments":{"path":"input.txt"}},"id":1}
 EOF
 
 # 2. Process with shell command
-./velocity_mcp --mode stdio <<EOF
+velocity_mcp --mode stdio <<EOF
 {"jsonrpc":"2.0","method":"tools/call","params":{"name":"shell_exec","arguments":{"command":"grep pattern input.txt"}},"id":2}
 EOF
 
 # 3. Write results
-./velocity_mcp --mode stdio <<EOF
+velocity_mcp --mode stdio <<EOF
 {"jsonrpc":"2.0","method":"tools/call","params":{"name":"file_write","arguments":{"path":"output.txt","content":"processed data"}},"id":3}
 EOF
 ```
@@ -174,8 +174,8 @@ EOF
 ### Workflow 2: HTTP API Integration
 
 ```bash
-# Fetch data from API
-./velocity_mcp --mode stdio <<EOF
+# Fetch data from API (needs a build with the oauth2 feature)
+velocity_mcp --mode stdio <<EOF
 {"jsonrpc":"2.0","method":"tools/call","params":{"name":"http_request","arguments":{"url":"https://api.github.com/repos/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP","method":"GET"}},"id":1}
 EOF
 ```
@@ -184,12 +184,12 @@ EOF
 
 ```bash
 # Convert a file to NDA format
-./velocity_mcp --mode stdio <<EOF
+velocity_mcp --mode stdio <<EOF
 {"jsonrpc":"2.0","method":"tools/call","params":{"name":"convert_to_nda_document","arguments":{"filePath":"document.pdf"}},"id":1}
 EOF
 
 # Read the NDA document
-./velocity_mcp --mode stdio <<EOF
+velocity_mcp --mode stdio <<EOF
 {"jsonrpc":"2.0","method":"tools/call","params":{"name":"read_nda","arguments":{"ndaPath":"document.nda"}},"id":2}
 EOF
 ```
@@ -255,7 +255,7 @@ VELOCITY-MCP includes production-grade security:
 
 - **Authentication** - API key (`Authorization: Bearer <api_key>`); the TLS server is built with client auth disabled
 - **Rate limiting** - Token bucket algorithm (20 req/sec default)
-- **Timeouts** - All operations have configurable timeouts
+- **Timeouts** - A per-call timeout on the command-executing tools (30 s default, capped at 300 s), a socket deadline on outbound HTTP, and a wall-clock limit inside the plugin sandbox; no server-wide timeout setting exists, and the request dispatcher applies no deadline of its own
 - **Input validation** - SSRF prevention, command injection protection
 - **Resource limits** - Configurable max request size, enforced session/SSE subscriber caps, 30-minute idle session eviction
 - **CORS** - Configurable cross-origin restrictions
@@ -266,7 +266,7 @@ VELOCITY-MCP includes production-grade security:
 ### Server won't start
 
 **Problem:** "Address already in use"
-**Solution:** Change the port: `./velocity_mcp --addr 0.0.0.0:8080`
+**Solution:** Change the port: `velocity_mcp --addr 0.0.0.0:8080`
 
 ### Connection refused
 

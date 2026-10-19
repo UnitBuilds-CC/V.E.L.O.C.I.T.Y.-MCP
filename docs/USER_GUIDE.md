@@ -130,11 +130,18 @@ curl -X POST http://localhost:3000/v1/mcp \
 Official client SDKs are available in 4 languages (see [Client SDKs](#6-client-sdks)):
 
 ```python
-# Python
-from velocity_mcp import Client
-client = Client("http://localhost:3000")
-tools = client.list_tools()
-result = client.call_tool("file_read", {"path": "/tmp/data.csv"})
+# Python — the SDK is async and the package is `velocity_mcp_client`
+import asyncio
+from velocity_mcp_client import HttpTransport, McpClient
+
+async def main():
+    client = McpClient(HttpTransport("http://localhost:3000/v1/mcp"))
+    await client.initialize()
+    tools = await client.list_tools()
+    result = await client.call_tool("file_read", {"path": "/tmp/data.csv"})
+    print(len(tools), result)
+
+asyncio.run(main())
 ```
 
 ### Custom MCP Client (Programmatic)
@@ -154,7 +161,7 @@ Server → Client (stdout): {"jsonrpc":"2.0","id":1,"result":{...}}
 
 **Additional methods (MCP spec compliant):**
 - `ping` — keepalive check, returns empty result
-- `logging/setLevel` — set server log verbosity (`debug`, `info`, `warning`, `error`)
+- `logging/setLevel` — set server log verbosity (`debug`, `info`, `notice`, `warning`, `error`, `critical`, `alert`, `emergency`)
 - `notifications/cancelled` — cancel an in-flight request by ID
 
 ---
@@ -169,14 +176,13 @@ The server provides 16 built-in tools — four for general operations, four for 
 
 #### file_read
 
-Read file contents with path validation and size limits.
+Read a file's contents as UTF-8 text with path validation and size limits; a file that is not valid UTF-8 fails.
 
 **Parameters:**
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
 | `path` | Yes | Absolute path to the file |
-| `encoding` | No | Text encoding (default: `utf-8`) |
 
 **Example:**
 ```json
@@ -193,7 +199,7 @@ Read file contents with path validation and size limits.
 
 #### file_write
 
-Write content to a file with path validation.
+Write UTF-8 text content to a file with path validation.
 
 **Parameters:**
 
@@ -201,24 +207,24 @@ Write content to a file with path validation.
 |-----------|----------|-------------|
 | `path` | Yes | Absolute path for the output file |
 | `content` | Yes | Content to write |
-| `encoding` | No | Text encoding (default: `utf-8`) |
 
 #### shell_exec
 
-Execute shell commands in a sandboxed environment with timeout and output limits.
+Execute a shell command with a clamped timeout, output-size caps and a dangerous-pattern blocklist. The command runs with the server's own permissions; no sandbox is involved.
 
 **Parameters:**
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
 | `command` | Yes | Shell command to execute |
-| `timeout` | No | Timeout in seconds (default: 30, max: 30) |
+| `timeout` | No | Timeout in seconds (default: 30; a value above 300 is clamped to 300) |
+| `workingDir` | No | Directory to run the command in; must be absolute and must not contain `..` anywhere, checked before the command starts |
 
-**Security:** Commands run in a capability-based sandbox with no network access, filesystem isolated to a temp directory, and memory limits enforced by OS-level job objects (Windows) or seccomp filters (Linux).
+**Security:** No sandbox is involved: `src/registry.rs` hands the string to `cmd /C` on Windows and `sh -c` on other platforms, and the child inherits the server's permissions, environment and reachable filesystem. The guards applied before the spawn are, in code order: a blocklist of destructive Unix and Windows patterns matched as substrings against the command lowercased with whitespace collapsed, and again with backslashes stripped; a shorter variable-expansion and encoding-tricks list matched only against the first of those two normalizations; a 10,000-byte command length cap; a timeout that defaults to 30 seconds and is clamped to at most 300, after which the child is killed; stdout capped at 1 MiB and stderr at 262,144 bytes; and, when `workingDir` is supplied, the path validator the file tools use. Shell metacharacters (`;`, `|`, `&`, backtick, `$`, newline) are detected and logged as a warning but deliberately allowed, so command chaining works. Because every match is a substring test over those two fixed normalizations, a blocked pattern spelled any other way -- extra quoting, an indirection not on the list, or an equivalent command -- is not caught; the blocklist deters accidents, it does not confine the caller.
 
 #### http_request
 
-Make HTTP requests with automatic retry logic and circuit breaker protection.
+Make HTTP requests with automatic retry logic: up to 3 retries with exponential backoff (100ms, 200ms, 400ms) on transport errors and 5xx responses. Requires the `oauth2` feature - on a build without it the tool is still listed, but every call is refused.
 
 **Parameters:**
 
@@ -226,9 +232,9 @@ Make HTTP requests with automatic retry logic and circuit breaker protection.
 |-----------|----------|-------------|
 | `url` | Yes | Target URL |
 | `method` | No | HTTP method (default: `GET`) |
-| `headers` | No | Request headers as key-value pairs |
+| `headers` | No | Request headers as key-value pairs; only string values are sent |
 | `body` | No | Request body |
-| `timeout` | No | Request timeout in seconds (default: 30) |
+| `timeout` | No | Request timeout in seconds (default: 30; a value above 300 is clamped to 300) |
 
 ### NDA Tools
 
@@ -366,7 +372,7 @@ If you are building tools that will be invoked through the V.E.L.O.C.I.T.Y. serv
 Your tool must communicate via **JSON-RPC over stdin/stdout**:
 
 **Request format:**
-```json
+```text
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
@@ -455,14 +461,14 @@ Full HTTP transport with:
 - **JSON-RPC over HTTP POST** at `/v1/mcp` (plus `/v1/mcp/batch` for batched requests and `/v1/mcp/nda` for NDA-native frames)
 - **Streamable HTTP** at `/v1/mcp/stream` (POST with SSE response)
 - **SSE streaming** at `/v1/sse` for real-time event streaming
-- **WebSocket** at `/v1/ws` for bidirectional communication
-- **Session management** with automatic session creation and cleanup
+- **WebSocket** at `/v1/ws` for bidirectional communication: one JSON-RPC object per **text** frame, and nothing else -- a binary frame or a JSON array is read and answered with no reply at all (the HTTP route answers an array with `-32600`), each text frame larger than 1 MiB is refused with `-32700` and `"id": null`, and a per-connection bucket of 50 msg/s (burst 100) drops the requests it refuses instead of deferring them
+- **Session management** with automatic session creation and cleanup, scoped to the two routes that register a session: `/v1/sse` and streamable HTTP. `POST /v1/mcp` and `/v1/ws` mint a session id for the audit log but never register one, so `/v1/sessions` lists neither and `DELETE /v1/sessions/:id` answers 404 for them, while their per-session audit export still works
 - **API key authentication** via `Authorization: Bearer <key>` header, with the key set in `[http].api_key` or `VELOCITY_API_KEY`
 - **CORS** with origin restrictions configured through `[http].cors_origins`
 - **JSON metrics** at `/v1/metrics` and **Prometheus exposition** at `/v1/metrics/prometheus`
 - **Health check** at `/health` (the only route outside `/v1`, so it is unauthenticated)
 - **Performance metrics** at `/v1/performance`
-- **Request size limits** (default: 10 MB, set by `[http].max_request_size`)
+- **Request size limits** (default: 10 MB for POST bodies, set by `[http].max_request_size`; `/v1/ws` does not read that key -- it enforces its own 1 MiB per-frame cap, so the same 1.6 MB `tools/call` that `POST /v1/mcp` runs answers `-32700` over `/v1/ws`)
 - **TLS/HTTPS** support via the `--tls-cert` / `--tls-key` flags (both must be provided together)
 
 ### Shared Memory Mode
@@ -491,8 +497,12 @@ Memory-mapped file IPC for ultra-low latency communication. Supports two wire fo
 | 0 | 1 byte | State (0=Idle, 1=Request Ready, 2=Processing, 3=Response Ready, 4=Error) |
 | 1–4 | 4 bytes | Input buffer length (u32, little-endian) |
 | 5–8 | 4 bytes | Output buffer length (u32, little-endian) |
-| 10–4095 | 4086 bytes | Input request buffer |
+| 9–12 | 4 bytes | Request sequence counter (u32, little-endian) |
+| 13–15 | 3 bytes | Reserved padding |
+| 16–4095 | 4080 bytes | Input request buffer |
 | 4096–65535 | 61440 bytes | Output response buffer |
+
+Offsets are the `STATE_OFFSET`/`INPUT_LEN_OFFSET`/`OUTPUT_LEN_OFFSET`/`REQUEST_SEQ_OFFSET`/`INPUT_BUFFER_OFFSET`/`OUTPUT_BUFFER_OFFSET`/`TOTAL_BUFFER_SIZE` constants, identical in `src/ipc/shmem.rs` (server) and `client/src/transport/shmem.rs` (client).
 
 **Synchronization:**
 - State byte: Atomic Acquire/Release ordering
@@ -506,45 +516,90 @@ Memory-mapped file IPC for ultra-low latency communication. Supports two wire fo
 
 Client SDKs are provided in 4 languages: the Rust client crate in `client/` (package `velocity-mcp-client`), and the Python, TypeScript and Go SDKs in `sdk/python`, `sdk/typescript` and `sdk/go`.
 
+Every SDK has the same shape: build a transport, hand it to the client, `initialize()`, then call tools. All four talk to `POST /v1/mcp`.
+
 ### Rust
 
 ```rust
-use velocity_mcp_client::Client;
+use velocity_mcp_client::{HttpTransport, McpClient};
 
-let client = Client::new("http://localhost:3000");
-let tools = client.list_tools().await?;
-let result = client.call_tool("file_read", &json!({"path": "/tmp/data.csv"})).await?;
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let transport = HttpTransport::new("http://localhost:3000/v1/mcp", None)?;
+    let mut client = McpClient::new(transport);
+    client.initialize().await?;
+    let tools = client.list_tools().await?;
+    let result = client
+        .call_tool("file_read", serde_json::json!({"path": "/tmp/data.csv"}))
+        .await?;
+    println!("{} tools: {:?}", tools.len(), result);
+    Ok(())
+}
 ```
 
 ### Python
 
 ```python
-from velocity_mcp import Client
+import asyncio
+from velocity_mcp_client import HttpTransport, McpClient
 
-client = Client("http://localhost:3000")
-tools = client.list_tools()
-result = client.call_tool("file_read", {"path": "/tmp/data.csv"})
+async def main():
+    client = McpClient(HttpTransport("http://localhost:3000/v1/mcp"))
+    await client.initialize()
+    tools = await client.list_tools()
+    result = await client.call_tool("file_read", {"path": "/tmp/data.csv"})
+    print(len(tools), result)
+
+asyncio.run(main())
 ```
 
 ### TypeScript
 
 ```typescript
-import { Client } from 'velocity-mcp-client';
+import { HttpTransport, McpClient } from '@velocity-mcp/client';
 
-const client = new Client('http://localhost:3000');
+const client = new McpClient(new HttpTransport('http://localhost:3000/v1/mcp'));
+await client.initialize();
 const tools = await client.listTools();
 const result = await client.callTool('file_read', { path: '/tmp/data.csv' });
+console.log(tools.length, result);
 ```
 
 ### Go
 
 ```go
-import velocity_mcp "github.com/UnitBuilds-CC/velocity-mcp/sdk/go"
+package main
 
-client := velocity_mcp.NewClient("http://localhost:3000")
-tools, err := client.ListTools()
-result, err := client.CallTool("file_read", map[string]interface{}{"path": "/tmp/data.csv"})
+import (
+	"context"
+	"fmt"
+	"time"
+
+	velocity_mcp "github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/sdk/go"
+)
+
+func main() {
+	transport := velocity_mcp.NewHttpTransport("http://localhost:3000/v1/mcp", "", 30*time.Second)
+	client := velocity_mcp.NewMcpClient(transport)
+	defer client.Close()
+
+	ctx := context.Background()
+	if _, err := client.Initialize(ctx); err != nil {
+		panic(err)
+	}
+	tools, err := client.ListTools(ctx)
+	if err != nil {
+		panic(err)
+	}
+	result, err := client.CallTool(ctx, "file_read", map[string]interface{}{"path": "/tmp/data.csv"})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(len(tools), result)
+}
 ```
+
+Full per-language API reference: `client/README.md` (Rust) and `sdk/{python,typescript,go}/README.md`.
 
 ---
 
@@ -605,13 +660,13 @@ curl -X POST -H "Authorization: Bearer $VELOCITY_API_KEY" \
 
 ### Plugin Security
 
-All plugins run in the capability-based sandbox:
-- No network access by default
-- Filesystem isolated to sandbox temp directory
-- Memory limits enforced (256 MB default)
-- Linux: seccomp syscall filtering
-- Windows: Job Object memory caps
-- All violations logged to audit trail
+**Three execution paths reach the machine, and only one of them is the capability sandbox.** Script and native plugins are spawned straight from the manifest (`src/plugins/mod.rs`): the server substitutes template variables into the declared arguments, rejects null bytes, arguments over 10 KB and -- for shell-interpreter executors only -- the thirteen shell metacharacters, caps output at 1 MiB stdout and 256 KiB stderr, and enforces a timeout; it builds no `Sandbox`, so it sets no memory cap and no network limit, and passes the manifest's own `env` map to the child verbatim. WASM plugins are isolated by their engine instead: they run inside a Wasmer instance under an instruction-metering budget, which is not this sandbox. Only NDA frame execution constructs a `Sandbox` (`src/nda_executor.rs`), always with the `restricted()` profile, and the bullets below describe that path alone.
+- **Enforced at spawn:** the interpreter allowlist -- `python`, `python3`, `node`, `powershell`, `bash`, `cmd.exe`, `dotnet` -- is consulted before every `Sandbox::execute`, an unlisted program is refused and recorded, the child starts in a fresh directory under `<tmp>/velocity_sandbox/`, `VELOCITY_CSHARP_ENGINE` is stripped from its environment, and the 30-second wall clock and the output caps apply.
+- **Not enforced:** the sandbox's own path and network checks (`check_file_access`, `check_network_access`) have no production call site, so no spawn path consults them -- a sandboxed child can open any absolute path and reach any host it can resolve. Filesystem isolation here is a working directory, not a jail.
+- **Memory and network limits reach the child as environment variables** (`VELOCITY_SANDBOX_MEM_LIMIT` for the 256 MB default, `VELOCITY_SANDBOX_NO_NETWORK` when network is disallowed), which only cooperative code honours. On Windows the memory cap is additionally applied out-of-band by a Job Object; on Linux and macOS there is no OS-level cap.
+- Linux: seccomp filter definitions ship in `src/sandbox/linux_seccomp.rs` but no spawn path installs them yet, so beyond the interpreter allowlist nothing above is OS-enforced there.
+- **Violations are audited:** a refusal writes a `sandbox_violation` entry to the global audit log as a rejected tool call. Because the interpreter allowlist is the only check a spawn path runs today, `Interpreter` is the only category production can record; `FileSystem` and `Network` are exercised by unit tests only.
+- **Closing the gap for real** means wiring those two checks into the spawn path or installing the seccomp filters, and either one changes what a plugin or an NDA frame can do, so it is an owner decision rather than a doc fix.
 
 See [Plugin Marketplace Guide](MARKETPLACE.md) for details.
 
@@ -639,26 +694,26 @@ curl -H "Authorization: Bearer $VELOCITY_API_KEY" \
 
 ### Prometheus Alerting Rules
 
-Pre-configured alerting rules are available in `deploy/prometheus/alerts.yml`:
+Alerting rules ship in `deploy/prometheus/alerts.yml`, but **that file is not loaded**: `deploy/prometheus/prometheus.yml` declares no `rule_files:` entry and the compose stack mounts only `prometheus.yml`, so no rule evaluates until an operator wires both — which starts firing real notifications and is their decision. Of its eleven rules, four key on the exported counters below, five key on series this server never emits, and two depend on a cAdvisor container exporter the shipped stack does not run:
 - `HighErrorRate` / `CriticalErrorRate` — failed-request ratio over 5m / 2m windows
-- `HighLatency` — latency increase over 5 minutes
+- `HighLatency` — latency increase over 5 minutes — **cannot fire**: no latency histogram is exported, only the average gauge listed above
 - `LowThroughput` — request rate dropping below 1 r/s
 - `HighRateLimitHits` — more than 10 rate-limit rejections per second
-- `HighMemoryUsage` / `HighCPUUsage` — container resource pressure
-- `TLSCertificateExpiringSoon` / `TLSCertificateExpiringImminently`
-- `PluginInstallationFailures` — failed plugin installs
-- `AuditLogBufferFull` — audit ring buffer above 9,000 entries
+- `HighMemoryUsage` / `HighCPUUsage` — container resource pressure — these series come from a cAdvisor exporter, which the shipped compose stack does not run
+- `TLSCertificateExpiringSoon` / `TLSCertificateExpiringImminently` — **cannot fire**: no certificate-expiry series is exported, and TLS is enabled by CLI flags rather than measured
+- `PluginInstallationFailures` — failed plugin installs — **cannot fire**: the install handler answers with an HTTP 400 and exports no counter
+- `AuditLogBufferFull` — audit ring buffer above 9,000 entries — **cannot fire**: the audit registry answers export and flush routes and exports no occupancy gauge
 
 ### Grafana Dashboard
 
-A pre-built Grafana dashboard is available in `deploy/grafana/dashboards/velocity-mcp.json` (datasource in `deploy/grafana/datasources/prometheus.yml`) with panels for:
+A pre-built Grafana dashboard is available in `deploy/grafana/dashboards/velocity-mcp.json` (datasource in `deploy/grafana/datasources/prometheus.yml`, file provider in `deploy/grafana/provisioning/dashboards/velocity-mcp.yml`) with panels for:
 - Total Requests
 - Success Rate
 - Request Rate
 - Error Rate
-- Active Sessions
+- Active SSE Connections — `velocity_mcp_sse_connections_active`
 - Rate Limit Hits
-- Plugin Statistics
+- Auth Failures And Latency — `velocity_mcp_auth_failures_total` and `velocity_mcp_latency_microseconds` as an instant table
 
 ### OpenTelemetry
 
@@ -699,7 +754,7 @@ velocity_mcp --config config.toml
 # Top-level keys
 mode = "http"                     # stdio | shmem | http (default: stdio)
 buffer_path = "nmcp_buffer.bin"   # shmem mode only
-csharp_path = "NdaMcpServer.exe"  # optional C# engine used for dynamic tool hosting
+csharp_path = "NdaMcpServer.exe"  # inert: parsed, never read — resolve_csharp_path() reads VELOCITY_CSHARP_PATH directly
 plugin_dir = "plugins"
 
 [http]
@@ -713,14 +768,15 @@ cors_origins = ["https://myapp.example.com"]
 level = "info"                    # error | warn | info | debug | trace
 
 [features]
-database = false                  # database resource adapters
-oauth2 = false                    # OAuth2 connector framework
-http = false                      # HTTP transport (build feature toggle)
-nda_merkle = true                 # NDA frame Merkle integrity verification (disable for max throughput on trusted transports)
+database = false                  # inert: parsed, never read — database adapters are the `database` cargo feature
+oauth2 = false                    # inert: parsed, never read — OAuth2 is the `oauth2` cargo feature
+http = false                      # inert: parsed, never read — HTTP transport is the `http` cargo feature plus `--mode http`
+nda_merkle = true                 # NDA frame Merkle integrity verification; the only [features] key the server reads (disable for max throughput on trusted transports)
 
 [wasm_runtimes]
 # Per-call instruction limit for WASM plugin runtimes (metering middleware).
-# Default: 10,000,000 (~1-5 seconds of computation). Set to 0 to disable metering
+# Default: 10,000,000 instructions (about 1 millisecond of measured guest
+# compute — see the note below). Set to 0 to disable metering
 # entirely — NOT recommended for production since runaway tools would loop forever.
 # Note: interpreter bootstrap consumes metered instructions too, so very low
 # values trap during runtime creation. QuickJS needs >1,000,000 just to start.
@@ -733,7 +789,11 @@ enabled = true
 wasm_path = "bench_tools/quickjs_wasm/quickjs.wasm"
 ```
 
+**What the instruction budget actually buys.** Metering counts WASM operations, and one language-level operation costs many of them, so `instruction_limit` is a compute budget, not a time budget. Measured on this machine (Intel Core 5 210H, the shipped guests, budget reset before every call as the server does): a tree-walk interpreter call consuming roughly 8 million instructions completed in 0.8 ms, so the 10,000,000 default is on the order of a millisecond of guest compute per call. The same sources need progressively larger budgets as the workload grows — a 1,000-iteration `while` loop lands between 4M and 8M and stays inside the default, while 21,891 iterations need between 64M and 128M and a recursive `fib(20)` needs between 128M and 256M, both of which trap at the default. QuickJS tells the same story at a different scale: `fib(10)` passes at 10M while `fib(20)` still traps at 80M and only completes at 160M. A call that trips the limit returns the resource-limit message built by `trap_message` (`src/plugins/mod.rs:443`), which points at `instruction_limit`; raise it in the config file, or per process with `VELOCITY_WASM_INSTRUCTION_LIMIT`, and set `0` to remove the cap entirely.
+
 TLS/HTTPS is not a config-file option: pass `--tls-cert <path>` and `--tls-key <path>` on the command line (both are required together) to serve HTTPS in HTTP mode.
+
+**A key the server does not recognise is ignored, not rejected.** No config struct carries `deny_unknown_fields` (`ServerConfig` at `src/config.rs:18`, and `HttpConfig`, `LoggingConfig`, `FeaturesConfig`, `WasmRuntimesConfig` likewise), and every declared field either has a `#[serde(default)]` or is an `Option`, so a file with a misspelled key still parses and the field quietly keeps its default. `max_request_bytes = 1024` leaves the 10 MB limit in force; `apikey = "secret"` leaves the server with **no authentication**. `validate()` (`src/config.rs:505`) only checks the values it has fields for — mode, log level, and in HTTP mode a non-empty address and a non-zero request size — so nothing reports the typo at startup. Note the reverse case too: four keys the server *does* recognise are parsed and then never read — `[features].database`, `[features].oauth2` and `[features].http` (the live switches are the cargo build features of the same names, `Cargo.toml` `[features]`, plus `--mode http` for transport), and root `csharp_path`, because `registry::resolve_csharp_path()` reads `VELOCITY_CSHARP_PATH` from the environment directly and ignores the configuration file. When a setting appears to have no effect, check the key against the structs above before debugging the behaviour.
 
 ### CLI Options
 
@@ -757,7 +817,7 @@ Build with optional features using `--features`:
 | `http` | HTTP/SSE/WebSocket transport with session management |
 | `oauth2` | OAuth2 connector framework with token refresh |
 | `database` | Database resource adapters (SQLite) |
-| `observability` | OpenTelemetry distributed tracing and metrics |
+| `observability` | OpenTelemetry distributed tracing (spans only; no metrics pipeline) |
 | `wasm-networking` | Networking syscalls for WASM plugin runtimes |
 
 Example: `cargo build --release --features http,oauth2,observability`
@@ -774,10 +834,15 @@ Example: `cargo build --release --features http,oauth2,observability`
 | `VELOCITY_API_KEY` | Set the HTTP API key (alternative to `[http].api_key`) | — (no auth) |
 | `VELOCITY_MAX_REQUEST_SIZE` | Override the maximum HTTP request body size in bytes | `10485760` |
 | `VELOCITY_ENABLE_RATE_LIMIT` | Enable/disable the HTTP rate limiter | `true` |
-| `VELOCITY_RATE_LIMIT` | Token-bucket refill rate (tokens/sec) for the global limiter | `20` |
-| `VELOCITY_RATE_BURST` | Token-burst capacity for the global limiter | `100` |
+| `VELOCITY_RATE_LIMIT` | Token-bucket refill rate (tokens/sec) per bucket, for both the process-wide and per-peer limiters | `20` |
+| `VELOCITY_RATE_BURST` | Token-burst capacity per bucket, for both limiters | `100` |
 | `VELOCITY_NDA_MERKLE` | NDA frame Merkle integrity verification (`0`/`false`/`no` to disable) | `1` |
 | `VELOCITY_WASM_INSTRUCTION_LIMIT` | Per-call WASM metering instruction limit (`0` disables metering) | `10000000` |
+| `VELOCITY_AUDIT_LOG_PATH` | Directory the audit log is flushed to on shutdown | `audit_logs` |
+| `VELOCITY_PHASE_TIMING` | NDA loop phase-timing instrumentation; the value is the output file, records are written on shutdown | — (off) |
+| `VELOCITY_PING_DELAY_US` | Sleep inserted before each `ping` response, to separate server latency from transport latency | — (no delay) |
+| `VELOCITY_SPIN_US` | Microseconds the shmem event wait spins before parking (Windows builds only) | `200` |
+| `VELOCITY_BENCH_EXTRA_TOOLS` | Register N synthetic tools at startup to scale the `tools/list` payload for benchmarks | — (no-op) |
 | `RUST_LOG` | Log level for the tracing subscriber (`error`, `warn`, `info`, `debug`, `trace`) | `info` |
 
 ---
@@ -786,7 +851,7 @@ Example: `cargo build --release --features http,oauth2,observability`
 
 ### Stdio Mode
 
-```json
+```text
 → {"jsonrpc":"2.0","method":"health/check","id":1}
 ← {"jsonrpc":"2.0","id":1,"result":{"status":"healthy","mode":"stdio","version":"3.2.0"}}
 ```
@@ -801,11 +866,15 @@ curl http://localhost:3000/health
 {"status":"healthy","transport":"http","version":"3.2.0","activeSessions":0}
 ```
 
+`health/check` is not a transport probe: its `mode` is a literal in the shared JSON-RPC handler, so it
+answers `"mode":"stdio"` even against this HTTP server (measured on a live build). The payload above,
+`GET /health`, is the one that reports the running transport.
+
 The `/v1/performance` endpoint (authenticated) is where uptime and throughput are reported.
 
 ### Shared Memory Mode
 
-```json
+```text
 → {"jsonrpc":"2.0","method":"health/check","id":1}
 ← {"jsonrpc":"2.0","id":1,"result":{"status":"healthy","mode":"shmem","version":"3.2.0"}}
 ```
@@ -818,7 +887,7 @@ Over NDA-native framing the same call reports `"mode":"shmem-nda"`.
 
 ### Log Levels
 
-Set the log level with `RUST_LOG` or dynamically via `logging/setLevel`:
+Two surfaces set verbosity and they accept different names: the live filter is built from `RUST_LOG` / `VELOCITY_LOG_LEVEL` using the table below, while `logging/setLevel` validates the eight MCP level names — `warn` and `trace` are env-var names and are refused by the method with `-32602`:
 
 **Dynamic (MCP method):**
 ```json
@@ -837,7 +906,15 @@ Set the log level with `RUST_LOG` or dynamically via `logging/setLevel`:
 
 ### Log Output Format
 
-Logs are written as plain-text lines to **stderr** by `tracing_subscriber::fmt()`; the level is taken from `RUST_LOG` (falling back to `info`). `[logging].level` in the config file is parsed and validated but there is no JSON formatter option — no `format` key exists under `[logging]`.
+Logs are written as plain-text lines to **stderr** by `tracing_subscriber::fmt()`; there is no JSON formatter option — no `format` key exists under `[logging]`.
+
+The live filter is built once, after the config has been validated (`src/main.rs`), and the first of these that is set wins:
+
+1. `RUST_LOG` — a full directive string (`debug`, or `velocity_mcp=debug,tower_http=warn`);
+2. `VELOCITY_LOG_LEVEL` — a single level name;
+3. `[logging].level` in the config file — the same five names, defaulting to `info`.
+
+`VELOCITY_LOG_LEVEL` and `[logging].level` accept exactly the five names `validate()` whitelists (`src/config.rs:517`), so a typo aborts startup with `Config error: Invalid log level: …` rather than silently leaving the server at `info`.
 
 ### Examples
 
@@ -872,7 +949,7 @@ Run the built-in benchmark suite:
 
 ### Reference Results (Intel Core 5 210H, release build, 2026-09-17)
 
-Raw: `bench_nda_2026-09-17.txt` (500 iterations × 3 rounds, median kept).
+Raw: `bench_nda_2026-09-17.txt` (500 iterations × 3 rounds, median kept). These tables come from the **`bench_nda` transport harness** (`cargo run --release --manifest-path bench_nda/Cargo.toml`, run from the repository root), not from the `velocity_mcp --benchmark` command above — that suite prints none of these rows. The capture itself is a local artifact (raw benchmark output is not committed), so this table is the durable record; see [COMPARISON.md](COMPARISON.md) for the same run in full.
 
 **NDA/shmem Transport (warm p50, 40 tools in list):**
 
@@ -921,13 +998,13 @@ The V.E.L.O.C.I.T.Y. server implements **15+ defense layers** providing enterpri
 | 6 | **Output Size Limits** | stdout: 1 MB, stderr: 256 KB — prevents OOM from runaway output |
 | 7 | **Ed25519 Signatures** | Sign and verify NDA documents for authenticity and tamper detection |
 | 8 | **Merkle Tree Integrity** | SHA-256 root verification of NDA binary content |
-| 9 | **Rate Limiting** | Global token bucket: 20 req/sec, burst 100 (shared across clients); HTTP mode gated by `[http].enable_rate_limit` |
+| 9 | **Rate Limiting** | Token bucket, 20 req/sec burst 100 — one bucket per client IP in HTTP mode, process-wide on stdio/shmem; HTTP mode gated by `[http].enable_rate_limit` |
 | 10 | **Audit Logging** | 10K entry ring buffer, JSON/CSV export, poisoning-tolerant mutex |
 | 11 | **Error Sanitization** | Strips internal paths (Win/Unix), truncates at 500 chars |
 | 12 | **CORS Protection** | Origin restrictions via `[http].cors_origins` |
 | 13 | **API Key Authentication** | Timing-safe comparison of `Authorization: Bearer <key>` against `[http].api_key` / `VELOCITY_API_KEY` |
-| 14 | **Dependency Audit** | 0 vulnerabilities across all crate dependencies (`cargo audit`) |
-| 15 | **CI/CD Automation** | GitHub Actions: build + test + cargo audit on every push/PR |
+| 14 | **Dependency Audit** | 0 vulnerabilities across all crate dependencies (`cargo audit` exits 0; re-measured 2026-10-13 the same run also prints 3 allowed warnings, which the gate does not fail on -- two unmaintained crates and one unsound transitive `memmap2` 0.6.2 that this lock cannot reach, with the reachability measurement recorded in the CHANGELOG security section) |
+| 15 | **CI/CD Automation** | GitHub Actions: lint + build + test + cargo audit on every push or pull request **targeting `main`** -- the workflow's only two triggers both read `branches: [main]`, so a push to a feature branch starts no run |
 
 ### Path Validation
 
@@ -939,21 +1016,24 @@ All file paths are validated before execution (cross-platform):
 | Relative path | `"documents/file.nda"` | Not anchored |
 | Path traversal | `"/home/user/../../etc/passwd"` | Directory traversal |
 | Must be absolute | `"./relative/file"` | Relative with `./` |
+| Reparse-point ancestor | `"C:\Users\me\linked\file.nda"` (`linked` points outside) | Symlink on POSIX, junction or other reparse point on Windows |
+
+**How the four checks behave on Windows.** The `..` test is a substring match anywhere in the path, so a legal filename such as `report..final.txt` is refused as well. Both `\\host\share\file` and `\\?\C:\dir\file` satisfy the absolute-path check and are handed to the ordinary filesystem call, which lets the OS resolve the name; only a drive-relative path such as `\dir\file` is refused as not absolute. An ancestor whose metadata read fails is skipped, so a path that does not exist yet -- a write target -- is admitted. The check is per-component, not per-root: there is no configured root, so an absolute path anywhere on the host passes unless one of its components is a reparse point.
 
 ### Capability-Based Sandbox
 
-All NDA execution and shell commands go through a capability-based sandbox:
+Only `src/nda_executor.rs` constructs a `Sandbox`, on its two `execute_nda` paths, so the profile below applies to NDA execution and not to the built-in `shell_exec` tool:
 
 **ProcessCapabilities (restricted profile):**
 - No network access
 - File system isolated to sandbox temp directory
-- 6 approved interpreters: python, node, powershell, bash, cmd.exe, dotnet
+- 7 approved interpreters: python, python3, node, powershell, bash, cmd.exe, dotnet (`.py` documents resolve `python` first, then `python3` when only the versioned name is on PATH)
 - Binary payload execution allowed
 - 256 MB memory cap
 
 **Platform-specific enforcement:**
 - **Windows**: Job Object memory limits, process isolation
-- **Linux**: seccomp-bpf syscall filters (whitelist approach), blocking network syscalls, process creation, mount, ptrace, kernel module operations
+- **Linux**: seccomp-bpf filter definitions exist (whitelist blocking network syscalls, process creation, mount, ptrace, kernel module operations), but nothing installs them at spawn time yet, so kernel-level enforcement is not active in this release
 
 **Violation tracking:**
 - Categories: FileSystem, Network, Interpreter, Memory, Timeout
@@ -968,10 +1048,13 @@ All NDA execution and shell commands go through a capability-based sandbox:
 
 ### Rate Limiting
 
-A single global token-bucket rate limiter protects against abuse:
-- 20 tokens per second refill rate, burst capacity 100 tokens (defaults in `src/rate_limit.rs`)
+Two limiters live in `src/rate_limit.rs`, and which one a request hits depends on the transport:
+
+- Process-wide (`check_rate_limit`): stdio and shared memory, which each serve exactly one peer for the life of the process
+- Per-peer (`check_rate_limit_for_peer`, HTTP mode): every client IP gets its own bucket, so one client exhausting its allowance cannot throttle the others; buckets are kept LRU-bounded at 4 096 peers (`MAX_PEER_BUCKETS`), and a request with no connection info falls into one shared `unknown` bucket
+- 20 tokens per second refill rate, burst capacity 100 tokens (defaults in `src/rate_limit.rs`), per bucket — both kinds read the same configured limits
 - Tuned through the `VELOCITY_RATE_LIMIT` / `VELOCITY_RATE_BURST` environment variables — there are no per-second/burst keys in the config file
-- Shared across all clients in the native server; it is toggled in HTTP mode by the boolean `[http].enable_rate_limit` (default `true`)
+- HTTP mode is toggled by the boolean `[http].enable_rate_limit` (default `true`)
 - The `velocity-mcp-edge` crate keys its own limiter per client IP
 - Exceeded requests receive a JSON-RPC error with HTTP status 429
 
@@ -979,8 +1062,8 @@ A single global token-bucket rate limiter protects against abuse:
 
 | Limit | Value | Behavior |
 |-------|-------|----------|
-| Max JSON-RPC request size (stdio) | 1 MB | Rejected before JSON parsing |
-| Max HTTP request size | 10 MB (`[http].max_request_size`) | Rejected with 413 status |
+| Max JSON-RPC request size (stdio, and `/v1/ws` text frames) | 1 MB | stdio: rejected before JSON parsing. `/v1/ws`: refused before the per-connection rate-limit tokens are accounted, so oversize frames are never throttled, and the reply is `-32700` with `"id": null` |
+| Max HTTP request size | 10 MB (`[http].max_request_size`) | Rejected with 413 and a plain-text body, not a JSON-RPC error object |
 | Max shared memory input | 4,086 bytes | Rejected with buffer overflow error |
 | Max shared memory output | 61,440 bytes | Rejected with buffer overflow error |
 | Max captured stdout | 1 MB | Truncated to prevent OOM |
@@ -1045,7 +1128,7 @@ A single global token-bucket rate limiter protects against abuse:
 
 **Cause:** The requested method is not supported.
 
-**Supported methods:** `initialize`, `notifications/initialized`, `notifications/cancelled`, `ping`, `logging/setLevel`, `tools/list`, `tools/call`, `health/check`
+**Supported methods:** the JSON-RPC dispatcher (`src/protocol/json_rpc.rs`) recognises twenty names -- `initialize`, `notifications/initialized`, `notifications/cancelled`, `notifications/progress`, `ping`, `logging/setLevel`, `tools/list`, `tools/call`, `health/check`, `resources/list`, `resources/read`, `resources/templates/list`, `resources/subscribe`, `resources/unsubscribe`, `prompts/list`, `prompts/get`, `sampling/createMessage`, `elicitation/create`, `roots/list`, plus `connector/call` only when built with `--features oauth2` -- while the shared-memory JSON dispatcher (`src/protocol/nmcp_binary.rs`) recognises seventeen of them: it has no `connector/call`, `elicitation/create` or `roots/list` arm, and phrases its refusal as `Method 'X' not supported` rather than `not found`.
 
 ### HTTP: Connection refused
 
@@ -1065,7 +1148,7 @@ A single global token-bucket rate limiter protects against abuse:
 
 ### Q: What MCP protocol version does this server support?
 
-A: Protocol version `2024-11-05`. The server reports this in the `initialize` response. Supports `ping`, `logging/setLevel`, `notifications/cancelled`, cursor pagination on `tools/list`, elicitation, and roots.
+A: Protocol version `2024-11-05`. The server reports this in the `initialize` response. Supports `ping`, `logging/setLevel`, `notifications/cancelled`, cursor pagination on `tools/list`, and `notifications/tools/list_changed` on the HTTP/SSE channel whenever a tool is registered at runtime. It also answers `elicitation/create` and `roots/list` if a client sends them, but both are server→client requests in the spec: the server never initiates them, and `roots` is not advertised in its capabilities because that map describes what the *server* can do.
 
 ### Q: Can I use this server with multiple MCP clients simultaneously?
 
@@ -1088,7 +1171,7 @@ A: Yes, three ways:
 
 ### Q: Is the server compatible with Linux or macOS?
 
-A: Yes. The server is fully cross-platform. Linux gets additional security from seccomp syscall filters. Shared memory mode uses file-based memory mapping on all platforms. Path validation works with both Windows and Unix paths.
+A: Yes. The server is fully cross-platform. Linux ships seccomp filter definitions that no spawn path installs yet, so enforcement there is the same capability sandbox used everywhere else. Shared memory mode uses file-based memory mapping on all platforms. Path validation works with both Windows and Unix paths.
 
 ### Q: What's the maximum file size that can be converted?
 
@@ -1104,4 +1187,4 @@ A: See the [Deployment Guide](DEPLOYMENT.md) for Docker, Kubernetes, and bare me
 
 ### Q: Can I monitor the server with Prometheus?
 
-A: Yes. In HTTP mode, Prometheus metrics are exposed at `/v1/metrics/prometheus` (the same counters as JSON at `/v1/metrics`). Pre-built Grafana dashboards and alerting rules are included under `deploy/grafana/` and `deploy/prometheus/`.
+A: Yes. In HTTP mode, Prometheus metrics are exposed at `/v1/metrics/prometheus` (the same counters as JSON at `/v1/metrics`). A Grafana dashboard ships at `deploy/grafana/dashboards/velocity-mcp.json` and the compose `monitoring` profile provisions it through `deploy/grafana/provisioning/dashboards/velocity-mcp.yml`; its seven panels cover all seven exported series and query no series the server does not export. Alerting rules ship at `deploy/prometheus/alerts.yml` but are **not loaded** (no `rule_files:` entry), and five of their eleven rules key on metrics that do not exist — see the Prometheus Alerting Rules section above.

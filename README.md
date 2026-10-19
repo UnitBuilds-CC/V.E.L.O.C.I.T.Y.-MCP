@@ -13,11 +13,13 @@ Replaces slow Node.js/Python MCP servers with a self-contained, optimized execut
 ## Quick Start
 
 ```bash
-# Download and run
-curl -L https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/releases/latest/download/velocity_mcp -o velocity_mcp
-chmod +x velocity_mcp
-./velocity_mcp
+# Install from crates.io and run (stdio server; Ctrl-D stops it)
+cargo install velocity_mcp
+velocity_mcp
 ```
+
+Pre-built binaries are Windows-only today: the release asset `velocity_mcp.exe` resolves,
+while the Linux/macOS asset names answer HTTP 404, as measured on 2026-10-10.
 
 Configure your MCP client to point at it. Done.
 
@@ -26,6 +28,7 @@ Configure your MCP client to point at it. Done.
 - [Migration from Node.js MCP](docs/MIGRATION.md)
 - [Client Integration](docs/CLIENT_INTEGRATION.md) (Claude Desktop, Cursor, Windsurf)
 - [Performance Comparison](docs/COMPARISON.md)
+- [NDA Binary Protocol](docs/NDA_PROTOCOL.md) (frame layout, TLV encoding, dispatch)
 - [WASM Runtime Benchmarks](docs/COMPREHENSIVE_BENCHMARK.md)
 - [Plugin Marketplace](docs/MARKETPLACE.md)
 - [Edge Deployment](docs/edge_user_guide.md) (Wasmer Edge, free tier)
@@ -34,7 +37,7 @@ Configure your MCP client to point at it. Done.
 
 ## Performance
 
-All numbers measured 2026-09-13 on Core 5 210H, release build. Re-run 2026-09-17 (same hardware) reproduces the ordering and hierarchy; single-pass speedups vary run-to-run — see [docs/COMPARISON.md](docs/COMPARISON.md) and the raw `bench_nda_2026-09-17.txt` for the current figures.
+All numbers below are the 2026-09-13 run on Core 5 210H, release build (raw capture `bench_results_core5.txt`, whose own banner stamps `VELOCITY-MCP v3.0.0`). The 2026-09-17 re-run on the same hardware reproduces the ordering and hierarchy at different single-pass figures — ping 1,761,585 r/s and 82.0x avg vs JSON/stdio, against the 800K / 57.1x in the table below — and those are carried in [docs/COMPARISON.md](docs/COMPARISON.md) with `bench_nda_2026-09-17.txt` as their capture. Both captures are local artifacts (raw benchmark output is not committed to this repo); regenerate them with `cargo run --release --manifest-path bench_nda/Cargo.toml` from the repository root.
 
 ### NDA/shmem Transport
 
@@ -108,7 +111,7 @@ Cold start is WASM *slower* for JavaScript (149.9 vs 70.6 ms) and Lua (82.5 vs 4
 
 *The in-process runtimes (QuickJS, MicroPython, Lua) use pre-compiled wrappers — tool source is compiled once at registration, then called via `call_tool` with JSON arg parsing. Ruby/mruby runs on Wasmer with stubbed setjmp/longjmp (no WASM EH).
 
-6 additional languages use tree-walk interpreters sharing a common C core with full control flow, functions, data structures, and JSON I/O. See [WASM Runtime Status](docs/wasm_runtime_status.md) for details.
+6 additional languages use tree-walk interpreters sharing a common C core with the same control-flow, function, data-structure and JSON-I/O surface — under documented execution caps (100 000 loop iterations, 100 000 TLV arguments, and a per-call metering budget that is a compute cap, not a timeout). See [WASM Runtime Status](docs/wasm_runtime_status.md) for details.
 
 ---
 
@@ -120,8 +123,11 @@ Cold start is WASM *slower* for JavaScript (149.9 vs 70.6 ms) and Lua (82.5 vs 4
 |------|-----------|----------|
 | Stdio | Standard I/O | Compatible with all MCP clients |
 | HTTP/SSE | HTTP + Server-Sent Events | Web clients, REST APIs |
-| WebSocket | Bidirectional WS | Real-time applications |
+| WebSocket | `GET /v1/ws`, served by HTTP mode | Real-time applications |
 | Shared Memory | Memory-mapped IPC | Ultra-low latency (2 µs round-trip) |
+
+Only Stdio, HTTP/SSE and Shared Memory are `--mode` values; WebSocket is a route on the
+HTTP server, not a mode of its own.
 
 ### NDA Binary Protocol
 
@@ -142,10 +148,10 @@ Zero-copy TLV parsing with SHA-256 Merkle integrity verification on every frame:
 
 ### Enterprise Security
 
-15+ security layers:
+15 security layers (14 enforced, 1 defined but not yet installed):
 
 1. Capability-based sandbox with resource limits
-2. Linux seccomp filters (kernel-level syscall filtering)
+2. Linux seccomp filters (kernel-level syscall filtering) — defined in `src/sandbox/linux_seccomp.rs`; no production path installs them yet
 3. Windows Job Object limits (memory enforcement)
 4. Rate limiting with per-client tracking
 5. Audit logging with JSON/CSV export
@@ -153,9 +159,9 @@ Zero-copy TLV parsing with SHA-256 Merkle integrity verification on every frame:
 7. CORS restrictions and API key authentication
 8. Timing-safe comparison for secrets
 9. Error sanitization (prevents information leakage)
-10. shell_exec injection prevention (62 Unix + 51 Windows command patterns blocked)
+10. shell_exec injection prevention (62 Unix + 51 Windows command patterns, all distinct after the 2026-10-13 audit; matching is substring-based, so the option-grammar forms it provably cannot cover are recorded in the CHANGELOG rather than claimed closed here) — scope caveat: the guard sits in the JSON dispatcher's arm, while the binary/NDA dispatcher resolves a plugin-registered name *before* built-in matching, so a plugin that claims a built-in's name answers that call in-guest with the blocklist never consulted. No shipped manifest does this today, and the behaviour is pinned by a test rather than repaired: whether a plugin may shadow a built-in name is an open owner call)
 11. SSRF protection (full RFC 1918 + IPv6 blocklist)
-12. edit_file resource bounds (max 1000 edits, 1MB per field)
+12. edit_file request bounds (max 1000 edits, 1MB per field, 10MB input file) — these cap the incoming call, not the file it produces: each replacement is applied to *every* occurrence and the result is written without any size check, so one request can demand a write far larger than any bound listed here (measured at 10,000x in a unit test; the arithmetic at the caps reaches terabytes). Pinned as owner call #556 rather than silently repaired, because an output-size bound would change what existing calls return
 13. Merkle integrity verification (SHA-256, SHA-NI accelerated)
 14. Dependency audit (zero vulnerabilities)
 15. Panic catching with graceful error handling
@@ -182,7 +188,7 @@ Zero-copy TLV parsing with SHA-256 Merkle integrity verification on every frame:
 | `file_read` | Read file contents with validation |
 | `file_write` | Write files with path validation |
 | `shell_exec` | Execute shell commands in sandbox |
-| `http_request` | HTTP requests with retry logic |
+| `http_request` | HTTP requests with retry logic (requires the `oauth2` feature) |
 | `list_directory` | List directory contents |
 | `directory_tree` | Display directory tree structure |
 | `search_files` | Search files by pattern/regex |
@@ -210,12 +216,13 @@ Published crates: [velocity_mcp](https://crates.io/crates/velocity_mcp) (server)
 
 ### From Binary
 
-```bash
-# Linux/macOS
-curl -L https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/releases/latest/download/velocity_mcp -o velocity_mcp
-chmod +x velocity_mcp
-sudo mv velocity_mcp /usr/local/bin/
+The published release carries one asset, `velocity_mcp.exe` (from v3.1.0). The Linux and
+macOS names this section used to list answer HTTP 404 — there is no v3.2.0 GitHub release,
+and the release workflow's own naming is versioned, so pushing a tag is what would publish
+them. See *Installation* in `docs/DEPLOYMENT.md` for the measured detail; use
+`cargo install` or `docker pull unitbuilds/velocity-mcp:latest` on Linux and macOS meanwhile.
 
+```bash
 # Windows
 curl -L https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/releases/latest/download/velocity_mcp.exe -o velocity_mcp.exe
 ```
@@ -225,7 +232,10 @@ curl -L https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/releases/latest/do
 ```bash
 git clone https://github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP.git
 cd V.E.L.O.C.I.T.Y.-MCP
-cargo build --release
+
+# The default feature set is empty: a bare `cargo build --release` produces a
+# stdio/shmem-only binary. This is the same feature set the release workflow uses.
+cargo build --release --features http,database,oauth2
 ```
 
 ### Docker
@@ -252,10 +262,19 @@ velocity_mcp --config config.toml
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--mode <stdio\|http\|ws\|shmem>` | Transport mode | `stdio` |
-| `--addr <address>` | HTTP listen address | `0.0.0.0:3000` |
-| `--config <path>` | Configuration file | — |
-| `--benchmark` | Run performance benchmarks | — |
+| `--mode <stdio\|shmem\|http>` | Protocol mode | `stdio` |
+| `--config <path>` | TOML config file; CLI args override file values | — |
+| `--addr <address>` | HTTP listen address (http mode only) | `0.0.0.0:3000` |
+| `--buffer-path <path>` | Mapped buffer file (shmem mode only) | `nmcp_buffer.bin` |
+| `--tls-cert <path>` | TLS certificate (PEM); enables HTTPS when paired with `--tls-key` | — |
+| `--tls-key <path>` | TLS private key (PEM); enables HTTPS when paired with `--tls-cert` | — |
+| `--benchmark` | Run the performance benchmark suite | — |
+| `-h`, `--help` | Print the help screen | — |
+
+WebSocket is not a separate mode — it is the `GET /v1/ws` route served by `--mode http`.
+`--mode http` requires building with the `http` feature (see [From Source](#from-source));
+the default feature set is empty, and a default build exits with
+`Error: HTTP transport not enabled. Build with --features http`.
 
 ---
 
@@ -263,14 +282,31 @@ velocity_mcp --config config.toml
 
 ```bash
 # Prometheus metrics
-curl http://localhost:3000/metrics
+curl http://localhost:3000/v1/metrics/prometheus
 
 # Health check
 curl http://localhost:3000/health
 
-# Performance metrics
-curl http://localhost:3000/performance
+# Performance metrics (JSON)
+curl http://localhost:3000/v1/performance
 ```
+
+### Live Dashboard
+
+A zero-dependency browser console to visually demo the server — live request-rate
+chart, metrics polling, all 40 tools with schema-prefilled `tools/call`, measured
+round-trip latency, a ping burst benchmark, and an SSE event feed:
+
+```bash
+cargo build --release --features http
+target/release/velocity_mcp --mode http --config dashboard/demo.toml   # listens on :3900
+# then open dashboard/index.html in a browser and click Connect
+```
+
+The demo config sets `cors_origins = ["*"]` so the page works when opened as a
+local file; production default (no `cors_origins`) restricts CORS to localhost origins.
+Full guide, URL parameters (`?demo=1` zero-click mode), and the headless test harness:
+[docs/DASHBOARD.md](docs/DASHBOARD.md).
 
 ---
 
@@ -287,37 +323,77 @@ cargo bench                  # Benchmarks
 
 ## Client SDKs
 
-### Rust
+All four clients use the same shape: build a transport, hand it to the client, initialize, then call tools. The examples target `POST /v1/mcp`; the API key is optional and only required when `[http].api_key` is configured server-side.
+
+### Rust (`velocity-mcp-client`)
 ```rust
-use velocity_mcp_client::Client;
+use velocity_mcp_client::{HttpTransport, McpClient};
 
-let client = Client::new("http://localhost:3000");
-let tools = client.list_tools().await?;
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let transport = HttpTransport::new("http://localhost:3000/v1/mcp", None)?;
+    let mut client = McpClient::new(transport);
+    client.initialize().await?;
+    let tools = client.list_tools().await?;
+    println!("{} tools", tools.len());
+    Ok(())
+}
 ```
 
-### Python
+### Python (`velocity-mcp-client`, async)
 ```python
-from velocity_mcp import Client
+import asyncio
+from velocity_mcp_client import HttpTransport, McpClient
 
-client = Client("http://localhost:3000")
-tools = client.list_tools()
+async def main():
+    client = McpClient(HttpTransport("http://localhost:3000/v1/mcp"))
+    await client.initialize()
+    tools = await client.list_tools()
+    print(f"{len(tools)} tools")
+
+asyncio.run(main())
 ```
 
-### TypeScript
+### TypeScript (`@velocity-mcp/client`)
 ```typescript
-import { Client } from 'velocity-mcp-client';
+import { HttpTransport, McpClient } from '@velocity-mcp/client';
 
-const client = new Client('http://localhost:3000');
+const client = new McpClient(new HttpTransport('http://localhost:3000/v1/mcp'));
+await client.initialize();
 const tools = await client.listTools();
+console.log(`${tools.length} tools`);
 ```
 
-### Go
+### Go (`github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/sdk/go`)
 ```go
-import "github.com/UnitBuilds-CC/velocity-mcp/client/go"
+package main
 
-client := velocity_mcp.NewClient("http://localhost:3000")
-tools, err := client.ListTools()
+import (
+	"context"
+	"fmt"
+	"time"
+
+	velocity_mcp "github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/sdk/go"
+)
+
+func main() {
+	transport := velocity_mcp.NewHttpTransport("http://localhost:3000/v1/mcp", "", 30*time.Second)
+	client := velocity_mcp.NewMcpClient(transport)
+	defer client.Close()
+
+	ctx := context.Background()
+	if _, err := client.Initialize(ctx); err != nil {
+		panic(err)
+	}
+	tools, err := client.ListTools(ctx)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("%d tools\n", len(tools))
+}
 ```
+
+Full API reference for each language lives in `client/README.md` (Rust) and `sdk/{python,typescript,go}/README.md`.
 
 ---
 
@@ -393,6 +469,7 @@ docs/                 Documentation
 - [Migration Guide](docs/MIGRATION.md)
 - [Client Integration](docs/CLIENT_INTEGRATION.md)
 - [Performance Comparison](docs/COMPARISON.md)
+- [NDA Binary Protocol](docs/NDA_PROTOCOL.md)
 - [WASM Runtime Status](docs/wasm_runtime_status.md)
 - [Comprehensive Benchmark Guide](docs/COMPREHENSIVE_BENCHMARK.md)
 

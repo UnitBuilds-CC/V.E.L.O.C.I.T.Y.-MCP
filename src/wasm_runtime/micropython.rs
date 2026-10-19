@@ -329,7 +329,7 @@ mod tests {
 
     fn wasm_path() -> std::path::PathBuf {
         let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        p.push("bench_tools/micropython_wasm/micropython-1.24.1/ports/webassembly/build-wasi/micropython.wasm");
+        p.push("bench_tools/micropython_wasm/wasi-reactor/build/micropython.wasm");
         p
     }
 
@@ -435,6 +435,89 @@ mod tests {
                 result
             );
         }
+
+        rt.destroy().unwrap();
+    }
+
+    /// An oversized argument payload must be refused, not handed to the guest.
+    ///
+    /// Measured against the real guest, unguarded: `mp_wasi_call_tool` memcpys the
+    /// host's length into its own 4096-byte `args_buf` with no bounds check
+    /// (bench_tools/micropython_wasm/wasi-reactor/wasi_main.c:526), and the host
+    /// writes ARGS_SLOT before NAME_SLOT. A 5011-byte payload either came back as a
+    /// *successful* call reporting `len: 4086` — the tool ran on data the client
+    /// never sent — or aborted the interpreter through `nlr_jump`, after which the
+    /// same runtime could not serve even a 4-character payload. Only a metering
+    /// trap evicts a cached runtime, so that abort outlives the request.
+    ///
+    /// The registry funnel is the one place every call passes through, so that is
+    /// where the bound is enforced. Drop the guard and this test goes red.
+    #[test]
+    fn test_registry_refuses_payload_larger_than_args_slot() {
+        let wasm = std::fs::read(wasm_path()).expect("MicroPython WASM not found");
+        let rt = MicroPythonRuntime::cold_start(&wasm).expect("cold start failed");
+
+        let source = "def probe(args):\n    p = args['pad']\n    return {'len': len(p)}\n";
+        let big = format!(r#"{{"pad": "{}"}}"#, "x".repeat(5000));
+        assert!(big.len() > crate::wasm_runtime::memory_layout::ARGS_CAPACITY);
+
+        let mut registry = crate::wasm_runtime::WasmRuntimeRegistry::new();
+        registry
+            .register_runtime(Box::new(rt))
+            .expect("register runtime");
+        registry
+            .register_tool("python", "probe", source, "probe", serde_json::json!({}))
+            .expect("register tool");
+
+        let err = registry
+            .call_tool("probe", &big)
+            .expect_err("oversized payload must be refused before the guest runs");
+        assert!(err.to_string().contains("argument slot"), "{err}");
+
+        // The refusal happens before any guest write, so nothing was corrupted.
+        let ok = registry
+            .call_tool("probe", r#"{"pad": "xxxx"}"#)
+            .expect("runtime unusable after the refusal");
+        assert!(ok.contains(r#""len":4"#), "{ok}");
+    }
+
+    /// The guest's TLV decoder must restore nesting depth after each container.
+    ///
+    /// `tlv_decode_value` incremented `parser->depth` on the array and object
+    /// tags without a matching decrement, so the counter measured *containers
+    /// seen* rather than levels: the 33rd sibling object tripped
+    /// `depth > TLV_MAX_DEPTH` and decoded as an error string while the host
+    /// decoder accepted the same bytes. Rebuilt 2026-10-09 with the decrement
+    /// restored on both tags.
+    #[test]
+    fn test_tlv_sibling_containers_do_not_accumulate_depth() {
+        // 40 empty sibling objects — real depth never exceeds 3.
+        let mut args: Vec<u8> = vec![0x06];
+        args.extend_from_slice(&1u32.to_be_bytes());
+        args.extend_from_slice(&("items".len() as u16).to_be_bytes());
+        args.extend_from_slice(b"items");
+        args.push(0x05);
+        args.extend_from_slice(&40u32.to_be_bytes());
+        for _ in 0..40 {
+            args.extend_from_slice(&[0x06, 0, 0, 0, 0]);
+        }
+        assert!(args.len() < crate::wasm_runtime::memory_layout::ARGS_CAPACITY);
+
+        let wasm = std::fs::read(wasm_path()).expect("MicroPython WASM not found");
+        let mut rt = MicroPythonRuntime::cold_start(&wasm).expect("cold start failed");
+        let source = "def probe(args):\n    its = args['items']\n    dicts = 0\n    for x in its:\n        if isinstance(x, dict):\n            dicts = dicts + 1\n    return {'n': len(its), 'dicts': dicts}\n";
+        rt.register_tool("probe", source).expect("register failed");
+
+        let out = rt
+            .call_tool_binary("probe", &args)
+            .expect("binary call failed");
+        let value: serde_json::Value =
+            serde_json::from_str(&out).unwrap_or_else(|_| panic!("not JSON: {out}"));
+        assert_eq!(value["n"], 40, "{out}");
+        assert_eq!(
+            value["dicts"], 40,
+            "siblings past the 32nd must still decode as objects: {out}"
+        );
 
         rt.destroy().unwrap();
     }

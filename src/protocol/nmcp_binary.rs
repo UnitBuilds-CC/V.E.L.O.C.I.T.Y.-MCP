@@ -161,7 +161,7 @@ pub fn dispatch_nda_request(raw: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
             )
         }
         nda_native::METHOD_INITIALIZE => {
-            let result = super::build_initialize_response(false); // omit elicitation and roots for NDA
+            let result = super::build_initialize_response(false); // omit elicitation for minimal NDA wire size
             let mut result_tlv = Vec::new();
             if let Err(e) = nda_native::encode_json_value(&result, &mut result_tlv) {
                 return Ok(nda_native::build_nda_error_raw(
@@ -206,8 +206,22 @@ pub fn dispatch_nda_request(raw: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
             } else {
                 None
             };
-            let (name_slice, args_slice) =
-                nda_native::extract_tools_call_fields(req.data).unwrap_or((None, None));
+            let (name_slice, args_slice) = match nda_native::extract_tools_call_fields(req.data) {
+                Ok(fields) => fields,
+                Err(e) => {
+                    warn!(error = %e, "Rejected malformed tools/call payload (NDA-native)");
+                    audit::record_tool_call_with_merkle(
+                        "",
+                        Instant::now(),
+                        AuditOutcome::Rejected(format!("malformed payload: {}", e)),
+                        merkle_root,
+                    );
+                    return Ok(nda_native::build_nda_error_raw(
+                        req.id_tlv,
+                        &format!("Malformed tools/call payload: {}", e),
+                    ));
+                }
+            };
             let name = name_slice.unwrap_or("");
 
             if !rate_limit::check_rate_limit() {
@@ -254,12 +268,12 @@ pub fn dispatch_nda_request(raw: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
                             AuditOutcome::Error(e.to_string()),
                             merkle_root,
                         );
+                        // Same renderer as the JSON-RPC dispatcher, so a client cannot get a
+                        // classification on one transport and bare text on another; before this
+                        // the NDA path returned prefix-only text on all five probed cases.
                         nda_native::build_nda_error_raw(
                             req.id_tlv,
-                            &sandbox::sanitize_error(&format!(
-                                "Error running tool '{}': {}",
-                                name, e
-                            )),
+                            &crate::protocol::json_rpc::tool_error_text(name, &e.to_string()),
                         )
                     }
                 }
@@ -448,7 +462,7 @@ fn handle_json_shmem(
 
     let response = match method {
         "initialize" => {
-            let result = super::build_initialize_response(true); // include elicitation and roots for shmem JSON
+            let result = super::build_initialize_response(true); // advertise elicitation on the shmem JSON path
             json!({
                 "jsonrpc": "2.0",
                 "id": id,
@@ -464,16 +478,16 @@ fn handle_json_shmem(
         }
         "logging/setLevel" => {
             let level_str = request["params"]["level"].as_str().unwrap_or("info");
-            info!(level = level_str, "Log level changed (shmem)");
-            json!({"jsonrpc": "2.0", "id": id, "result": {}})
+            // Same validation and storage as the JSON-RPC dispatcher's arm.
+            super::logging_set_level_response(id, level_str)
         }
         "tools/list" => {
-            let tools = registry::get_tools();
-            json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": { "tools": tools }
-            })
+            // Same page size and `nextCursor` semantics as the JSON-RPC dispatcher's
+            // arm, so a cursor is honoured on this transport too. The NDA-native
+            // binary arm does not page yet, so its tools/list document stays
+            // uncapped. Pinned by the parity test at the end of this file.
+            let cursor = request["params"]["cursor"].as_str();
+            super::tools_list_page_response(id, cursor)
         }
         "tools/call" => {
             let name = request["params"]["name"].as_str().unwrap_or("");
@@ -510,7 +524,7 @@ fn handle_json_shmem(
                             call_start,
                             AuditOutcome::Error(e.to_string()),
                         );
-                        sandbox::sanitize_error(&format!("Error running tool '{}': {}", name, e))
+                        crate::protocol::json_rpc::tool_error_text(name, &e.to_string())
                     }
                 };
 
@@ -762,24 +776,18 @@ impl<'a> NmcpBinaryFrame<'a> {
             return Err("Buffer too small for NMCP binary frame header");
         }
 
-        // Safety: We verified bytes.len() >= 36 above.
-        // The pointer cast `*const u8` -> `*const [u8; 4]` is safe because:
-        // - The slice guarantees contiguous, in-bounds memory for at least 36 bytes.
-        // - `[u8; 4]` has alignment 1, so any `*const u8` is valid.
-        // - The reference only lives for `'a`, bounded by the input slice lifetime.
-        let magic = unsafe { &*(bytes[0..4].as_ptr() as *const [u8; 4]) };
+        // Extract magic and Merkle root as references into the original slice
+        let magic = &bytes[0..4];
         if magic != b"NMCP" {
             return Err("Invalid NMCP magic signature");
         }
 
-        // Safety: Same rationale as magic. `[u8; 32]` has alignment 1, and
-        // bytes[4..36] is a valid 32-byte sub-slice of the input.
-        let merkle_root = unsafe { &*(bytes[4..36].as_ptr() as *const [u8; 32]) };
+        let merkle_root = &bytes[4..36];
         let payload = &bytes[36..];
 
         Ok(NmcpBinaryFrame {
-            magic,
-            merkle_root,
+            magic: magic.try_into().map_err(|_| "invalid magic size")?,
+            merkle_root: merkle_root.try_into().map_err(|_| "invalid merkle size")?,
             payload,
         })
     }
@@ -889,6 +897,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_ping() {
+        let _merkle = lock_merkle();
         let frame =
             nda_native::build_nda_request(nda_native::METHOD_PING, &json!(1u64), &Value::Null)
                 .unwrap();
@@ -900,6 +909,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_initialize() {
+        let _merkle = lock_merkle();
         let frame = nda_native::build_nda_request(
             nda_native::METHOD_INITIALIZE,
             &json!(1u64),
@@ -921,6 +931,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_initialized_notification() {
+        let _merkle = lock_merkle();
         let frame = nda_native::build_nda_request(
             nda_native::NOTIF_INITIALIZED,
             &json!(0u64),
@@ -933,6 +944,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_logging_set_level() {
+        let _merkle = lock_merkle();
         let frame = nda_native::build_nda_request(
             nda_native::METHOD_LOGGING_SET_LEVEL,
             &json!(1u64),
@@ -945,6 +957,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_logging_set_level_empty_data() {
+        let _merkle = lock_merkle();
         let frame = nda_native::build_nda_request(
             nda_native::METHOD_LOGGING_SET_LEVEL,
             &json!(1u64),
@@ -957,6 +970,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_tools_list() {
+        let _merkle = lock_merkle();
         let frame = nda_native::build_nda_request(
             nda_native::METHOD_TOOLS_LIST,
             &json!(1u64),
@@ -971,7 +985,10 @@ mod tests {
 
     #[test]
     fn test_dispatch_tools_call_unknown_tool() {
-        let data = json!({"name": "nonexistent_tool_xyz", "arguments": {}});
+        let (_merkle, data) = (
+            lock_merkle(),
+            json!({"name": "nonexistent_tool_xyz", "arguments": {}}),
+        );
         let frame =
             nda_native::build_nda_request(nda_native::METHOD_TOOLS_CALL, &json!(1u64), &data)
                 .unwrap();
@@ -979,10 +996,18 @@ mod tests {
         assert_eq!(parse_response_status(&resp), nda_native::STATUS_ERROR);
         let err = parse_response_error_msg(&resp);
         assert!(err.contains("nonexistent_tool_xyz"), "error was: {}", err);
+        // The rate-limit refusal interpolates the same tool name, so the assert
+        // above cannot distinguish it; this gate is about the not-found path.
+        assert!(
+            !err.contains("Rate limit exceeded"),
+            "refused before dispatch, not a not-found error: {}",
+            err
+        );
     }
 
     #[test]
     fn test_dispatch_tools_call_empty_data() {
+        let _merkle = lock_merkle();
         let frame = nda_native::build_nda_request(
             nda_native::METHOD_TOOLS_CALL,
             &json!(1u64),
@@ -992,10 +1017,15 @@ mod tests {
         let resp = dispatch_nda_request(&frame).unwrap();
         // empty name → tool not found
         assert_eq!(parse_response_status(&resp), nda_native::STATUS_ERROR);
+        assert!(
+            !parse_response_error_msg(&resp).contains("Rate limit exceeded"),
+            "refused before dispatch, not an empty-name error"
+        );
     }
 
     #[test]
     fn test_dispatch_health_check() {
+        let _merkle = lock_merkle();
         let frame = nda_native::build_nda_request(
             nda_native::METHOD_HEALTH_CHECK,
             &json!(1u64),
@@ -1011,6 +1041,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_resources_list() {
+        let _merkle = lock_merkle();
         let frame = nda_native::build_nda_request(
             nda_native::METHOD_RESOURCES_LIST,
             &json!(1u64),
@@ -1025,7 +1056,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_resources_list_with_cursor() {
-        let data = json!({"cursor": "abc123"});
+        let (_merkle, data) = (lock_merkle(), json!({"cursor": "abc123"}));
         let frame =
             nda_native::build_nda_request(nda_native::METHOD_RESOURCES_LIST, &json!(1u64), &data)
                 .unwrap();
@@ -1035,7 +1066,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_resources_read_missing_uri() {
-        let data = json!({});
+        let (_merkle, data) = (lock_merkle(), json!({}));
         let frame =
             nda_native::build_nda_request(nda_native::METHOD_RESOURCES_READ, &json!(1u64), &data)
                 .unwrap();
@@ -1046,6 +1077,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_resource_templates_list() {
+        let _merkle = lock_merkle();
         let frame = nda_native::build_nda_request(
             nda_native::METHOD_RESOURCE_TEMPLATES_LIST,
             &json!(1u64),
@@ -1060,6 +1092,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_prompts_list() {
+        let _merkle = lock_merkle();
         let frame = nda_native::build_nda_request(
             nda_native::METHOD_PROMPTS_LIST,
             &json!(1u64),
@@ -1074,7 +1107,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_prompts_get_unknown() {
-        let data = json!({"name": "nonexistent_prompt xyz"});
+        let (_merkle, data) = (lock_merkle(), json!({"name": "nonexistent_prompt xyz"}));
         let frame =
             nda_native::build_nda_request(nda_native::METHOD_PROMPTS_GET, &json!(1u64), &data)
                 .unwrap();
@@ -1086,6 +1119,7 @@ mod tests {
     fn test_dispatch_sampling_create_message() {
         let data =
             json!({"messages": [{"role": "user", "content": {"type": "text", "text": "hello"}}]});
+        let _merkle = lock_merkle();
         let frame =
             nda_native::build_nda_request(nda_native::METHOD_SAMPLING_CREATE, &json!(1u64), &data)
                 .unwrap();
@@ -1097,6 +1131,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_cancelled_notification() {
+        let _merkle = lock_merkle();
         let frame =
             nda_native::build_nda_request(nda_native::NOTIF_CANCELLED, &json!(42u64), &Value::Null)
                 .unwrap();
@@ -1106,7 +1141,10 @@ mod tests {
 
     #[test]
     fn test_dispatch_progress_notification() {
-        let data = json!({"progressToken": "tok1", "progress": 0.5});
+        let (_merkle, data) = (
+            lock_merkle(),
+            json!({"progressToken": "tok1", "progress": 0.5}),
+        );
         let frame =
             nda_native::build_nda_request(nda_native::NOTIF_PROGRESS, &json!(0u64), &data).unwrap();
         let resp = dispatch_nda_request(&frame).unwrap();
@@ -1115,6 +1153,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_unknown_method() {
+        let _merkle = lock_merkle();
         let frame = nda_native::build_nda_request(0xFF, &json!(1u64), &Value::Null).unwrap();
         let resp = dispatch_nda_request(&frame).unwrap();
         assert_eq!(parse_response_status(&resp), nda_native::STATUS_ERROR);
@@ -1124,13 +1163,13 @@ mod tests {
 
     #[test]
     fn test_dispatch_malformed_frame() {
-        let result = dispatch_nda_request(&[0u8; 5]);
+        let (_merkle, result) = (lock_merkle(), dispatch_nda_request(&[0u8; 5]));
         assert!(result.is_err());
     }
 
     #[test]
     fn test_dispatch_empty_frame() {
-        let result = dispatch_nda_request(&[]);
+        let (_merkle, result) = (lock_merkle(), dispatch_nda_request(&[]));
         assert!(result.is_err());
     }
 
@@ -1165,6 +1204,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_merkle_root_extracted() {
+        let _merkle = lock_merkle();
         let frame =
             nda_native::build_nda_request(nda_native::METHOD_PING, &json!(1u64), &Value::Null)
                 .unwrap();
@@ -1174,7 +1214,10 @@ mod tests {
 
     #[test]
     fn test_dispatch_tools_call_bench_echo() {
-        let data = json!({"name": "bench_echo", "arguments": {"size": 16}});
+        let (_merkle, data) = (
+            lock_merkle(),
+            json!({"name": "bench_echo", "arguments": {"size": 16}}),
+        );
         let frame =
             nda_native::build_nda_request(nda_native::METHOD_TOOLS_CALL, &json!(1u64), &data)
                 .unwrap();
@@ -1190,7 +1233,7 @@ mod tests {
 
     #[test]
     fn test_phase_recorder_disabled_by_default() {
-        std::env::remove_var("VELOCITY_PHASE_TIMING");
+        let _e = crate::config::tests::EnvGuard::clear("VELOCITY_PHASE_TIMING");
         let rec = PhaseRecorder::enabled();
         assert!(rec.is_none());
     }
@@ -1199,7 +1242,7 @@ mod tests {
     fn test_phase_recorder_enabled_with_env() {
         let tmp = std::env::temp_dir().join(format!("phase_test_{}.log", std::process::id()));
         let path_str = tmp.to_str().unwrap().to_string();
-        std::env::set_var("VELOCITY_PHASE_TIMING", &path_str);
+        let _e = crate::config::tests::EnvGuard::set("VELOCITY_PHASE_TIMING", &path_str);
         let rec = PhaseRecorder::enabled();
         assert!(rec.is_some());
         let rec = rec.unwrap();
@@ -1342,6 +1385,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_resources_read_success() {
+        let _merkle = lock_merkle();
         let tmp = std::env::temp_dir().join(format!("nda_res_read_{}.txt", std::process::id()));
         std::fs::write(&tmp, "hello nda resource").unwrap();
         let path_str = tmp.to_str().unwrap().to_string();
@@ -1379,7 +1423,10 @@ mod tests {
             vec![],
         );
 
-        let data = json!({"name": "nda_test_prompt_get", "arguments": {}});
+        let (_merkle, data) = (
+            lock_merkle(),
+            json!({"name": "nda_test_prompt_get", "arguments": {}}),
+        );
         let frame =
             nda_native::build_nda_request(nda_native::METHOD_PROMPTS_GET, &json!(1u64), &data)
                 .unwrap();
@@ -1393,6 +1440,7 @@ mod tests {
     fn test_dispatch_sampling_create_no_handler() {
         let data =
             json!({"messages": [{"role": "user", "content": {"type": "text", "text": "test"}}]});
+        let _merkle = lock_merkle();
         let frame =
             nda_native::build_nda_request(nda_native::METHOD_SAMPLING_CREATE, &json!(1u64), &data)
                 .unwrap();
@@ -1409,7 +1457,8 @@ mod tests {
     #[test]
     fn test_dispatch_ping_with_delay() {
         // Set a small delay to test the delay path (lines 143-147)
-        std::env::set_var("VELOCITY_PING_DELAY_US", "1000"); // 1ms delay
+        let _merkle = lock_merkle();
+        let _e = crate::config::tests::EnvGuard::set("VELOCITY_PING_DELAY_US", "1000");
 
         let start = std::time::Instant::now();
         let frame =
@@ -1434,7 +1483,10 @@ mod tests {
     fn test_dispatch_tools_call_rate_limit_exceeded() {
         // Exhaust the global rate limiter by making many rapid calls
         // Default burst is 100, so we need to exceed that
-        let data = json!({"name": "rate_limit_test_tool", "arguments": {}});
+        let (_merkle, data) = (
+            lock_merkle(),
+            json!({"name": "rate_limit_test_tool", "arguments": {}}),
+        );
 
         // Make enough calls to exhaust the rate limiter
         let mut rate_limited_hit = false;
@@ -1453,6 +1505,10 @@ mod tests {
             }
         }
 
+        // Restore the shared bucket before asserting, so this test cannot starve
+        // its siblings even when the assert below fails.
+        crate::rate_limit::refill_global_bucket();
+
         // We should have hit the rate limit
         assert!(
             rate_limited_hit,
@@ -1460,9 +1516,29 @@ mod tests {
         );
     }
 
+    // Each test below gives tag 0x02 a four-byte length, but 0x02 decodes as an
+    // eight-byte integer, so the walk eats the next TLV's tag byte and the decoder
+    // reads the 0xff padding as a type tag: a dispatch-arm refusal, not a frame reject.
+    fn assert_decode_arm_refusal(resp: &[u8]) {
+        assert_eq!(parse_response_status(resp), nda_native::STATUS_ERROR);
+        let err = parse_response_error_msg(resp);
+        assert!(
+            err.starts_with("Invalid request data: Unknown TLV type tag: 0xff"),
+            "error was: {}",
+            err
+        );
+    }
+
+    fn parse_refusal(frame: &[u8]) -> String {
+        nda_native::parse_nda_request_inplace(frame)
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default()
+    }
+
     #[test]
     fn test_dispatch_resources_list_malformed_data() {
-        // Manually construct a frame with malformed data to trigger decode error (line 235)
+        // Manually construct a frame with malformed data to trigger decode error
         use sha2::{Digest, Sha256};
 
         // Build payload: method byte + id TLV + malformed data TLV
@@ -1487,14 +1563,8 @@ mod tests {
         frame.extend_from_slice(&merkle);
         frame.extend_from_slice(&payload);
 
-        let resp = dispatch_nda_request(&frame).unwrap();
-        assert_eq!(parse_response_status(&resp), nda_native::STATUS_ERROR);
-        let err = parse_response_error_msg(&resp);
-        assert!(
-            err.contains("Invalid request data") || err.contains("decode"),
-            "error was: {}",
-            err
-        );
+        let (_merkle, resp) = (lock_merkle(), dispatch_nda_request(&frame).unwrap());
+        assert_decode_arm_refusal(&resp);
     }
 
     #[test]
@@ -1519,8 +1589,8 @@ mod tests {
         frame.extend_from_slice(&merkle);
         frame.extend_from_slice(&payload);
 
-        let resp = dispatch_nda_request(&frame).unwrap();
-        assert_eq!(parse_response_status(&resp), nda_native::STATUS_ERROR);
+        let (_merkle, resp) = (lock_merkle(), dispatch_nda_request(&frame).unwrap());
+        assert_decode_arm_refusal(&resp);
     }
 
     #[test]
@@ -1545,8 +1615,8 @@ mod tests {
         frame.extend_from_slice(&merkle);
         frame.extend_from_slice(&payload);
 
-        let resp = dispatch_nda_request(&frame).unwrap();
-        assert_eq!(parse_response_status(&resp), nda_native::STATUS_ERROR);
+        let (_merkle, resp) = (lock_merkle(), dispatch_nda_request(&frame).unwrap());
+        assert_decode_arm_refusal(&resp);
     }
 
     #[test]
@@ -1571,8 +1641,8 @@ mod tests {
         frame.extend_from_slice(&merkle);
         frame.extend_from_slice(&payload);
 
-        let resp = dispatch_nda_request(&frame).unwrap();
-        assert_eq!(parse_response_status(&resp), nda_native::STATUS_ERROR);
+        let (_merkle, resp) = (lock_merkle(), dispatch_nda_request(&frame).unwrap());
+        assert_decode_arm_refusal(&resp);
     }
 
     #[test]
@@ -1597,8 +1667,8 @@ mod tests {
         frame.extend_from_slice(&merkle);
         frame.extend_from_slice(&payload);
 
-        let resp = dispatch_nda_request(&frame).unwrap();
-        assert_eq!(parse_response_status(&resp), nda_native::STATUS_ERROR);
+        let (_merkle, resp) = (lock_merkle(), dispatch_nda_request(&frame).unwrap());
+        assert_decode_arm_refusal(&resp);
     }
 
     #[test]
@@ -1623,28 +1693,28 @@ mod tests {
         frame.extend_from_slice(&merkle);
         frame.extend_from_slice(&payload);
 
-        let resp = dispatch_nda_request(&frame).unwrap();
-        assert_eq!(parse_response_status(&resp), nda_native::STATUS_ERROR);
+        let (_merkle, resp) = (lock_merkle(), dispatch_nda_request(&frame).unwrap());
+        assert_decode_arm_refusal(&resp);
     }
 
     // ─── shmem handler integration tests ─────────────────────────────────────
 
-    fn temp_shmem_path(name: &str) -> String {
+    pub(super) fn temp_shmem_path(name: &str) -> String {
         format!("test_shmem_handler_{}.bin", name)
     }
 
-    fn cleanup_shmem(path: &str) {
+    pub(super) fn cleanup_shmem(path: &str) {
         let _ = std::fs::remove_file(path);
     }
 
-    fn read_output_json(buffer: &SharedMemoryBuffer) -> Value {
+    pub(super) fn read_output_json(buffer: &SharedMemoryBuffer) -> Value {
         let output = buffer.read_output().expect("read_output failed");
         serde_json::from_str(&output).expect("output is not valid JSON")
     }
 
     #[test]
     fn test_handle_nda_native_valid_ping() {
-        let path = temp_shmem_path("nda_ping");
+        let (_merkle, path) = (lock_merkle(), temp_shmem_path("nda_ping"));
         cleanup_shmem(&path);
         let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
 
@@ -1667,7 +1737,7 @@ mod tests {
 
     #[test]
     fn test_handle_nda_native_invalid_merkle() {
-        let path = temp_shmem_path("nda_bad_merkle");
+        let (_merkle, path) = (lock_merkle(), temp_shmem_path("nda_bad_merkle"));
         cleanup_shmem(&path);
         let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
 
@@ -1684,12 +1754,27 @@ mod tests {
             "expected error response in output"
         );
 
+        // Both arms refuse this frame, so the buffer asserts above say nothing on
+        // their own: with the digest on the same bytes must die in the Merkle arm,
+        // and with it off they must die in the TLV walk instead.
+        let on = parse_refusal(&bad_frame);
+        let prev = nda_native::merkle_enabled();
+        nda_native::set_merkle_enabled(false);
+        let off = parse_refusal(&bad_frame);
+        nda_native::set_merkle_enabled(prev);
+        assert_eq!(on, "NDA frame Merkle root mismatch");
+        assert!(
+            off.starts_with("TLV skip: unknown tag 0x61"),
+            "disabled leg refused for: {}",
+            off
+        );
+
         cleanup_shmem(&path);
     }
 
     #[test]
     fn test_handle_nda_native_with_phase_recorder() {
-        let path = temp_shmem_path("nda_recorder");
+        let (_merkle, path) = (lock_merkle(), temp_shmem_path("nda_recorder"));
         cleanup_shmem(&path);
         let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
 
@@ -1786,6 +1871,10 @@ mod tests {
         let resp = read_output_json(&buffer);
         assert_eq!(resp["id"], 4);
         assert_eq!(resp["result"]["isError"], true);
+        // The refusal branch also answers with isError:true and names the same tool,
+        // so only the dispatch-side wording proves the call reached the registry.
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap_or("");
+        assert!(text.contains("Error running tool"), "text was: {}", text);
 
         cleanup_shmem(&path);
     }
@@ -1960,10 +2049,40 @@ mod tests {
         let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
         let shutdown = AtomicBool::new(true);
 
-        let result = run_shmem_loop_inner(&mut buffer, &shutdown);
+        let (_merkle, result) = (lock_merkle(), run_shmem_loop_inner(&mut buffer, &shutdown));
         assert!(result.is_ok());
 
         cleanup_shmem(&path);
+    }
+
+    #[test]
+    fn malformed_tools_call_payload_is_rejected_not_dispatched() {
+        // The "arguments" object declares a 60 000-byte string the frame never
+        // carries, so extraction fails. Dispatch must report that instead of
+        // running the empty-named tool, which lands in the catch-all executor.
+        let (_merkle, mut payload) = (lock_merkle(), vec![nda_native::METHOD_TOOLS_CALL]);
+        payload.extend_from_slice(&[0x02, 0, 0, 0, 0, 0, 0, 0, 1]);
+        payload.push(0x06);
+        payload.extend_from_slice(&2u32.to_be_bytes());
+        payload.extend_from_slice(&4u16.to_be_bytes());
+        payload.extend_from_slice(b"name");
+        payload.push(0x01);
+        payload.extend_from_slice(&4u32.to_be_bytes());
+        payload.extend_from_slice(b"echo");
+        payload.extend_from_slice(&9u16.to_be_bytes());
+        payload.extend_from_slice(b"arguments");
+        payload.push(0x06);
+        payload.extend_from_slice(&1u32.to_be_bytes());
+        payload.extend_from_slice(&5u16.to_be_bytes());
+        payload.extend_from_slice(b"value");
+        payload.push(0x01);
+        payload.extend_from_slice(&60_000u32.to_be_bytes());
+
+        let response = dispatch_nda_request(&nda_native::build_nda_frame(&payload)).unwrap();
+        let text = String::from_utf8_lossy(&response);
+        assert!(text.contains("Malformed tools/call payload"), "{text}");
+        assert!(!text.contains("core engine"), "{text}");
+        assert_eq!(response[36], nda_native::STATUS_ERROR);
     }
 
     // Note: run_shmem_loop_inner is not tested with threaded request processing
@@ -1973,4 +2092,156 @@ mod tests {
     // (handle_nda_native, handle_json_shmem). The shutdown path is tested by
     // test_shmem_loop_inner_immediate_shutdown. End-to-end loop behavior is
     // covered by tests/e2e_smoke.rs which spawns the real binary.
+}
+
+#[cfg(test)]
+mod tool_error_parity_tests {
+    use crate::protocol::json_rpc::tool_error_text;
+
+    /// The shared-memory and NDA dispatchers render a failed call through this same function
+    /// the JSON-RPC dispatcher uses, so one renderer serves all three. Measured the
+    /// other way on 2026-10-11, before it existed: probing a live server with
+    /// `dashboard/classify_parity.mjs` found 0 of 5 error cases classified identically on the
+    /// JSON and NDA paths.
+    #[test]
+    fn every_transport_renders_the_same_classified_error() {
+        for (name, err, expected) in [
+            (
+                "file_read",
+                "No such file or directory (os error 2)",
+                "NOT_FOUND",
+            ),
+            (
+                "file_read",
+                "The system cannot find the path specified. (os error 3)",
+                "NOT_FOUND",
+            ),
+            (
+                "x",
+                "Compilation failed: TinyGo not found",
+                "TOOL_BUILD_FAILED",
+            ),
+            ("x", "operation timed out after 30s", "TIMEOUT"),
+        ] {
+            let text = tool_error_text(name, err);
+            assert!(
+                text.contains(&format!("Error type: {}", expected)),
+                "{} -> {}",
+                err,
+                text
+            );
+            assert!(text.starts_with("Error running tool '"), "{}", text);
+            assert!(text.contains("Hint: "), "{}", text);
+        }
+    }
+}
+
+#[cfg(test)]
+mod logging_level_parity_tests {
+    use super::handle_json_shmem;
+    use crate::ipc::shmem::SharedMemoryBuffer;
+    use crate::protocol::nmcp_binary::tests::{cleanup_shmem, read_output_json, temp_shmem_path};
+    use serde_json::json;
+
+    /// The two `logging/setLevel` arms used to disagree: the JSON-RPC dispatcher
+    /// rejected an unknown level with -32602 while this file's dispatcher accepted
+    /// any string and answered `{"result":{}}`. This arm delegates to
+    /// `protocol::logging_set_level_response` while the JSON-RPC arm keeps an inline
+    /// copy of that validator, so the two agree because this test pins it, over
+    /// the eight names both accepted plus three this arm used to, not shared code.
+    #[test]
+    fn both_dispatchers_answer_the_same_level_request() {
+        let path = temp_shmem_path("json_log_parity");
+        cleanup_shmem(&path);
+        let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
+
+        for level in [
+            "debug",
+            "info",
+            "notice",
+            "warning",
+            "error",
+            "critical",
+            "alert",
+            "emergency",
+            "warn",
+            "banana",
+            "",
+        ] {
+            let req = json!({
+                "jsonrpc": "2.0",
+                "method": "logging/setLevel",
+                "params": { "level": level },
+                "id": 9
+            });
+            let json_res = crate::protocol::json_rpc::handle_request(&req)
+                .unwrap_or_else(|| panic!("JSON-RPC dispatcher answered nothing for {:?}", level));
+            handle_json_shmem(&mut buffer, &req.to_string()).unwrap();
+            let shmem_res = read_output_json(&buffer);
+            assert_eq!(json_res, shmem_res, "divergence for level {:?}", level);
+        }
+
+        cleanup_shmem(&path);
+    }
+}
+
+#[cfg(test)]
+mod tools_list_pagination_parity_tests {
+    use super::handle_json_shmem;
+    use crate::ipc::shmem::SharedMemoryBuffer;
+    use crate::protocol::nmcp_binary::tests::{cleanup_shmem, read_output_json, temp_shmem_path};
+    use serde_json::json;
+
+    /// The JSON-RPC dispatcher pages `tools/list` and honours `params.cursor`;
+    /// this file's arm used to ignore the parameter and answer with the whole
+    /// registry, so one request produced two different documents on two
+    /// transports. Cursors from below, inside and past the end of the live
+    /// registry, plus two that do not parse, must now agree as parsed JSON values.
+    #[test]
+    fn both_dispatchers_page_the_same_tools_list() {
+        let _registries = crate::registry::tests::lock_registries();
+        let path = temp_shmem_path("json_tools_parity");
+        cleanup_shmem(&path);
+        let mut buffer = SharedMemoryBuffer::create_or_open(&path).unwrap();
+
+        let total = crate::registry::get_tools().len();
+        let mut cursors = vec![
+            String::new(),
+            "0".to_string(),
+            "1".to_string(),
+            "not-a-number".to_string(),
+            total.to_string(),
+            (total + 1).to_string(),
+            "18446744073709551616".to_string(),
+        ];
+        if total > 2 {
+            cursors.push((total / 2).to_string());
+        }
+
+        for cursor in cursors {
+            let params = if cursor.is_empty() {
+                json!({})
+            } else {
+                json!({ "cursor": cursor })
+            };
+            let req = json!({
+                "jsonrpc": "2.0",
+                "method": "tools/list",
+                "params": params,
+                "id": 11
+            });
+            let json_res = crate::protocol::json_rpc::handle_request(&req)
+                .unwrap_or_else(|| panic!("JSON-RPC dispatcher answered nothing for {:?}", cursor));
+            handle_json_shmem(&mut buffer, &req.to_string()).unwrap();
+            let shmem_res = read_output_json(&buffer);
+            assert_eq!(json_res, shmem_res, "divergence for cursor {:?}", cursor);
+        }
+
+        cleanup_shmem(&path);
+    }
+}
+
+#[cfg(test)]
+fn lock_merkle() -> std::sync::MutexGuard<'static, ()> {
+    crate::protocol::nda_native::tests::lock_merkle()
 }

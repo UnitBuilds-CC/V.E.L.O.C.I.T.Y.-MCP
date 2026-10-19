@@ -94,11 +94,11 @@
         "id": 5,
         "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
         "type": "graph",
-        "title": "Active Sessions",
+        "title": "Active SSE Connections",
         "targets": [
           {
-            "expr": "velocity_mcp_sessions_active",
-            "legendFormat": "Active Sessions"
+            "expr": "velocity_mcp_sse_connections_active",
+            "legendFormat": "SSE Connections"
           }
         ],
         "yaxes": [
@@ -126,17 +126,17 @@
         "id": 7,
         "gridPos": {"h": 8, "w": 24, "x": 0, "y": 24},
         "type": "table",
-        "title": "Plugin Statistics",
+        "title": "Auth Failures And Latency",
         "targets": [
           {
-            "expr": "velocity_mcp_plugins_total",
-            "legendFormat": "Total Plugins",
+            "expr": "velocity_mcp_auth_failures_total",
+            "legendFormat": "Auth Failures",
             "format": "table",
             "instant": true
           },
           {
-            "expr": "velocity_mcp_plugins_installed",
-            "legendFormat": "Installed Plugins",
+            "expr": "velocity_mcp_latency_microseconds",
+            "legendFormat": "Average Latency (µs)",
             "format": "table",
             "instant": true
           }

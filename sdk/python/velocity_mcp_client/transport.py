@@ -14,8 +14,13 @@ class Transport(ABC):
     """Abstract transport for MCP communication."""
     
     @abstractmethod
-    async def send(self, request: JsonRpcRequest) -> JsonRpcResponse:
-        """Send a JSON-RPC request and receive a response."""
+    async def send(self, request: JsonRpcRequest) -> Optional[JsonRpcResponse]:
+        """Send a JSON-RPC request and receive a response.
+
+        Returns None when the message is a notification: JSON-RPC says a notification
+        gets no reply, and this server answers one with `204 No Content` over HTTP and
+        with no line at all over stdio.
+        """
         pass
     
     @abstractmethod
@@ -54,7 +59,7 @@ class HttpTransport(Transport):
             )
         return self._client
     
-    async def send(self, request: JsonRpcRequest) -> JsonRpcResponse:
+    async def send(self, request: JsonRpcRequest) -> Optional[JsonRpcResponse]:
         """Send HTTP request."""
         try:
             client = await self._get_client()
@@ -63,6 +68,12 @@ class HttpTransport(Transport):
                 json=request.model_dump(by_alias=True, exclude_none=True),
             )
             response.raise_for_status()
+            if request.id is None:
+                # A notification: the server answers 204 with no body, and parsing one
+                # would raise before the caller could ignore it.
+                return None
+            if not response.content:
+                return None
             return JsonRpcResponse.model_validate(response.json())
         except httpx.TimeoutException as e:
             raise TransportError(f"Request timed out: {e}")
@@ -105,7 +116,7 @@ class StdioTransport(Transport):
             )
         return self._process
     
-    async def send(self, request: JsonRpcRequest) -> JsonRpcResponse:
+    async def send(self, request: JsonRpcRequest) -> Optional[JsonRpcResponse]:
         """Send request via stdio."""
         try:
             process = await self._ensure_process()
@@ -117,6 +128,11 @@ class StdioTransport(Transport):
             request_json = request.model_dump_json(by_alias=True, exclude_none=True)
             process.stdin.write((request_json + "\n").encode())
             await process.stdin.drain()
+            
+            if request.id is None:
+                # A notification writes no reply line, so reading one here would block
+                # forever -- which is how this SDK used to hang inside initialize().
+                return None
             
             # Read response
             response_line = await process.stdout.readline()

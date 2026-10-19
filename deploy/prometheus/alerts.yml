@@ -1,3 +1,18 @@
+# NOT WIRED BY DEFAULT. deploy/prometheus/prometheus.yml declares no `rule_files:`
+# list, and deploy/docker-compose.yml mounts only prometheus.yml into the container,
+# so no rule in this file evaluates today. Enabling it means adding both a
+# `rule_files: ["alerts.yml"]` entry and a bind mount for this file -- that starts
+# firing real alerts, which is a deployment decision rather than a repair.
+#
+# Rule census against the series the server actually exports (seven, all emitted from
+# the Prometheus text handler in src/transport/http.rs): velocity_mcp_requests_total,
+# _requests_successful, _requests_failed, _auth_failures_total, _rate_limit_hits_total,
+# _latency_microseconds (average, a gauge) and _sse_connections_active (gauge).
+# There is no latency histogram and no TLS, plugin-install or audit-buffer series, so
+# the five rules annotated UNFIREABLE below key on names this build never emits and
+# their expressions evaluate to empty vectors -- they cannot fire, not even on a
+# broken server. Their expressions are left exactly as written: swapping the average
+# gauge in for a p95 histogram would silently change what the alert measures.
 groups:
   - name: velocity_mcp_alerts
     rules:
@@ -32,6 +47,9 @@ groups:
           description: "Error rate is {{ $value | humanizePercentage }} over the last 2 minutes"
 
       # High latency alert (p95 > 1s over 5 minutes)
+      # UNFIREABLE: velocity_mcp_request_duration_seconds_bucket is not exported. This
+      # server publishes velocity_mcp_latency_microseconds as an average gauge; there is
+      # no _bucket series, so histogram_quantile here has no input.
       - alert: HighLatency
         expr: |
           histogram_quantile(0.95, 
@@ -67,6 +85,9 @@ groups:
           description: "Rate limit is being hit {{ $value }} times per second"
 
       # TLS certificate expiration alert (expires in < 7 days)
+      # UNFIREABLE: velocity_mcp_tls_cert_expiry_seconds is not exported. TLS is switched
+      # on by the --tls-cert/--tls-key command-line flags and no certificate gauge exists,
+      # so nothing in this build can observe an expiry time.
       - alert: TLSCertificateExpiringSoon
         expr: |
           (velocity_mcp_tls_cert_expiry_seconds - time()) / 86400 < 7
@@ -78,6 +99,7 @@ groups:
           description: "TLS certificate expires in {{ $value }} days"
 
       # TLS certificate expiration alert (expires in < 1 day)
+      # UNFIREABLE: same missing series as the warning-level rule above.
       - alert: TLSCertificateExpiringImminently
         expr: |
           (velocity_mcp_tls_cert_expiry_seconds - time()) / 86400 < 1
@@ -89,6 +111,9 @@ groups:
           description: "TLS certificate expires in {{ $value }} days"
 
       # High memory usage alert (> 80% of limit)
+      # NOT THIS SERVER: the container_* series come from a cAdvisor-style exporter, and
+      # the shipped compose stack defines only velocity-mcp, prometheus and grafana, so
+      # nothing supplies them here. They work on a cluster that runs a container exporter.
       - alert: HighMemoryUsage
         expr: |
           container_memory_usage_bytes{container="velocity-mcp"}
@@ -103,6 +128,7 @@ groups:
           description: "Memory usage is {{ $value | humanizePercentage }} of limit"
 
       # High CPU usage alert (> 80% of limit)
+      # NOT THIS SERVER: same external cAdvisor dependency as HighMemoryUsage above.
       - alert: HighCPUUsage
         expr: |
           rate(container_cpu_usage_seconds_total{container="velocity-mcp"}[5m])
@@ -118,6 +144,8 @@ groups:
           description: "CPU usage is {{ $value | humanizePercentage }} of limit"
 
       # Plugin installation failures
+      # UNFIREABLE: velocity_mcp_plugin_install_failed_total is not exported -- a grep for
+      # failures to the client as an HTTP 400 instead of recording a counter.
       - alert: PluginInstallationFailures
         expr: |
           sum(rate(velocity_mcp_plugin_install_failed_total[5m])) > 0
@@ -129,6 +157,9 @@ groups:
           description: "Plugin installations are failing at {{ $value }} per second"
 
       # Audit log buffer full
+      # UNFIREABLE: velocity_mcp_audit_log_entries_total is not exported. The audit
+      # registry keeps entries in memory and persists them through the flush routes, and
+      # publishes no gauge for its occupancy, so the threshold in the rule has no input.
       - alert: AuditLogBufferFull
         expr: |
           velocity_mcp_audit_log_entries_total > 9000

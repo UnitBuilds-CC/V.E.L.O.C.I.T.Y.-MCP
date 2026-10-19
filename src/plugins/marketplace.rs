@@ -359,7 +359,12 @@ impl Marketplace {
 
             // Extract tar.gz archive
             let extract_status = std::process::Command::new("tar")
-                .args(["xzf", &archive_path.to_string_lossy(), "-C", &install_path.to_string_lossy()])
+                .args([
+                    "xzf",
+                    &archive_path.to_string_lossy(),
+                    "-C",
+                    &install_path.to_string_lossy(),
+                ])
                 .status()
                 .map_err(|e| format!("Failed to run tar: {}", e))?;
 
@@ -368,7 +373,10 @@ impl Marketplace {
 
             if !extract_status.success() {
                 let _ = std::fs::remove_dir_all(&install_path);
-                return Err(format!("Failed to extract plugin archive for '{}'", plugin_id));
+                return Err(format!(
+                    "Failed to extract plugin archive for '{}'",
+                    plugin_id
+                ));
             }
         }
 

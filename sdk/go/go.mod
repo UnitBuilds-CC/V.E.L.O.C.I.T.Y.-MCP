@@ -1,4 +1,4 @@
-module github.com/UnitBuilds-CC/velocity-mcp/sdk/go
+module github.com/UnitBuilds-CC/V.E.L.O.C.I.T.Y.-MCP/sdk/go
 
 go 1.21
 
