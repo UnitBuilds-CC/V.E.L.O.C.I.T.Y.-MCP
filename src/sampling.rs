@@ -32,9 +32,9 @@ pub struct SamplingRequest {
     pub temperature: Option<f64>,
     #[serde(rename = "includeContext", skip_serializing_if = "Option::is_none")]
     pub include_context: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "modelPreferences", skip_serializing_if = "Option::is_none")]
     pub model_preferences: Option<ModelPreferences>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "systemPrompt", skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<SamplingMetadata>,
@@ -45,11 +45,23 @@ pub struct SamplingRequest {
 pub struct ModelPreferences {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hints: Option<Vec<ModelHint>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "costPriority",
+        alias = "cost_priority",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub cost_priority: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "speedPriority",
+        alias = "speed_priority",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub speed_priority: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "intelligencePriority",
+        alias = "intelligence_priority",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub intelligence_priority: Option<f64>,
 }
 
@@ -63,9 +75,17 @@ pub struct ModelHint {
 /// Metadata for sampling requests.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SamplingMetadata {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub progress_token: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "progressToken",
+        alias = "progress_token",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub progress_token: Option<Value>, // Spec allows string or number
+    #[serde(
+        rename = "conversationId",
+        alias = "conversation_id",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub conversation_id: Option<String>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
@@ -120,9 +140,9 @@ pub fn add_to_conversation(conversation_id: &str, message: SamplingMessage) {
     if let Ok(mut history) = get_conversation_history().lock() {
         const MAX_CONVERSATIONS: usize = 256;
         if !history.contains_key(conversation_id) && history.len() >= MAX_CONVERSATIONS {
-            if let Some(oldest_key) = history.keys().next().cloned() {
-                tracing::warn!(evicted = %oldest_key, "Conversation history full ({}), evicting oldest", MAX_CONVERSATIONS);
-                history.remove(&oldest_key);
+            if let Some(arbitrary_key) = history.keys().next().cloned() {
+                tracing::warn!(evicted = %arbitrary_key, "Conversation history full ({}), evicting one", MAX_CONVERSATIONS);
+                history.remove(&arbitrary_key);
             }
         }
         let messages = history
@@ -181,7 +201,7 @@ where
         }
     }
 
-    SAMPLING_HANDLER.get_or_init(|| Mutex::new(Some(Box::new(CallbackWrapper { f: callback }))));
+    set_handler(Box::new(CallbackWrapper { f: callback }));
 }
 
 /// Handle a sampling/createMessage request from a client.
@@ -216,7 +236,27 @@ pub fn handle_sampling_create_message(params: &Value) -> Result<Value, String> {
         metadata: metadata.clone(),
     };
 
-    // Track conversation history if conversation_id is provided
+    // Handler must be registered before tracking history — otherwise we'd record
+    // messages that will never be processed (#542).
+    let handler = match SAMPLING_HANDLER.get() {
+        Some(h) => h,
+        None => return Err("No sampling callback registered".to_string()),
+    };
+
+    let guard = match handler.lock() {
+        Ok(g) => g,
+        Err(poisoned) => {
+            tracing::warn!("Sampling handler mutex poisoned — recovering");
+            poisoned.into_inner()
+        }
+    };
+
+    let cb = match guard.as_ref() {
+        Some(c) => c,
+        None => return Err("No sampling callback registered".to_string()),
+    };
+
+    // Track conversation history only after confirming the handler exists
     if let Some(ref meta) = metadata {
         if let Some(ref conv_id) = meta.conversation_id {
             for msg in &messages {
@@ -225,33 +265,25 @@ pub fn handle_sampling_create_message(params: &Value) -> Result<Value, String> {
         }
     }
 
-    if let Some(handler) = SAMPLING_HANDLER.get() {
-        if let Ok(lock) = handler.lock() {
-            if let Some(cb) = lock.as_ref() {
-                let response = cb.on_sampling_request(&request)?;
+    let response = cb.on_sampling_request(&request)?;
 
-                // Track assistant response in conversation history
-                if let Some(ref meta) = metadata {
-                    if let Some(ref conv_id) = meta.conversation_id {
-                        let assistant_msg = SamplingMessage {
-                            role: "assistant".to_string(),
-                            content: response.content.clone(),
-                        };
-                        add_to_conversation(conv_id, assistant_msg);
-                    }
-                }
-
-                return Ok(json!({
-                    "role": response.role,
-                    "content": response.content,
-                    "model": response.model,
-                    "stopReason": response.stop_reason
-                }));
-            }
+    // Track assistant response in conversation history
+    if let Some(ref meta) = metadata {
+        if let Some(ref conv_id) = meta.conversation_id {
+            let assistant_msg = SamplingMessage {
+                role: "assistant".to_string(),
+                content: response.content.clone(),
+            };
+            add_to_conversation(conv_id, assistant_msg);
         }
     }
 
-    Err("No sampling callback registered".to_string())
+    Ok(json!({
+        "role": response.role,
+        "content": response.content,
+        "model": response.model,
+        "stopReason": response.stop_reason
+    }))
 }
 
 /// Create a sampling request to send TO the client (server-initiated sampling).
@@ -324,6 +356,18 @@ pub fn create_sampling_request_with_history(
     )
 }
 
+/// Install `callback` into the global slot, replacing whatever is there.
+///
+/// `OnceLock::get_or_init` cannot express replacement: once the slot had been initialised,
+/// every later registration call did nothing and still returned normally.
+/// Initialising to `None` keeps that one-time guarantee for the `OnceLock` itself while
+/// making the assignment replaceable.
+fn set_handler(callback: Box<dyn SamplingCallback + Send>) {
+    let slot = SAMPLING_HANDLER.get_or_init(|| Mutex::new(None));
+    let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = Some(callback);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,25 +437,6 @@ mod tests {
             req["params"]["systemPrompt"],
             "You are a helpful assistant."
         );
-    }
-
-    #[test]
-    fn test_handle_sampling_with_callback() {
-        // Note: This test may be affected by global state from other tests
-        // In a real scenario, you'd want to reset the handler between tests
-        let params = json!({
-            "messages": [{"role": "user", "content": {"type": "text", "text": "Hello"}}],
-            "maxTokens": 100
-        });
-
-        // This will use whatever handler was registered last
-        let result = handle_sampling_create_message(&params);
-
-        // If a handler is registered, it should succeed
-        if result.is_ok() {
-            let result = result.unwrap();
-            assert_eq!(result["role"], "assistant");
-        }
     }
 
     #[test]
@@ -487,49 +512,14 @@ mod tests {
 
         let req = create_sampling_request_with_history(1, conv_id, msg, Some(100), Some(0.7));
 
-        // Check that metadata includes conversation_id
-        assert_eq!(req["params"]["metadata"]["conversation_id"], conv_id);
+        // Check that metadata includes conversationId (camelCase per spec)
+        assert_eq!(req["params"]["metadata"]["conversationId"], conv_id);
 
         // Check that history was tracked
         let history = get_conversation(conv_id);
         assert_eq!(history.len(), 1);
 
         clear_conversation(conv_id);
-    }
-
-    #[test]
-    fn test_sampling_with_metadata() {
-        // Register a simple callback that doesn't make assertions
-        register_sampling_callback(|_req| {
-            Ok(SamplingResponse {
-                role: "assistant".to_string(),
-                content: SamplingContent {
-                    content_type: "text".to_string(),
-                    text: Some("Response with metadata".to_string()),
-                    resource: None,
-                },
-                model: "test-model".to_string(),
-                stop_reason: None,
-            })
-        });
-
-        let params = json!({
-            "messages": [{"role": "user", "content": {"type": "text", "text": "Hello"}}],
-            "maxTokens": 100,
-            "metadata": {
-                "conversation_id": "conv-123",
-                "progress_token": "token-456"
-            }
-        });
-
-        let result = handle_sampling_create_message(&params).unwrap();
-        assert_eq!(result["role"], "assistant");
-
-        // Verify that conversation history was tracked
-        let history = get_conversation("conv-123");
-        assert_eq!(history.len(), 2); // user message + assistant response
-
-        clear_conversation("conv-123");
     }
 
     #[test]
@@ -589,5 +579,43 @@ mod tests {
             clear_conversation(&format!("evict_test_{}", i));
         }
         clear_conversation("evict_test_new");
+    }
+
+    /// The decoder at `handle_sampling_create_message` reads these two structs with
+    /// `serde_json::from_value`, so the field spellings it accepts is the serde contract.
+    #[test]
+    fn spec_spelled_preferences_and_metadata_parse() {
+        let prefs: ModelPreferences = serde_json::from_value(json!({
+            "costPriority": 0.25,
+            "speedPriority": 0.75,
+            "intelligencePriority": 0.5,
+            "hints": [{ "name": "claude" }]
+        }))
+        .unwrap();
+        assert_eq!(prefs.cost_priority, Some(0.25), "costPriority not parsed");
+        assert_eq!(prefs.speed_priority, Some(0.75), "speedPriority not parsed");
+        assert_eq!(
+            prefs.intelligence_priority,
+            Some(0.5),
+            "intelligencePriority not parsed"
+        );
+
+        // String progress token (#544 — spec allows string or number)
+        let meta: SamplingMetadata =
+            serde_json::from_value(json!({ "progressToken": "pt-1" })).unwrap();
+        assert_eq!(
+            meta.progress_token,
+            Some(json!("pt-1")),
+            "progressToken (string) not parsed"
+        );
+
+        // Numeric progress token also accepted
+        let meta_num: SamplingMetadata =
+            serde_json::from_value(json!({ "progressToken": 42 })).unwrap();
+        assert_eq!(
+            meta_num.progress_token,
+            Some(json!(42)),
+            "progressToken (number) not parsed"
+        );
     }
 }

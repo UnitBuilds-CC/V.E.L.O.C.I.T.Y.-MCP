@@ -212,6 +212,8 @@ fn test_call_tool_binary_trait_exists() {
 
     // Verify the trait method exists and has default impl
     // This is a compile-time check - if it compiles, the method exists
+    // The alias would hide the very signature this probe exists to pin.
+    #[allow(clippy::type_complexity)]
     fn _assert_trait_method<T: WasmRuntime>() {
         // The call_tool_binary method must exist on the trait
         let _: fn(&mut T, &str, &[u8]) -> Result<String, Box<dyn std::error::Error>> =
@@ -225,6 +227,118 @@ fn test_registry_dispatches_binary_correctly() {
 
     // Test that registry::call_tool_binary properly routes to WASM tools
     // For unit testing, we verify the function signature compiles
+    // The alias would hide the very signature this probe exists to pin.
+    #[allow(clippy::type_complexity)]
     let _sig: fn(&str, &[u8]) -> Result<String, Box<dyn std::error::Error>> =
         registry::call_tool_binary;
+}
+
+/// The six tree-walk interpreter guests used to answer every NDA call with
+/// "Unknown tool" because their binary entry point looked the tool name up in
+/// the scope it had just reset, instead of running the source registered through
+/// `interp_register_tool`. The fix lives in the guest, so the gate has to be the
+/// payload: the same arguments through both encodings must return the same text.
+#[test]
+fn test_interpreter_guests_binary_matches_json() {
+    let _guest = lock_guest_slot();
+    use velocity_mcp::registry;
+
+    let plugins_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins");
+    registry::load_plugins(&plugins_dir.to_string_lossy());
+
+    for name in [
+        "perl_greet",
+        "r_greet",
+        "php_greet",
+        "java_greet",
+        "julia_greet",
+        "csharp_greet",
+    ] {
+        let args = serde_json::json!({ "name": "Audit" });
+        let json_out = registry::call_tool(name, &args)
+            .unwrap_or_else(|e| panic!("{}: JSON path failed: {}", name, e));
+        let tlv = build_tlv_object(&[("name", "Audit")]);
+        let binary_out = registry::call_tool_binary(name, &tlv)
+            .unwrap_or_else(|e| panic!("{}: binary path failed: {}", name, e));
+        assert_eq!(
+            json_out, binary_out,
+            "{}: NDA payload != JSON payload",
+            name
+        );
+    }
+
+    // Payload equality alone is not proof: a guest whose binary entry point
+    // fails before executing anything is retried through decoded JSON and
+    // returns the same text. The capability report is the positive gate - a
+    // recorded fallback flips the tool to the decoded-JSON group - so this
+    // asserts the TLV path actually served all six.
+    let capabilities = registry::nda_binary_capabilities();
+    for name in [
+        "perl_greet",
+        "r_greet",
+        "php_greet",
+        "java_greet",
+        "julia_greet",
+        "csharp_greet",
+    ] {
+        let entry = capabilities
+            .iter()
+            .find(|c| c["name"] == name)
+            .unwrap_or_else(|| panic!("{} missing from the NDA capability report", name));
+        assert_eq!(
+            entry["binaryExecutor"], true,
+            "{} fell back to decoded JSON instead of executing TLV in the guest",
+            name
+        );
+    }
+}
+/// The binary (NDA) dispatcher resolves a tool name against the plugin registries
+/// *before* the built-in match arm, so a plugin that registers a name belonging to a
+/// guarded built-in answers that call in-guest and the `shell_exec` blocklist is never
+/// consulted on that transport. This test asserts today's behaviour on purpose: it is a
+/// pin, so a repair has to flip it deliberately rather than discover it silently.
+/// Nothing destructive runs on either path -- both the JSON and binary transports
+/// refuse dangerous commands via the built-in tool validation before spawning.
+#[test]
+fn test_shell_exec_blocklist_is_reached_on_both_transports() {
+    let _guest = lock_guest_slot();
+    use velocity_mcp::{plugins, registry};
+
+    plugins::register_wasm_tool_source("shell_exec", "r", "set_tool_result(\"shadowed\")")
+        .expect("a WASM tool named shell_exec should register in the R runtime");
+
+    let command = "rm -rf /";
+    let json_err = registry::call_tool("shell_exec", &serde_json::json!({ "command": command }))
+        .expect_err("the JSON path must refuse a destructive command");
+    assert!(
+        json_err.to_string().contains("dangerous pattern"),
+        "the JSON path refused for a different reason: {}",
+        json_err
+    );
+
+    // #555 FIXED: binary transport now routes built-in tools through native validation
+    let tlv = build_tlv_object(&[("command", command)]);
+    let binary_err = registry::call_tool_binary("shell_exec", &tlv)
+        .expect_err("the binary path must also refuse a destructive command");
+    assert!(
+        binary_err.to_string().contains("dangerous pattern"),
+        "the binary path refused for a different reason: {}",
+        binary_err
+    );
+}
+
+/// interp_core guests hold exactly one program per language: the shared
+/// `tool_source` buffer in bench_tools/interp_core/interp.c is overwritten by
+/// every registration and the name arguments are voided, and the JSON path
+/// re-registers as a side effect of each call. Two tests that touch the same
+/// language therefore stomp each other's program mid-run, which is why the
+/// full-binary run was flaky in ~3 of 10 attempts while both tests passed
+/// alone and in either order under --test-threads=1. This guard reproduces that
+/// serialisation inside the binary.
+static GUEST_PROGRAM_SLOT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn lock_guest_slot() -> std::sync::MutexGuard<'static, ()> {
+    GUEST_PROGRAM_SLOT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
