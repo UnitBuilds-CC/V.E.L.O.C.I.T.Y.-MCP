@@ -562,9 +562,18 @@ pub fn parse_nda_request_inplace(frame: &[u8]) -> Result<NdaRequestRef<'_>, Box<
         let method = plaintext[0] & !FLAG_ENCRYPTED;
         let id_len = skip_tlv_value(&plaintext[1..])?;
 
-        // Extract TLV fields using safe slice indexing
-        let id_tlv = &plaintext[1..1 + id_len];
-        let data = &plaintext[1 + id_len..];
+        // Safety: We create references into the `plaintext` Vec before moving it
+        // into the struct. The Vec's heap buffer is not reallocated during a move,
+        // so the references remain valid. The struct owns the Vec via `owned_payload`,
+        // so the buffer is not deallocated while the struct is alive. The lifetime
+        // `'a` is satisfied because the struct is returned and lives at least as long
+        // as the caller needs it.
+        let id_tlv_ptr = plaintext.as_ptr();
+        let id_tlv = unsafe { std::slice::from_raw_parts(id_tlv_ptr.add(1), id_len) };
+        let data_ptr = plaintext.as_ptr();
+        let data = unsafe {
+            std::slice::from_raw_parts(data_ptr.add(1 + id_len), plaintext.len() - 1 - id_len)
+        };
 
         return Ok(NdaRequestRef {
             method,

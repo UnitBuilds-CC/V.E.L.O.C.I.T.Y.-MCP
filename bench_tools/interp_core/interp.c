@@ -1790,7 +1790,7 @@ static Value *eval_node(AstNode *node, Scope *scope) {
     case AST_WHILE: {
         Value *last = value_new_null();
         int iterations = 0;
-        while (iterations < 100000) {
+        while (iterations < 1000000) {
             Value *cond = eval_node(node->as.while_stmt.cond, scope);
             if (!value_is_truthy(cond) || g_error[0]) { value_deref(cond); break; }
             value_deref(cond);
@@ -1799,8 +1799,8 @@ static Value *eval_node(AstNode *node, Scope *scope) {
             if (g_has_return || g_error[0]) break;
             iterations++;
         }
-        if (iterations >= 100000 && !g_error[0]) {
-            snprintf(g_error, INTERP_ERROR_BUF_SIZE, "Loop exceeded 100000 iterations (hard cap)");
+        if (iterations >= 1000000 && !g_error[0]) {
+            snprintf(g_error, INTERP_ERROR_BUF_SIZE, "Loop exceeded 1000000 iterations (hard cap)");
         }
         return last;
     }
@@ -1812,7 +1812,7 @@ static Value *eval_node(AstNode *node, Scope *scope) {
         }
         Value *last = value_new_null();
         int iterations = 0;
-        while (iterations < 100000) {
+        while (iterations < 1000000) {
             if (node->as.for_stmt.cond) {
                 Value *cond = eval_node(node->as.for_stmt.cond, for_scope);
                 if (!value_is_truthy(cond) || g_error[0]) { value_deref(cond); break; }
@@ -1827,8 +1827,8 @@ static Value *eval_node(AstNode *node, Scope *scope) {
             }
             iterations++;
         }
-        if (iterations >= 100000 && !g_error[0]) {
-            snprintf(g_error, INTERP_ERROR_BUF_SIZE, "Loop exceeded 100000 iterations (hard cap)");
+        if (iterations >= 1000000 && !g_error[0]) {
+            snprintf(g_error, INTERP_ERROR_BUF_SIZE, "Loop exceeded 1000000 iterations (hard cap)");
         }
         scope_free(for_scope);
         return last;
@@ -2703,7 +2703,7 @@ void interp_register_tool(const char *name_ptr, size_t name_len,
 /* Safety limits */
 #define TLV_MAX_DEPTH       32
 #define TLV_MAX_STRING_LEN  (10 * 1024 * 1024)  /* 10MB */
-#define TLV_MAX_ELEMENTS    100000
+#define TLV_MAX_ELEMENTS    1000000
 
 typedef struct {
     const uint8_t* data;
