@@ -5,13 +5,14 @@
 
 use proptest::prelude::*;
 use velocity_mcp::nda_document::{
-    NdaCompiler, NdaDocument, HEADER_SIZE, NDA_MAGIC, SIGNATURE_SECTION_SIZE,
+    NdaCompiler, NdaDocument, COMMAND_SIZE, HEADER_SIZE, NDA_MAGIC, SIGNATURE_SECTION_SIZE,
+    TRIPLE_SIZE,
 };
 
 // ─── NDA Compiler/Parser Round-Trip ──────────────────────────────────────────
 
-/// Property: any document compiled from arbitrary triples survives a
-/// compile → read round-trip with all data preserved exactly.
+// Property: any document compiled from arbitrary triples survives a
+// compile → read round-trip with all data preserved exactly.
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(200))]
 
@@ -77,8 +78,8 @@ proptest! {
 
 // ─── Random Byte Fuzzing ─────────────────────────────────────────────────────
 
-/// Property: random byte sequences must either parse successfully or return
-/// a graceful error — they must NEVER panic.
+// Property: random byte sequences must either parse successfully or return
+// a graceful error — they must NEVER panic.
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(500))]
 
@@ -101,7 +102,7 @@ proptest! {
 
 // ─── Merkle Integrity ────────────────────────────────────────────────────────
 
-/// Property: any compiled document's Merkle root always verifies.
+// Property: any compiled document's Merkle root always verifies.
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(200))]
 
@@ -124,7 +125,7 @@ proptest! {
 
 // ─── Ed25519 Signature Fuzzing ───────────────────────────────────────────────
 
-/// Property: sign → verify always succeeds for arbitrary documents.
+// Property: sign → verify always succeeds for arbitrary documents.
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
 
@@ -177,7 +178,7 @@ proptest! {
 
 // ─── String Pool Edge Cases ──────────────────────────────────────────────────
 
-/// Property: strings with special characters survive round-trip.
+// Property: strings with special characters survive round-trip.
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
 
@@ -224,7 +225,7 @@ proptest! {
 
 // ─── Sandbox Edge Cases ──────────────────────────────────────────────────────
 
-/// Property: sandbox always cleans up its temp directory.
+// Property: sandbox always cleans up its temp directory.
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(50))]
 
@@ -252,7 +253,7 @@ proptest! {
 
 use velocity_mcp::protocol::nda_native;
 
-/// Property: random bytes with valid NMCP magic prefix never panic in parse_nda_request.
+// Property: random bytes with valid NMCP magic prefix never panic in parse_nda_request.
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(500))]
 
@@ -267,7 +268,7 @@ proptest! {
     }
 }
 
-/// Property: is_nda_frame is correct for arbitrary byte sequences.
+// Property: is_nda_frame is correct for arbitrary byte sequences.
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(200))]
 
@@ -280,7 +281,7 @@ proptest! {
     }
 }
 
-/// Property: build_nda_request → parse_nda_request round-trips for all method types.
+// Property: build_nda_request → parse_nda_request round-trips for all method types.
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(200))]
 
@@ -305,7 +306,7 @@ proptest! {
     }
 }
 
-/// Property: tampering with any byte in a valid frame always breaks Merkle verification.
+// Property: tampering with any byte in a valid frame always breaks Merkle verification.
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
 
@@ -321,7 +322,7 @@ proptest! {
         let pos = tamper_offset % tampered.len();
         tampered[pos] ^= if tamper_byte == 0 { 1 } else { tamper_byte };
 
-        if tamper_offset < 36 {
+        if pos < 36 {
             prop_assert!(!nda_native::is_nda_frame(&tampered) || nda_native::parse_nda_request(&tampered).is_err());
         } else {
             let result = nda_native::parse_nda_request(&tampered);
@@ -337,7 +338,7 @@ fn arb_json_value() -> impl Strategy<Value = serde_json::Value> {
         any::<bool>().prop_map(serde_json::Value::Bool),
         (-1000i64..1000i64).prop_map(|i| serde_json::json!(i)),
         (-1000.0f64..1000.0f64).prop_map(|f| serde_json::json!(f)),
-        "[\\x20-\\x7E]{0,50}".prop_map(|s| serde_json::Value::String(s)),
+        "[\\x20-\\x7E]{0,50}".prop_map(serde_json::Value::String),
     ];
     leaf.prop_recursive(3, 64, 10, |inner| {
         prop_oneof![
@@ -362,7 +363,7 @@ proptest! {
     }
 }
 
-/// Property: build_nda_response → read back round-trips status, id, and result.
+// Property: build_nda_response → read back round-trips status, id, and result.
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(200))]
 
@@ -378,7 +379,7 @@ proptest! {
         let frame = nda_native::build_nda_response(status, &id, &result).unwrap();
 
         prop_assert!(nda_native::is_nda_frame(&frame));
-        prop_assert!(frame.len() >= nda_native::FRAME_HEADER_SIZE + 1);
+        prop_assert!(frame.len() > nda_native::FRAME_HEADER_SIZE);
 
         let payload = &frame[nda_native::FRAME_HEADER_SIZE..];
         prop_assert_eq!(payload[0], status);
@@ -395,7 +396,7 @@ proptest! {
     }
 }
 
-/// Property: truncated frames always return graceful errors.
+// Property: truncated frames always return graceful errors.
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
 
@@ -409,5 +410,136 @@ proptest! {
     ) {
         let truncated = &valid_frame[..truncate_at.min(valid_frame.len())];
         let _result = nda_native::parse_nda_request(truncated);
+    }
+}
+
+// ─── Danger-Band Fuzzing (round #529) ────────────────────────────────────────
+
+// The two unstructured "never panic" props above stop at the parser's shallowest
+// guards. Measured over 200,000 inputs each: fully-random bytes reach only the
+// length (10.2%) and magic (89.8%) checks, and valid-magic + random tail reaches
+// only the triple-count cap (90.3%), command-count cap (0.09%) or length check
+// (9.7%) — zero inputs ever get past them to the bounds arithmetic. The same
+// holds for NMCP frames: with the shipped Merkle default on, 200,000 magic-plus-
+// random inputs produced 93.6% Merkle mismatches and 6.4% short frames, so the
+// TLV decoder saw nothing. These props target those bands directly.
+
+// Property: the parser's offset validator and the offset resolver must agree.
+// Every pool byte is printable ASCII, so a bounds-valid offset always resolves;
+// a document that parses Ok while get_string() rejects one of its offsets means
+// the two checks have diverged.
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(500))]
+
+    #[test]
+    fn prop_nda_offset_validator_and_resolver_agree(
+        pool in proptest::collection::vec(0x20u8..0x7e, 1..64),
+        subject_off in 0u32..96,
+        predicate_off in 0u32..96,
+        object_off in 0u32..96,
+        content_off in 0u32..96,
+        command_type in any::<u8>(),
+        flags in any::<u32>(),
+    ) {
+        // One triple + one command: pool starts at 52 + TRIPLE_SIZE + COMMAND_SIZE.
+        let pool_offset = (HEADER_SIZE + TRIPLE_SIZE + COMMAND_SIZE) as u32;
+        let mut data = Vec::new();
+        data.extend_from_slice(&NDA_MAGIC.to_le_bytes());
+        data.extend_from_slice(&flags.to_le_bytes());
+        data.extend_from_slice(&[0u8; 32]);
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&pool_offset.to_le_bytes());
+        for off in [subject_off, predicate_off, object_off] {
+            data.extend_from_slice(&off.to_le_bytes());
+        }
+        data.push(command_type);
+        data.extend_from_slice(&0u32.to_le_bytes());
+        for _ in 0..4 {
+            data.extend_from_slice(&0u16.to_le_bytes());
+        }
+        data.extend_from_slice(&content_off.to_le_bytes());
+        data.extend_from_slice(&pool);
+
+        let pool_len = pool.len();
+        let doc = NdaDocument::read(&data);
+
+        // An offset with no room for its length prefix must be refused outright.
+        for (name, off) in [
+            ("subject", subject_off),
+            ("predicate", predicate_off),
+            ("object", object_off),
+            ("content", content_off),
+        ] {
+            if off != 0 && (off as usize) + 2 > pool_len {
+                prop_assert!(
+                    doc.is_err(),
+                    "read() accepted {} offset {} past a {}-byte string pool",
+                    name,
+                    off,
+                    pool_len
+                );
+            }
+        }
+
+        if let Ok(doc) = doc {
+            prop_assert_eq!(doc.triples.len(), 1);
+            prop_assert_eq!(doc.commands.len(), 1);
+            for off in [subject_off, predicate_off, object_off, content_off] {
+                prop_assert!(
+                    doc.get_string(off).is_ok(),
+                    "read() accepted offset {} but get_string() rejected it",
+                    off
+                );
+            }
+        }
+    }
+
+    // Property: the TLV decoder is panic-free on arbitrary bytes, on truncation,
+    // and on single-byte corruption — and whenever it accepts a buffer, the
+    // zero-alloc skip-walk used by the hot dispatch paths accepts it too and
+    // consumes the same number of bytes.
+    #[test]
+    fn prop_tlv_decoder_mutation_never_panics(
+        bytes in proptest::collection::vec(any::<u8>(), 0..128),
+        value in arb_json_value(),
+        truncate_at in 0usize..128,
+        corrupt_pos in 0usize..128,
+        corrupt_byte in any::<u8>(),
+    ) {
+        let _ = nda_native::decode_json_value(&bytes);
+
+        let mut encoded = Vec::new();
+        let encoded_ok = nda_native::encode_json_value(&value, &mut encoded);
+        prop_assert!(encoded_ok.is_ok(), "encode failed: {:?}", encoded_ok.err());
+
+        let truncated = &encoded[..truncate_at.min(encoded.len())];
+        let _ = nda_native::decode_json_value(truncated);
+
+        if encoded.is_empty() {
+            return Ok(());
+        }
+        let mut mutated = encoded.clone();
+        let pos = corrupt_pos % mutated.len();
+        mutated[pos] ^= if corrupt_byte == 0 { 1 } else { corrupt_byte };
+
+        if let Ok((_decoded, consumed)) = nda_native::decode_json_value(&mutated) {
+            match nda_native::skip_tlv_value(&mutated) {
+                Ok(skipped) => {
+                    prop_assert_eq!(
+                        skipped,
+                        consumed,
+                        "decoder consumed {} bytes, zero-alloc walk consumed {}",
+                        consumed,
+                        skipped
+                    );
+                }
+                Err(e) => prop_assert!(
+                    false,
+                    "decoder accepted a value the zero-alloc walk rejects: {}",
+                    e
+                ),
+            }
+        }
     }
 }

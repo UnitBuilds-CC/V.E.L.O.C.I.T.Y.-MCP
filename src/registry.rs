@@ -1,11 +1,11 @@
 use crate::protocol::nda_native::extract_tlv_field;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{LazyLock, Mutex, OnceLock};
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
@@ -93,7 +93,10 @@ pub fn load_plugins(plugin_dir: &str) {
     let path = std::path::Path::new(plugin_dir);
     let plugins = crate::plugins::load_plugins_from_directory(path);
 
-    if let Ok(mut registry) = get_plugin_registry().lock() {
+    {
+        let mut registry = get_plugin_registry()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         *registry = plugins;
         bump_registry_generation();
         info!(plugin_dir = %plugin_dir, count = registry.len(), "Loaded plugins");
@@ -129,13 +132,17 @@ pub fn register_benchmark_tools(count: usize) {
 /// Register a tool lazily from a proc macro.
 /// This is called by the generated registration function.
 pub fn register_tool_lazy(tool: &Tool) {
-    if let Ok(mut registry) = get_macro_registry().lock() {
-        // Check if tool already exists
-        if !registry.iter().any(|t| t.name == tool.name) {
-            registry.push(tool.clone());
-            bump_registry_generation();
-            info!(tool_name = %tool.name, "Registered tool from proc macro");
-        }
+    // Poison recovery, not a skip: this function returns nothing, so a dropped
+    // registration would leave a proc-macro tool absent from tools/list with no
+    // signal at all.
+    let mut registry = get_macro_registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    // Check if tool already exists
+    if !registry.iter().any(|t| t.name == tool.name) {
+        registry.push(tool.clone());
+        bump_registry_generation();
+        info!(tool_name = %tool.name, "Registered tool from proc macro");
     }
 }
 
@@ -210,8 +217,16 @@ pub fn get_tools() -> Vec<Tool> {
         }
     }
 
+    // These three registries decide which tools a client can see, so a
+    // poisoned lock is recovered rather than skipped: `if let Ok(..)` silently
+    // dropped every tool from that registry, turning one panic in a holder into
+    // a permanent "tools vanished" outage with no log line.
+    //
     // Add NDA-converted tools (registered via convert_to_nda_tool)
-    if let Ok(registry) = get_converted_tool_registry().lock() {
+    {
+        let registry = get_converted_tool_registry()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         for (tool_name, tool_def) in registry.iter() {
             if !known_names.contains(tool_name) {
                 tools.push(tool_def.clone());
@@ -221,7 +236,10 @@ pub fn get_tools() -> Vec<Tool> {
     }
 
     // Add proc macro-registered tools
-    if let Ok(registry) = get_macro_registry().lock() {
+    {
+        let registry = get_macro_registry()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         for tool in registry.iter() {
             if !known_names.contains(&tool.name) {
                 tools.push(tool.clone());
@@ -231,8 +249,12 @@ pub fn get_tools() -> Vec<Tool> {
     }
 
     // Add plugin tools
-    if let Ok(registry) = get_plugin_registry().lock() {
+    {
+        let registry = get_plugin_registry()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let plugin_tools = crate::plugins::plugins_to_registry_tools(&registry);
+        drop(registry);
         for tool in plugin_tools {
             if !known_names.contains(&tool.name) {
                 tools.push(tool.clone());
@@ -322,11 +344,11 @@ fn get_builtin_tools() -> Vec<Tool> {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Absolute path to the root directory." },
-                    "excludePatterns": { 
-                        "type": "array", 
-                        "items": { "type": "string" },
-                        "description": "Glob patterns to exclude (e.g., ['*.log', 'node_modules'])" 
-                    }
+                    "excludePatterns": {
+                        "type": "array", "items": { "type": "string" },
+                        "description": "Glob patterns to exclude (e.g., ['*.log', 'node_modules'])"
+                    },
+                    "maxDepth": { "type": "integer", "description": "Maximum tree depth to descend (default 10, capped at 20)." }
                 },
                 "required": ["path"]
             }),
@@ -449,7 +471,7 @@ fn get_builtin_tools() -> Vec<Tool> {
         },
         Tool {
             name: "convert_to_nda_tool".to_string(),
-            description: "Convert a JSON-RPC tool call to NDA binary format and register it for fast execution. Subsequent calls parse about 2.8x faster than JSON (measured). The converted tool is immediately available by name.".to_string(),
+            description: "Convert a JSON-RPC tool call to NDA binary format and register it for fast execution. Converted calls are dispatched through the zero-allocation TLV frame path instead of parsing a JSON document each time. The converted tool is immediately available by name.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -589,18 +611,215 @@ pub fn call_tool(name: &str, arguments: &Value) -> Result<String, Box<dyn Error>
     call_tool_with_csharp_path(name, arguments, &csharp_path)
 }
 
+/// Tools whose binary attempt failed before the guest executed anything. The
+/// decoded-JSON retry is therefore a single execution, not a double run.
+static BINARY_JSON_FALLBACK: LazyLock<Mutex<HashSet<String>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+fn json_fallback_recorded(name: &str) -> bool {
+    BINARY_JSON_FALLBACK
+        .lock()
+        .map(|set| set.contains(name))
+        .unwrap_or(false)
+}
+
+fn record_json_fallback(name: &str) {
+    if let Ok(mut set) = BINARY_JSON_FALLBACK.lock() {
+        set.insert(name.to_string());
+    }
+}
+
+/// True when the guest rejected *this payload* rather than lacking an entry
+/// point. Such a request falls back to decoded JSON without costing a second
+/// execution, and the tool keeps its binary capability.
+fn binary_failure_is_request_level(err: &str) -> bool {
+    err.to_ascii_lowercase().contains("tlv decode")
+}
+
+/// True when a binary error proves the guest never ran: an unregistered tool
+/// name, a failed registration, or a missing entry point.
+///
+/// Each phrase is a producer's own registration-state message, emitted before
+/// any guest code is reached: the runtimes' `Unknown <lang> tool: <name>` /
+/// `ERROR: Unknown tool '<name>'` dispatcher errors, `failed to register`,
+/// `Tool not loaded` (`wasm_runtime::rust`), `not registered or compilation
+/// failed` (`wasm_runtime::go`), `wrapper not cached` (`wasm_runtime::quickjs`).
+///
+/// A QuickJS `TypeError: ... is not a function` is deliberately absent: the
+/// guest throws that same text from *inside* a tool body, and treating it as
+/// pre-execution would run the tool a second time here and a third time through
+/// the JSON fall-through. Classification is string matching, so a guest that
+/// raises an error quoting one of the phrases above is misread the same way; the
+/// structural fix is for the entry point to report "nothing ran" out of band.
+fn binary_failure_is_pre_execution(err: &str) -> bool {
+    let e = err.to_ascii_lowercase();
+    (e.contains("unknown") && e.contains("tool"))
+        || e.contains("failed to register")
+        || e.contains("tool not loaded")
+        || e.contains("not registered")
+        || e.contains("wrapper not cached")
+}
+
+/// Language of a loaded WASM plugin tool, from the plugin manifest.
+///
+/// Runtime metadata (`get_wasm_tool_language`) only exists after a successful
+/// `register_tool`, so before a tool's first call the manifest is the only
+/// record that the tool is a WASM tool at all. Dispatch needs it, or a tool's
+/// binary capability is never exercised — and so never falsifiable.
+fn manifest_wasm_language(name: &str) -> Option<String> {
+    let registry = get_plugin_registry().lock().ok()?;
+    registry.iter().find_map(|plugin| {
+        plugin
+            .manifest
+            .tools
+            .iter()
+            .find(|t| t.name == name && t.executor.executor_type == "wasm")
+            .and_then(|t| t.executor.language.clone())
+    })
+}
+
+/// Inline source (or source-file contents) for a loaded WASM plugin tool.
+fn plugin_wasm_source(name: &str, language: &str) -> Option<String> {
+    let registry = get_plugin_registry().lock().ok()?;
+    registry.iter().find_map(|plugin| {
+        plugin
+            .manifest
+            .tools
+            .iter()
+            .find(|t| {
+                t.name == name
+                    && t.executor.executor_type == "wasm"
+                    && t.executor.language.as_deref() == Some(language)
+            })
+            .and_then(|t| {
+                t.executor.source.clone().or_else(|| {
+                    t.executor
+                        .source_file
+                        .as_ref()
+                        .and_then(|p| std::fs::read_to_string(p).ok())
+                })
+            })
+    })
+}
+
+/// Re-register a tool into its (possibly cold or evicted) runtime and retry the
+/// binary call, returning the output only when the retry succeeds.
+fn retry_binary_with_registration(name: &str, language: &str, args_tlv: &[u8]) -> Option<String> {
+    let source = plugin_wasm_source(name, language)?;
+    crate::plugins::register_wasm_tool_source(name, language, &source).ok()?;
+    crate::plugins::call_wasm_tool_binary(name, language, args_tlv).ok()
+}
+
+/// Per-WASM-tool NDA executor capability, for clients that want to avoid
+/// presenting a binary path a tool does not have.
+pub fn nda_binary_capabilities() -> Vec<Value> {
+    let mut out = Vec::new();
+    let registry = get_plugin_registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    for plugin in registry.iter() {
+        for tool in &plugin.manifest.tools {
+            if tool.executor.executor_type != "wasm" {
+                continue;
+            }
+            let language = tool.executor.language.clone().unwrap_or_default();
+            let binary_executor = !json_fallback_recorded(&tool.name);
+            out.push(json!({
+                "name": tool.name,
+                "language": language,
+                "binaryExecutor": binary_executor,
+            }));
+        }
+    }
+    out
+}
+
 /// Call a tool with binary TLV arguments (NDA format).
-/// For WASM tools, this bypasses JSON serialization and passes TLV bytes directly.
-/// Falls back to JSON path for non-WASM tools.
+/// For WASM tools with a binary executor, this bypasses JSON serialization and
+/// passes TLV bytes directly. Tools without one — non-WASM tools, the six
+/// tree-walk interpreters, and any tool that previously failed before executing
+/// — decode TLV to JSON and run on the regular path. A payload the guest itself
+/// rejects decodes to JSON for that request only, leaving the tool's binary
+/// capability intact.
 pub fn call_tool_binary(name: &str, args_tlv: &[u8]) -> Result<String, Box<dyn Error>> {
-    // Check if this is a WASM tool by consulting plugin metadata
-    if let Some(language) = crate::plugins::get_wasm_tool_language(name) {
-        // Use WASM runtime's binary protocol
-        return crate::plugins::call_wasm_tool_binary(name, &language, args_tlv)
-            .map_err(|e| e.into());
+    // Built-in tools must always go through the native validation path;
+    // allowing a plugin to shadow them would bypass security checks (e.g.,
+    // shell_exec's dangerous-command blocklist).
+    if is_builtin_tool(name) {
+        return call_tool_decoded(name, args_tlv);
     }
 
-    // Fallback: decode TLV to Value, use regular path
+    // Runtime metadata names the language only for tools already registered;
+    // before a tool's first call the plugin manifest is the only record that it
+    // is a WASM tool. Consulting it here means the binary capability that
+    // `GET /v1/nda/capabilities` claims is exercised on the first NDA call
+    // instead of being bypassed silently forever.
+    let language = match crate::plugins::get_wasm_tool_language(name)
+        .or_else(|| manifest_wasm_language(name))
+    {
+        Some(language) => language,
+        None => return call_tool_decoded(name, args_tlv),
+    };
+    if json_fallback_recorded(name) {
+        return call_tool_decoded(name, args_tlv);
+    }
+
+    // Absent metadata means the cached runtime has never seen this tool's source,
+    // so register first: otherwise the guest is asked to run a name it doesn't
+    // know. A failed registration proves there is no binary executor on this
+    // host, which is exactly what the capability report has to learn.
+    if crate::plugins::get_wasm_tool_language(name).is_none() {
+        let outcome = match plugin_wasm_source(name, &language) {
+            Some(source) => crate::plugins::register_wasm_tool_source(name, &language, &source),
+            None => Err(format!("no WASM source in manifest for '{}'", name)),
+        };
+        if let Err(e) = outcome {
+            warn!(
+                tool = name,
+                language = language.as_str(),
+                error = %e,
+                "no NDA-native binary executor, serving via decoded-JSON path"
+            );
+            record_json_fallback(name);
+            return call_tool_decoded(name, args_tlv);
+        }
+    }
+
+    let err = match crate::plugins::call_wasm_tool_binary(name, &language, args_tlv) {
+        Ok(output) => return Ok(output),
+        Err(e) => e,
+    };
+    if binary_failure_is_request_level(&err) {
+        warn!(
+            tool = name,
+            language = language.as_str(),
+            error = %err,
+            "binary arguments rejected, serving this request via decoded-JSON path"
+        );
+    } else if binary_failure_is_pre_execution(&err) {
+        // Nothing ran, so a retry costs one execution: the cached runtime can be
+        // stale (evicted by a metering trap while metadata survived), which is
+        // indistinguishable from a guest that has no binary entry point until the
+        // tool has been registered into it again.
+        if let Some(output) = retry_binary_with_registration(name, &language, args_tlv) {
+            return Ok(output);
+        }
+        warn!(
+            tool = name,
+            language = language.as_str(),
+            error = %err,
+            "no NDA-native binary executor, serving via decoded-JSON path"
+        );
+        record_json_fallback(name);
+    } else {
+        return Err(err.into());
+    }
+
+    call_tool_decoded(name, args_tlv)
+}
+
+/// Decode TLV arguments and run the tool on the regular (JSON) path.
+fn call_tool_decoded(name: &str, args_tlv: &[u8]) -> Result<String, Box<dyn Error>> {
     use crate::protocol::nda_native::decode_json_value;
     let (value, _) = decode_json_value(args_tlv)?;
     call_tool(name, &value)
@@ -1011,8 +1230,8 @@ pub fn call_tool_with_csharp_path(
                 "rm -rf ~/*",
                 "rm -rf .",
                 "rm -rf ..",
-                "rm -rf /",
-                "rm -rf /*",
+                "rm -fr /",
+                "rm -rf --no-preserve-root",
                 "mkfs.",
                 "mkfs ",
                 "dd if=",
@@ -1729,7 +1948,10 @@ pub fn call_tool_with_csharp_path(
         // Dynamic tools: check NMCP frame cache first, then plugin registry, then route to C# engine
         _ => {
             // Check if this is a cached NMCP frame tool
-            if let Ok(registry) = get_nmcp_frame_cache().lock() {
+            {
+                let registry = get_nmcp_frame_cache()
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 if let Some(nda_binary) = registry.get(name) {
                     debug!(
                         tool = name,
@@ -1739,17 +1961,27 @@ pub fn call_tool_with_csharp_path(
                 }
             }
 
-            // Check if this is a plugin tool
-            if let Ok(registry) = get_plugin_registry().lock() {
-                for plugin in registry.iter() {
-                    for tool in &plugin.manifest.tools {
-                        if tool.name == name {
-                            debug!(tool = name, plugin = %plugin.manifest.name, "Executing plugin tool");
-                            return crate::plugins::execute_plugin_tool(tool, arguments)
-                                .map_err(|e| e.into());
-                        }
-                    }
-                }
+            // Check if this is a plugin tool. Resolve it under the lock and execute
+            // it after releasing: holding the registry mutex across arbitrary plugin
+            // execution deadlocks if a tool ever re-enters the registry, and a panic
+            // in the executor would poison the lock, after which `if let Ok(..)`
+            // silently routed every plugin tool to the C# engine as an unknown tool.
+            let plugin_tool = {
+                let registry = get_plugin_registry()
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                registry.iter().find_map(|plugin| {
+                    plugin
+                        .manifest
+                        .tools
+                        .iter()
+                        .find(|tool| tool.name == name)
+                        .map(|tool| (plugin.manifest.name.clone(), tool.clone()))
+                })
+            };
+            if let Some((plugin_name, tool)) = plugin_tool {
+                debug!(tool = name, plugin = %plugin_name, "Executing plugin tool");
+                return crate::plugins::execute_plugin_tool(&tool, arguments).map_err(|e| e.into());
             }
 
             debug!(tool = name, "Routing to C# engine (dynamic tool)");
@@ -1953,14 +2185,23 @@ pub fn cache_nmcp_frame(json_request: &str, output_path: &str) -> Result<String,
         std::fs::read(output_path)?
     };
 
-    // Register the tool in the NMCP frame cache
+    // Register the tool in the NMCP frame cache.
+    //
+    // A poisoned lock is recovered from rather than skipped: the map contents are
+    // still valid, and silently returning success without registering would leave
+    // the caller holding a frame for a tool that is not callable.
     const MAX_NMCP_FRAMES: usize = 256;
-    if let Ok(mut registry) = get_nmcp_frame_cache().lock() {
+    {
+        let mut registry = get_nmcp_frame_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if registry.len() >= MAX_NMCP_FRAMES && !registry.contains_key(tool_name) {
+            // HashMap iteration order is arbitrary, so this drops *an* entry, not the
+            // least recently used one.
             let first_key = registry.keys().next().cloned();
             if let Some(key) = first_key {
                 registry.remove(&key);
-                tracing::warn!(tool = %key, "NMCP frame cache full ({}), evicted oldest entry", MAX_NMCP_FRAMES);
+                tracing::warn!(tool = %key, "NMCP frame cache full ({}), evicted an existing entry", MAX_NMCP_FRAMES);
             }
         }
         registry.insert(tool_name.to_string(), binary_data);
@@ -1971,33 +2212,58 @@ pub fn cache_nmcp_frame(json_request: &str, output_path: &str) -> Result<String,
         );
     }
 
-    // Also register the tool definition for tools/list visibility
-    let args_schema = &request["params"]["arguments"];
-    let tool_def = Tool {
-        name: tool_name.to_string(),
-        description: format!(
-            "NDA-converted tool '{}' — executes via fast binary path",
-            tool_name
-        ),
-        input_schema: if args_schema.is_object()
-            && !args_schema.as_object().is_none_or(|obj| obj.is_empty())
-        {
-            args_schema.clone()
-        } else {
-            json!({
-                "type": "object",
-                "properties": {},
-                "required": [],
-                "description": "Arguments passed through to NDA binary executor"
-            })
-        },
+    // Also register the tool definition for tools/list visibility.
+    //
+    // Prefer the tool's registered schema over the call-site arguments.
+    // request["params"]["arguments"] is an *instance* of usage, not the schema;
+    // using it as input_schema misleads clients into thinking those exact values
+    // are the parameter constraints.
+    let args_from_call = &request["params"]["arguments"];
+    let tool_def = {
+        // Try to find the tool in the current registry to get its real schema
+        let existing_tools = get_tools();
+        let existing_schema = existing_tools
+            .iter()
+            .find(|t| t.name == tool_name)
+            .map(|t| t.input_schema.clone());
+
+        Tool {
+            name: tool_name.to_string(),
+            description: format!(
+                "NDA-converted tool '{}' — executes via fast binary path",
+                tool_name
+            ),
+            input_schema: if let Some(schema) = existing_schema {
+                // Use the registered tool's actual schema
+                schema
+            } else if args_from_call.is_object()
+                && !args_from_call.as_object().is_none_or(|obj| obj.is_empty())
+            {
+                // Fallback: synthesize a minimal schema from the call arguments' keys
+                // This is still wrong (values ≠ schema), but less misleading than echoing them
+                json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "description": "Arguments passed through to NDA binary executor"
+                })
+            } else {
+                json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "description": "Arguments passed through to NDA binary executor"
+                })
+            },
+        }
     };
-    if let Ok(mut reg) = get_converted_tool_registry().lock() {
+    {
+        let mut reg = get_converted_tool_registry()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         reg.insert(tool_name.to_string(), tool_def);
         bump_registry_generation();
     }
-
-    // Always return base64-encoded binary data (the tool is registered regardless)
     if output_path.is_empty() {
         Ok(base64_result)
     } else {
@@ -2214,11 +2480,12 @@ fn execute_csharp_mcp_tool(
 ///
 /// Type tags:
 /// - 0x01 String: u32 length + UTF-8 bytes
-/// - 0x02 Number: 8 bytes (f64 big-endian)
+/// - 0x02 Integer: 8 bytes (i64 big-endian)
 /// - 0x03 Bool: 1 byte (0 or 1)
 /// - 0x04 Null: (no data)
 /// - 0x05 Array: u32 count + elements
 /// - 0x06 Object: u32 count + (key_len:u16 + key_bytes + value) pairs
+/// - 0x07 Float: 8 bytes (f64 big-endian), for numbers that are not i64-representable
 fn encode_json_value(value: &Value, buf: &mut Vec<u8>) -> Result<(), String> {
     match value {
         Value::String(s) => {
@@ -2493,8 +2760,17 @@ fn json_to_nmcp_frame(json_request: &str, output_path: &str) -> Result<String, B
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// Serializes tests that read or mutate the process-global NMCP frame cache and
+    /// converted-tool registry: one test's `clear()` or fill-to-capacity run otherwise
+    /// wipes another test's freshly registered tool mid-assertion.
+    static REGISTRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    pub(crate) fn lock_registries() -> std::sync::MutexGuard<'static, ()> {
+        REGISTRY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     fn test_timer(name: &str) -> impl Drop {
         let start = std::time::Instant::now();
@@ -2535,7 +2811,7 @@ mod tests {
     fn test_get_tools_returns_builtin_tools() {
         let _t = test_timer("test_get_tools_returns_builtin_tools");
         let t0 = std::time::Instant::now();
-        let tools = get_tools();
+        let (_registries, tools) = (lock_registries(), get_tools());
         eprintln!(
             "[METRIC] get_tools_dispatch: {:.3}us ({} tools)",
             t0.elapsed().as_secs_f64() * 1e6,
@@ -2560,7 +2836,7 @@ mod tests {
 
     #[test]
     fn test_get_tools_have_input_schemas() {
-        for tool in get_tools() {
+        for tool in locked_tools() {
             assert!(
                 tool.input_schema.is_object(),
                 "Tool '{}' should have object schema",
@@ -2633,6 +2909,7 @@ mod tests {
 
     #[test]
     fn test_convert_to_nda_tool_success() {
+        let _registries = lock_registries();
         let _t = test_timer("test_convert_to_nda_tool_success");
         let json_request = r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"hello_world","arguments":{"message":"Hello"}},"id":1}"#;
         let t0 = std::time::Instant::now();
@@ -2673,6 +2950,7 @@ mod tests {
 
     #[test]
     fn test_convert_to_nda_tool_with_output_path() {
+        let _registries = lock_registries();
         let json_request = r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"test_tool","arguments":{"key":"value"}},"id":1}"#;
         // Use an absolute path in the current directory
         let output_path = std::env::current_dir()
@@ -2741,6 +3019,7 @@ mod tests {
 
     #[test]
     fn test_convert_complex_tool_to_nda() {
+        let _registries = lock_registries();
         let _t = test_timer("test_convert_complex_tool_to_nda");
         // Test with nested objects, arrays, special characters
         let json_request = r#"{
@@ -2827,7 +3106,7 @@ mod tests {
 
     #[test]
     fn test_validate_file_path_accepts_valid_absolute() {
-        let result = validate_file_path("C:\\Users\\test\\documents\\file.nda");
+        let result = validate_file_path(host_absolute("documents/file.nda").to_str().unwrap());
         assert!(result.is_ok());
     }
 
@@ -3640,10 +3919,10 @@ mod tests {
 
     #[test]
     fn test_validate_file_path_valid_absolute() {
-        let result = validate_file_path("C:\\Users\\test\\file.txt");
+        let result = validate_file_path(host_absolute("file.txt").to_str().unwrap());
         assert!(
             result.is_ok(),
-            "Valid absolute Windows path should be accepted: {:?}",
+            "Valid absolute host path should be accepted: {:?}",
             result
         );
     }
@@ -3652,7 +3931,7 @@ mod tests {
 
     #[test]
     fn test_resolve_csharp_path() {
-        std::env::remove_var("VELOCITY_CSHARP_PATH");
+        let _e = crate::config::tests::EnvGuard::clear("VELOCITY_CSHARP_PATH");
         assert_eq!(resolve_csharp_path(), "NdaMcpServer.exe");
 
         std::env::set_var("VELOCITY_CSHARP_PATH", "/custom/path.exe");
@@ -3692,7 +3971,7 @@ mod tests {
 
     #[test]
     fn test_tlv_roundtrip_float() {
-        let val = json!(3.14);
+        let val = json!(-12.5);
         let mut buf = Vec::new();
         encode_json_value(&val, &mut buf).unwrap();
         let (decoded, _) = decode_json_value(&buf).unwrap();
@@ -3728,7 +4007,7 @@ mod tests {
 
     #[test]
     fn test_tlv_roundtrip_array() {
-        let val = json!([1, "two", true, null, 3.14]);
+        let val = json!([1, "two", true, null, 2.5]);
         let mut buf = Vec::new();
         encode_json_value(&val, &mut buf).unwrap();
         let (decoded, _) = decode_json_value(&buf).unwrap();
@@ -4027,8 +4306,8 @@ mod tests {
 
     #[test]
     fn test_register_benchmark_tools() {
-        register_benchmark_tools(5);
-        let tools = get_tools();
+        register_benchmark_tools_locked(5);
+        let ((_registries, _cleanup), tools) = (lock_scoped("bench_synthetic"), get_tools());
         let bench_names: Vec<&str> = tools
             .iter()
             .map(|t| t.name.as_str())
@@ -4045,6 +4324,7 @@ mod tests {
 
     #[test]
     fn test_register_tool_lazy() {
+        let (_registries, _cleanup) = lock_scoped("test_lazy_tool_unique_42");
         let tool = Tool {
             name: "test_lazy_tool_unique_42".to_string(),
             description: "A lazily registered test tool".to_string(),
@@ -4102,6 +4382,7 @@ mod tests {
 
     #[test]
     fn test_registry_generation_increments() {
+        let (_registries, _cleanup) = lock_scoped("gen_test_tool");
         let gen_before = registry_generation();
         register_tool_lazy(&Tool {
             name: "gen_test_tool".to_string(),
@@ -4534,8 +4815,8 @@ mod tests {
 
     #[test]
     fn test_nda_registry_eviction() {
-        // Register enough tools to approach the MAX_NDA_TOOLS=256 limit
-        // We just verify the convert_and_register path works for multiple tools
+        let _registries = lock_registries();
+        // Register a handful of tools through the convert_and_register path.
         for i in 0..5 {
             let json_request = format!(
                 r#"{{"jsonrpc":"2.0","method":"tools/call","params":{{"name":"evict_test_tool_{}","arguments":{{}}}},"id":1}}"#,
@@ -4545,7 +4826,10 @@ mod tests {
             assert!(result.is_ok(), "Tool {} should register: {:?}", i, result);
         }
         // Verify the last tool is in the NDA registry and callable
-        if let Ok(registry) = get_nmcp_frame_cache().lock() {
+        {
+            let registry = get_nmcp_frame_cache()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             assert!(registry.contains_key("evict_test_tool_4"));
         }
     }
@@ -4554,15 +4838,19 @@ mod tests {
 
     #[test]
     fn test_nda_tool_execution_round_trip() {
+        let _registries = lock_registries();
         // Register a tool via convert_to_nda_tool
         let json_request = r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"round_trip_test_tool","arguments":{"msg":"hello"}},"id":1}"#;
         let result = call_tool("convert_to_nda_tool", &json!({"jsonRequest": json_request}));
         assert!(result.is_ok());
 
-        // Now call the registered tool — it should route through the NDA binary path
-        // and then fall through to C# engine (which won't be available), but the
-        // important thing is that the NDA registry lookup succeeds
-        if let Ok(registry) = get_nmcp_frame_cache().lock() {
+        // The conversion registers the frame under the tool's name, and that lookup is all
+        // this asserts. No call is made, so nothing here drives the NDA dispatch path
+        // or the C# engine fall-through a real call would take.
+        {
+            let registry = get_nmcp_frame_cache()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             assert!(
                 registry.contains_key("round_trip_test_tool"),
                 "Tool should be in NDA registry after conversion"
@@ -4596,6 +4884,7 @@ mod tests {
 
     #[test]
     fn test_nda_converted_builtin_dispatches_natively() {
+        let _registries = lock_registries();
         // Register bench_echo via convert_to_nda_tool
         let json_request =
             r#"{"method":"tools/call","params":{"name":"bench_echo","arguments":{"size":32}}}"#;
@@ -4620,7 +4909,10 @@ mod tests {
         assert!(output.chars().all(|c| c == 'x'));
 
         // Clean up NDA registry
-        if let Ok(mut reg) = get_nmcp_frame_cache().lock() {
+        {
+            let mut reg = get_nmcp_frame_cache()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             reg.remove("bench_echo");
         }
         bump_registry_generation();
@@ -4630,7 +4922,7 @@ mod tests {
 
     #[test]
     fn test_get_tools_cache_consistency() {
-        let tools1 = get_tools();
+        let (_registries, tools1) = (lock_registries(), get_tools());
         let tools2 = get_tools();
         assert_eq!(
             tools1.len(),
@@ -4959,16 +5251,14 @@ mod tests {
         }
 
         let result = call_tool("read_nda", &json!({"ndaPath": nda_path.to_str().unwrap()}));
-        // Should either error or report Merkle failure
-        match result {
-            Ok(report) => {
-                assert!(
-                    report.contains("FAILED") || report.contains("Integrity"),
-                    "Expected merkle failure in: {}",
-                    report
-                );
-            }
-            Err(_) => {} // parse error is also acceptable
+        // Should either error or report Merkle failure; a parse error is acceptable
+        // too, so only the Ok arm asserts.
+        if let Ok(report) = result {
+            assert!(
+                report.contains("FAILED") || report.contains("Integrity"),
+                "Expected merkle failure in: {}",
+                report
+            );
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -5002,8 +5292,8 @@ mod tests {
             }),
         );
         // Execution may fail if python isn't available, but the arguments parsing path is exercised
-        if result.is_ok() {
-            assert!(result.unwrap().contains("hello"));
+        if let Ok(output) = result {
+            assert!(output.contains("hello"));
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -5144,7 +5434,7 @@ mod tests {
         let value = json!({
             "string": "hello",
             "integer": 42,
-            "float": 3.14,
+            "float": 2.5,
             "bool": true,
             "null": null,
             "array": [1, "two", false],
@@ -5252,14 +5542,14 @@ mod tests {
 
     #[test]
     fn test_shell_exec_invalid_working_dir() {
+        let dir = std::env::temp_dir().join("velocity_mcp_absent_dir");
         let result = call_tool(
             "shell_exec",
-            &json!({
-                "command": "echo hello",
-                "workingDir": "/nonexistent/path/that/does/not/exist"
-            }),
+            &json!({"command": "echo hello", "workingDir": dir.to_str().unwrap()}),
         );
-        assert!(result.is_err());
+        let err = result.expect_err("an absent dir must fail").to_string();
+        // validate_file_path has no existence check, so only the spawn can refuse.
+        assert!(err.contains("os error"), "expected a spawn error: {}", err);
     }
 
     // ── edit_file with empty edits array ────────────────────────────────
@@ -5294,7 +5584,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ── shell_exec timeout WITH working_dir ─────────────────────────────
+    // ── shell_exec timeout WITH workingDir ───────────────────────────────
 
     #[test]
     fn test_shell_exec_timeout_with_working_dir() {
@@ -5309,7 +5599,7 @@ mod tests {
             &json!({
                 "command": cmd,
                 "timeout": 1,
-                "working_dir": dir.to_str().unwrap()
+                "workingDir": dir.to_str().unwrap()
             }),
         );
         assert!(result.is_err(), "Expected timeout error, got: {:?}", result);
@@ -5439,22 +5729,8 @@ mod tests {
     }
 
     #[test]
-    fn test_nda_registry_eviction_at_capacity() {
-        if let Ok(mut registry) = get_nmcp_frame_cache().lock() {
-            registry.clear();
-            for i in 0..256 {
-                registry.insert(format!("tool_{}", i), vec![0u8; 4]);
-            }
-            assert!(registry.len() >= 256);
-            registry.insert("tool_overflow".to_string(), vec![1u8; 4]);
-            assert!(registry.contains_key("tool_overflow"));
-            assert!(registry.len() <= 257);
-            registry.clear();
-        }
-    }
-
-    #[test]
     fn test_register_tool_lazy_no_duplicate() {
+        let _registries = lock_registries();
         let tool = Tool {
             name: "test_no_dup_coverage_tool".to_string(),
             description: "test".to_string(),
@@ -5478,6 +5754,7 @@ mod tests {
 
     #[test]
     fn test_cache_nmcp_frame() {
+        let _registries = lock_registries();
         let json_req = r#"{"method":"tools/call","params":{"name":"cov_nda_test_tool","arguments":{"msg":"hello"}}}"#;
         let result = call_tool(
             "convert_to_nda_tool",
@@ -5493,7 +5770,10 @@ mod tests {
         let base64_out = result.unwrap();
         assert!(!base64_out.is_empty(), "expected non-empty base64 output");
 
-        if let Ok(mut reg) = get_nmcp_frame_cache().lock() {
+        {
+            let mut reg = get_nmcp_frame_cache()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             assert!(
                 reg.contains_key("cov_nda_test_tool"),
                 "tool should be registered in NDA registry"
@@ -5591,7 +5871,7 @@ mod tests {
         data[38] = (name_len & 0xff) as u8;
         data[39..39 + name_len].copy_from_slice(name_bytes);
         let args_len: u32 = 0;
-        let al = (39 + name_len) as usize;
+        let al = 39 + name_len;
         data[al..al + 4].copy_from_slice(&args_len.to_be_bytes());
 
         let result = execute_cached_nmcp_frame("wrong_tool", &json!({}), &data);
@@ -5623,10 +5903,104 @@ mod tests {
         );
     }
 
+    // ── Binary failure classification ──────────────────────────────────────
+
+    #[test]
+    fn test_pre_execution_classification_matches_producer_strings() {
+        // Every registration-state message the runtimes and guests actually emit.
+        for err in [
+            "ERROR: Unknown tool 'perl_greet'",
+            "Unknown JS tool: add",
+            "Unknown Python tool: add",
+            "Unknown Lua tool: add",
+            "Tool not loaded: add",
+            "Tool 'add' not registered or compilation failed",
+            "wrapper not cached for tool 'add' — call register_tool first",
+            "failed to register tool",
+        ] {
+            assert!(
+                binary_failure_is_pre_execution(err),
+                "should be pre-execution: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_guest_exceptions_are_not_pre_execution() {
+        // These are thrown by guest code *while the tool runs*. Treating any of
+        // them as pre-execution re-registers and re-calls the tool, then runs it
+        // again on the decoded-JSON path — three executions for one request.
+        for err in [
+            "TypeError: not a function",
+            "TypeError: handler is not a function",
+            "ReferenceError: 'x' is not defined",
+            "Uncaught Error: boom",
+            "instruction limit exceeded",
+            "JS tool returned null",
+            "Lua tool error: attempt to index a nil value",
+        ] {
+            assert!(
+                !binary_failure_is_pre_execution(err),
+                "guest error must not trigger a retry: {err}"
+            );
+            assert!(
+                !binary_failure_is_request_level(err),
+                "guest error must not silently fall back to JSON: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_request_level_classification_is_payload_only() {
+        assert!(binary_failure_is_request_level(
+            "TLV decode failed at offset 4"
+        ));
+        assert!(!binary_failure_is_request_level(
+            "ERROR: Unknown tool 'perl_greet'"
+        ));
+    }
+
+    /// The oversized-payload guard fires before the guest runs, but its message
+    /// must not read as pre-execution: a retry would fail identically and then
+    /// pin a healthy tool to the JSON path for the life of the process. It must
+    /// not read as request-level either — a JSON retry carries *more* bytes than
+    /// the TLV it replaces, so it cannot succeed where the binary call failed.
+    #[test]
+    fn test_slot_guard_error_matches_neither_fallback_class() {
+        let guard = crate::wasm_runtime::args_slot_error(5000, 4096, "perl");
+        for msg in [
+            format!(
+                "WASM tool 'perl_greet' execution failed (binary): Binary TLV arguments {guard}"
+            ),
+            format!("WASM tool 'perl_greet' execution failed: Tool arguments {guard}"),
+        ] {
+            assert!(!binary_failure_is_pre_execution(&msg), "{msg}");
+            assert!(!binary_failure_is_request_level(&msg), "{msg}");
+        }
+    }
+
+    /// A trapped guest is reported as a fixed sentence plus the trap's first
+    /// line. Neither part may read as pre-execution — the binary path would run
+    /// the tool a second time on the runtime it just discarded — nor as
+    /// request-level, since a JSON retry re-traps identically.
+    #[test]
+    fn test_trap_error_matches_neither_fallback_class() {
+        for reason in [
+            "RuntimeError: unreachable",
+            "RuntimeError: out of bounds memory access",
+            "the guest trapped",
+        ] {
+            let msg = crate::plugins::trap_message("perl_greet", reason);
+            assert!(!binary_failure_is_pre_execution(&msg), "{msg}");
+            assert!(!binary_failure_is_request_level(&msg), "{msg}");
+        }
+    }
+
     // ── NDA tool registry eviction ─────────────────────────────────────────
 
     #[test]
     fn test_nda_tool_registry_eviction() {
+        let _registries = lock_registries();
         let mut inserted_keys = Vec::new();
         {
             let mut reg = get_nmcp_frame_cache().lock().unwrap();
@@ -5682,6 +6056,7 @@ mod tests {
 
     #[test]
     fn test_convert_and_execute_e2e() {
+        let _registries = lock_registries();
         let _t = test_timer("test_convert_and_execute_e2e");
 
         // Step 1: Convert a simple echo-like tool
@@ -5742,5 +6117,304 @@ mod tests {
             reg.remove("e2e_test_tool");
         }
         bump_registry_generation();
+    }
+
+    /// Root a path fixture under a prefix that is absolute on the host OS.
+    /// Windows hosts have no `/home`, POSIX hosts have no `C:\`.
+    fn host_absolute(rel: &str) -> std::path::PathBuf {
+        let root = if cfg!(windows) {
+            r"C:\Users\test"
+        } else {
+            "/home/user"
+        };
+        std::path::Path::new(root).join(rel)
+    }
+
+    #[test]
+    fn test_shell_exec_blocks_reordered_and_long_option_rm() {
+        // `false &&` keeps the probe inert: if the guard ever stops matching, the shell
+        // short-circuits and the destructive tail is never executed.
+        for command in ["false && rm -fr /", "false && rm -rf --no-preserve-root /"] {
+            let result = call_tool("shell_exec", &json!({"command": command}));
+            assert!(result.is_err(), "expected blocked: {}", command);
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("dangerous pattern"),
+                "expected pattern refusal, got: {}",
+                command
+            );
+        }
+    }
+
+    /// The three documented `edit_file` bounds -- at most 1000 edits, an input file under
+    /// 10 MiB, each `oldText`/`newText` under 1,000,000 bytes -- all constrain the request.
+    /// Nothing between the last replacement and `fs::write` constrains the result,
+    /// `replace` rewrites *every* occurrence, and the `dryRun` arm performs the same
+    /// replacements in memory even though it never writes. PINNED (owner call #556): a
+    /// repair that caps the result size flips this red on purpose. Kept to 1 MiB so the pin
+    /// itself cannot be the thing that exhausts memory.
+    #[test]
+    fn test_edit_file_bounds_the_request_not_the_result() {
+        let dir = temp_test_dir("edit_amplify");
+        let file = dir.join("amp.txt");
+        std::fs::write(&file, "a".repeat(100)).unwrap();
+
+        call_tool(
+            "edit_file",
+            &json!({
+                "path": file.to_str().unwrap(),
+                "edits": [{"oldText": "a", "newText": "b".repeat(10_000)}]
+            }),
+        )
+        .expect("every documented bound is satisfied by this request");
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().len(),
+            1_000_000,
+            "100 occurrences times 10 KB of replacement text"
+        );
+
+        let small = dir.join("dry.txt");
+        std::fs::write(&small, "a").unwrap();
+        let dry = call_tool(
+            "edit_file",
+            &json!({
+                "path": small.to_str().unwrap(),
+                "dryRun": true,
+                "edits": [{"oldText": "a", "newText": "b".repeat(100_000)}]
+            }),
+        )
+        .expect("dry run");
+        assert!(
+            dry.len() > 100_000,
+            "the dry-run response echoes the payload it was sent: {} bytes",
+            dry.len()
+        );
+        assert_eq!(std::fs::metadata(&small).unwrap().len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    // The `#[cfg(unix)]` test above cannot reach this arm, and `symlink_dir` is not a
+    // substitute: it needs elevation or developer mode, while a junction is unprivileged
+    // and `std` reports it as a symlink to the ancestor walk.
+    #[cfg(windows)]
+    #[test]
+    fn test_validate_file_path_rejects_junction_on_windows() {
+        let dir = temp_test_dir("junction_reject");
+        let real = dir.join("outside");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("secret.txt"), "secret").unwrap();
+
+        let link = dir.join("jlink");
+        let _ = std::fs::remove_dir(&link);
+        let made = std::process::Command::new("cmd")
+            .args([
+                "/C",
+                "mklink",
+                "/J",
+                link.to_str().unwrap(),
+                real.to_str().unwrap(),
+            ])
+            .output()
+            .expect("mklink /J");
+        assert!(
+            made.status.success(),
+            "junction fixture failed to build: {}",
+            String::from_utf8_lossy(&made.stderr)
+        );
+
+        // Positive control: the same file reached without the reparse component is admitted.
+        assert!(validate_file_path(real.join("secret.txt").to_str().unwrap()).is_ok());
+
+        let through = link.join("secret.txt");
+        let result = validate_file_path(through.to_str().unwrap());
+        assert!(
+            result.is_err(),
+            "junction component was not rejected: {:?}",
+            result
+        );
+        assert!(result.unwrap_err().to_string().contains("symlink"));
+
+        let _ = std::fs::remove_dir(&link);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Helper for the two frame-path witnesses: builds the byte-exact NMCP frame the
+    /// product's own converter produces for a `tools/call` request, and returns it
+    /// decoded, so these tests drive the executor with production framing.
+    fn nmcp_frame_for(tool: &str, args: &Value) -> Vec<u8> {
+        use base64::{engine::general_purpose, Engine as _};
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": tool, "arguments": args }
+        });
+        let encoded = json_to_nmcp_frame(&request.to_string(), "").expect("frame build");
+        general_purpose::STANDARD
+            .decode(encoded)
+            .expect("base64 of the frame")
+    }
+
+    /// The two zero-alloc arms of `execute_cached_nmcp_frame` re-implement `bench_echo`
+    /// and `file_read` and omit the payload caps the dispatcher enforces for those same
+    /// names, so a frame executed by the harness or by a crate consumer serves what the
+    /// JSON-RPC path refuses. Pinned, not repaired. The current wire cannot reach this:
+    /// `call_tool_with_csharp_path` matches the two names before it consults the frame
+    /// cache, so routing built-ins through that cache would make the divergence visible
+    /// to clients.
+    #[test]
+    fn test_binary_frame_paths_skip_the_json_payload_caps() {
+        let max_bench: usize = 16 * 1024 * 1024;
+        let max_read: usize = 10 * 1024 * 1024;
+
+        let oversized = (max_bench + 1) as u64;
+        let refused = call_tool("bench_echo", &json!({ "size": oversized }))
+            .expect_err("the JSON arm must refuse an over-cap payload");
+        assert!(
+            refused.to_string().contains("exceeds maximum"),
+            "unexpected refusal: {refused}"
+        );
+
+        let frame = nmcp_frame_for("bench_echo", &json!({ "size": oversized }));
+        let served = execute_cached_nmcp_frame("bench_echo", &json!({}), &frame)
+            .expect("the frame arm must execute");
+        assert_eq!(served.len(), max_bench + 1);
+        assert!(served.starts_with('x') && served.ends_with('x'));
+
+        let dir = std::env::temp_dir().join(format!("velocity_nda_caps_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("oversize.txt");
+        std::fs::write(&path, vec![b'a'; max_read + 1]).expect("write 10 MiB + 1");
+        let path_str = path.to_str().expect("utf-8 temp path").to_string();
+
+        let refused = call_tool("file_read", &json!({ "path": &path_str }))
+            .expect_err("the JSON arm must refuse an over-cap file");
+        assert!(
+            refused.to_string().contains("File too large"),
+            "unexpected refusal: {refused}"
+        );
+
+        let frame = nmcp_frame_for("file_read", &json!({ "path": &path_str }));
+        let served = execute_cached_nmcp_frame("file_read", &json!({}), &frame)
+            .expect("the frame arm must execute");
+        assert_eq!(served.len(), max_read + 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The frame arm reads `size` as an `i64` and casts it to `u64` before handing it to
+    /// `String::repeat` with no cap in between, so a negative `size` carried in a frame
+    /// becomes `u64::MAX` bytes demanded, while the dispatcher's own arm reads the same
+    /// JSON number with `as_u64()`, gets `None`, and serves its 64-byte default. This test
+    /// decodes the value the executor would cast; it does not run the allocation, which
+    /// would abort the test process.
+    #[test]
+    fn test_binary_frame_bench_echo_negative_size_reaches_the_repeat_cast() {
+        let frame = nmcp_frame_for("bench_echo", &json!({ "size": -1 }));
+        let name_len = u16::from_be_bytes([frame[37], frame[38]]) as usize;
+        let args_data = &frame[39 + name_len + 4..];
+        let tlv = extract_tlv_field(args_data, b"size")
+            .expect("tlv walk")
+            .expect("size present");
+        let decoded = tlv_to_i64(tlv).expect("integer tlv");
+        assert_eq!(decoded, -1);
+        assert_eq!(decoded as u64, u64::MAX);
+
+        // The same JSON number through the dispatcher's own arm, which reads it with
+        // `as_u64()`: a negative yields `None`, so the call is served at the default.
+        let served = call_tool("bench_echo", &json!({ "size": -1 }))
+            .expect("the JSON arm defaults rather than refusing a negative size");
+        assert_eq!(served, "x".repeat(64));
+    }
+
+    #[test]
+    fn test_directory_tree_schema_advertises_its_depth_knob() {
+        // The declared schema is the client-facing contract, so it must cover every
+        // parameter the dispatch arm reads, not only the ones first written.
+        let tree_tool = locked_tools()
+            .into_iter()
+            .find(|tool| tool.name == "directory_tree")
+            .expect("directory_tree is a built-in tool");
+        let props = tree_tool.input_schema["properties"]
+            .as_object()
+            .expect("directory_tree properties");
+        assert!(props.contains_key("path"), "path must be advertised");
+        assert!(
+            props.contains_key("excludePatterns"),
+            "excludePatterns must be advertised"
+        );
+        assert!(
+            props.contains_key("maxDepth"),
+            "maxDepth is read by the arm, so it must be advertised"
+        );
+        assert_eq!(props["maxDepth"]["type"], "integer");
+
+        // The advertised ceiling is the enforced one: a request above it is clamped.
+        let dir = temp_test_dir("tree_cap");
+        let mut deep = dir.clone();
+        for _ in 0..21 {
+            deep = deep.join("a");
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("deep.txt"), "d").unwrap();
+        let tree = call_tool(
+            "directory_tree",
+            &json!({ "path": dir.to_str().unwrap(), "maxDepth": 25 }),
+        )
+        .expect("directory_tree with an above-cap maxDepth");
+        assert!(
+            tree.contains("(max depth 20)"),
+            "advertised cap of 20 not enforced, tree was: {}",
+            tree.chars().take(200).collect::<String>()
+        );
+        assert!(
+            !tree.contains("deep.txt"),
+            "descent should stop at the advertised cap"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // #518 enrolled the registry's writers. These two close the reader side of the same
+    // serialisation domain: an unenrolled reader can observe a half-applied batch.
+    fn locked_tools() -> Vec<Tool> {
+        let _registries = lock_registries();
+        get_tools()
+    }
+
+    fn register_benchmark_tools_locked(count: usize) {
+        let _registries = lock_registries();
+        register_benchmark_tools(count);
+    }
+    /// #615: `register_tool_lazy` has no unregister counterpart, so every probe tool a
+    /// test registered stayed in `MACRO_TOOLS` for the rest of the binary's run, which
+    /// made `get_tools()`'s absolute count depend on test order. This takes the domain
+    /// guard and drops the named prefix when the body ends.
+    pub(crate) fn lock_scoped(
+        prefix: &'static str,
+    ) -> (std::sync::MutexGuard<'static, ()>, ProbeToolCleanup) {
+        (lock_registries(), ProbeToolCleanup { prefix })
+    }
+
+    pub(crate) struct ProbeToolCleanup {
+        prefix: &'static str,
+    }
+
+    impl Drop for ProbeToolCleanup {
+        fn drop(&mut self) {
+            // Locals drop in reverse declaration order, so a body's `_cleanup` runs
+            // here while its `_registries` guard is still held.
+            let removed = {
+                let mut reg = get_macro_registry()
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                let before = reg.len();
+                reg.retain(|t| !t.name.starts_with(self.prefix));
+                before - reg.len()
+            };
+            if removed > 0 {
+                bump_registry_generation();
+            }
+        }
     }
 }

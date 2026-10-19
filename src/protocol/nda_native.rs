@@ -377,7 +377,15 @@ pub fn parse_nda_request(frame: &[u8]) -> Result<NdaRequest, Box<dyn Error>> {
     offset += consumed;
 
     let data = if offset < payload.len() {
-        let (d, _) = decode_json_value(&payload[offset..])?;
+        let (d, data_consumed) = decode_json_value(&payload[offset..])?;
+        offset += data_consumed;
+        if offset != payload.len() {
+            return Err(format!(
+                "NDA frame has {} trailing bytes after payload",
+                payload.len() - offset
+            )
+            .into());
+        }
         d
     } else {
         Value::Null
@@ -404,8 +412,8 @@ pub fn skip_tlv_value(bytes: &[u8]) -> Result<usize, Box<dyn Error>> {
 }
 
 fn skip_tlv_value_inner(bytes: &[u8], depth: u32) -> Result<usize, Box<dyn Error>> {
-    // Same boundary as decode_json_value_inner, so the zero-alloc walk accepts
-    // exactly the frames the allocating decoder accepts.
+    // Shares the decoder's depth and truncation bounds, but not its value caps:
+    // this walk allocates nothing, so an over-cap container is skipped, not refused.
     if depth > TLV_MAX_DEPTH {
         return Err(format!("TLV skip: nesting depth exceeds maximum {}", TLV_MAX_DEPTH).into());
     }
@@ -1338,7 +1346,7 @@ pub fn parse_flat_response(frame: &[u8]) -> Result<FlatResponse, Box<dyn Error>>
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn test_timer(name: &str) -> impl Drop {
@@ -1397,7 +1405,7 @@ mod tests {
 
     #[test]
     fn test_build_and_parse_request() {
-        let req_id = json!(1);
+        let (_merkle, req_id) = (lock_merkle(), json!(1));
         let data = json!({"name": "read_file", "arguments": {"path": "/test.txt"}});
         let frame = build_nda_request(METHOD_TOOLS_CALL, &req_id, &data).unwrap();
 
@@ -1413,7 +1421,7 @@ mod tests {
 
     #[test]
     fn test_build_and_parse_response() {
-        let req_id = json!(42);
+        let (_merkle, req_id) = (lock_merkle(), json!(42));
         let result = json!({"content": [{"type": "text", "text": "hello"}]});
         let frame = build_nda_response(STATUS_OK, &req_id, &result).unwrap();
 
@@ -1438,7 +1446,16 @@ mod tests {
         let mut tampered = frame.clone();
         let last = tampered.len() - 1;
         tampered[last] ^= 0xFF;
-        assert!(parse_nda_request(&tampered).is_err());
+        // The ping payload is method + id TLV only, and build omits a Null data,
+        // so the tampered byte is the id's LSB: the frame still decodes.
+        assert_eq!(
+            err_msg(parse_nda_request(&tampered)),
+            "NDA frame Merkle root mismatch"
+        );
+        // Control: with the digest off those same bytes parse, so the assert
+        // above pins the Merkle check and not a decode error.
+        let _g = MerkleDisabledGuard::new();
+        assert!(parse_nda_request(&tampered).is_ok());
     }
 
     // Tests that flip the global merkle toggle, and tests that assume its default,
@@ -1459,6 +1476,10 @@ mod tests {
         fn drop(&mut self) {
             set_merkle_enabled(self.0);
         }
+    }
+
+    fn err_msg<T>(r: Result<T, Box<dyn Error>>) -> String {
+        r.err().map(|e| e.to_string()).unwrap_or_default()
     }
 
     #[test]
@@ -1558,7 +1579,7 @@ mod tests {
 
     #[test]
     fn test_error_response() {
-        let frame = build_nda_error(&json!(99), "something broke").unwrap();
+        let (_merkle, frame) = (lock_merkle(), build_nda_error(&json!(99), "broke").unwrap());
         let payload = &frame[FRAME_HEADER_SIZE..];
         assert_eq!(payload[0], STATUS_ERROR);
 
@@ -1568,7 +1589,7 @@ mod tests {
         assert_eq!(id, json!(99));
 
         let (msg, _) = decode_json_value(&payload[offset..]).unwrap();
-        assert_eq!(msg, "something broke");
+        assert_eq!(msg, "broke");
     }
 
     #[test]
@@ -1584,6 +1605,7 @@ mod tests {
 
     #[test]
     fn test_ping_request_minimal() {
+        let _merkle = lock_merkle();
         let frame = build_nda_request(METHOD_PING, &json!(1), &Value::Null).unwrap();
         let parsed = parse_nda_request(&frame).unwrap();
         assert_eq!(parsed.method, METHOD_PING);
@@ -1593,7 +1615,7 @@ mod tests {
 
     #[test]
     fn test_flat_request_round_trip() {
-        let args = json!(["/test.txt", 42, true]);
+        let (_merkle, args) = (lock_merkle(), json!(["/test.txt", 42, true]));
         let frame = build_flat_request(METHOD_TOOLS_CALL, &json!(1), "read_file", &args);
         assert!(is_nda_frame(&frame));
 
@@ -1609,7 +1631,7 @@ mod tests {
 
     #[test]
     fn test_flat_response_round_trip() {
-        let result = json!(["hello world", 99]);
+        let (_merkle, result) = (lock_merkle(), json!(["hello world", 99]));
         let frame = build_flat_response(STATUS_OK, 42, &result);
         assert!(is_nda_frame(&frame));
 
@@ -1623,7 +1645,7 @@ mod tests {
 
     #[test]
     fn test_flat_null_and_bool() {
-        let args = json!([null, true, false]);
+        let (_merkle, args) = (lock_merkle(), json!([null, true, false]));
         let frame = build_flat_request(METHOD_TOOLS_CALL, &json!(5), "test", &args);
         let parsed = parse_flat_request(&frame).unwrap();
         assert_eq!(parsed.fields[0], Value::Null);
@@ -1651,18 +1673,26 @@ mod tests {
     #[test]
     fn test_flat_merkle_integrity() {
         let _lock = MERKLE_TOGGLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let frame = build_flat_request(METHOD_PING, &json!(1), "", &Value::Null);
+        let frame = build_flat_request(METHOD_PING, &json!(1), "bench_echo", &Value::Null);
         let mut tampered = frame.clone();
-        let last = tampered.len() - 1;
-        tampered[last] ^= 0xFF;
-        assert!(parse_flat_request(&tampered).is_err());
+        // FRAME_HEADER_SIZE + method(1) + id(8) + name_len(2) + 3 = inside the
+        // tool name, so the frame still decodes and only the digest can reject
+        // it. The last byte is a field tag instead, and a tampered tag fails
+        // the decode even with the digest off.
+        tampered[FRAME_HEADER_SIZE + 14] ^= 0x01;
+        assert_eq!(
+            err_msg(parse_flat_request(&tampered)),
+            "Flat frame Merkle root mismatch"
+        );
+        let _g = MerkleDisabledGuard::new();
+        assert!(parse_flat_request(&tampered).is_ok());
     }
 
     #[test]
     #[ignore]
     fn perf_probe_tools_list() {
         use std::time::Instant;
-        let iters = 200;
+        let (_merkle, iters) = (lock_merkle(), 200);
 
         let tools = crate::registry::get_tools();
         let tools_json: Vec<Value> = tools
@@ -1782,6 +1812,7 @@ mod tests {
 
     #[test]
     fn tools_list_cache_hit_and_invalidation() {
+        let (_registries, _cleanup) = crate::registry::tests::lock_scoped("__nda_cache");
         let _t = test_timer("tools_list_cache_hit_and_invalidation");
         // Repeat calls serve identical cached bytes, matching a direct encoding.
         let t0 = std::time::Instant::now();
@@ -1818,6 +1849,7 @@ mod tests {
 
     #[test]
     fn tools_list_plugin_reload_bumps_generation() {
+        let _registries = crate::registry::tests::lock_registries();
         // Reloading plugins replaces the plugin registry, so the generation
         // must bump even when the directory holds no plugins.
         let gen_before = crate::registry::registry_generation();
@@ -1830,6 +1862,7 @@ mod tests {
 
     #[test]
     fn tools_list_cache_survives_concurrent_registration() {
+        let (_registries, _cleanup) = crate::registry::tests::lock_scoped("__hammer_probe_");
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
 
@@ -1907,7 +1940,10 @@ mod tests {
 
     #[test]
     fn inplace_parse_matches_value_parser() {
-        let _t = test_timer("inplace_parse_matches_value_parser");
+        let (_merkle, _t) = (
+            lock_merkle(),
+            test_timer("inplace_parse_matches_value_parser"),
+        );
         let cases = [
             (METHOD_PING, json!(1), Value::Null),
             (METHOD_TOOLS_LIST, json!(99), Value::Null),
@@ -1954,8 +1990,9 @@ mod tests {
         let mut tampered = frame.clone();
         let last = tampered.len() - 1;
         tampered[last] ^= 0xFF;
-        assert!(
-            parse_nda_request_inplace(&tampered).is_err(),
+        assert_eq!(
+            err_msg(parse_nda_request_inplace(&tampered)),
+            "NDA frame Merkle root mismatch",
             "tampered payload"
         );
         // Payload of just a method byte: no id TLV
@@ -1968,6 +2005,10 @@ mod tests {
             parse_nda_request_inplace(&trunc_frame).is_err(),
             "truncated id TLV"
         );
+        // Control for the tampered-payload leg: those same bytes parse cleanly
+        // once the digest check is off, so the assert above is the Merkle arm.
+        let _g = MerkleDisabledGuard::new();
+        assert!(parse_nda_request_inplace(&tampered).is_ok());
     }
 
     #[test]
@@ -2026,7 +2067,7 @@ mod tests {
 
     #[test]
     fn raw_builders_byte_identical_to_value_builders() {
-        let id = json!(12345);
+        let (_merkle, id) = (lock_merkle(), json!(12345));
         let result = json!({"status": "healthy", "mode": "shmem-nda"});
         let mut id_tlv = Vec::new();
         encode_json_value(&id, &mut id_tlv).unwrap();
@@ -2438,6 +2479,7 @@ mod tests {
 
     #[test]
     fn test_parse_nda_request_empty_payload() {
+        let _merkle = lock_merkle();
         let frame = build_nda_frame(&[]);
         let result = parse_nda_request(&frame);
         assert!(result.is_err());
@@ -2448,6 +2490,7 @@ mod tests {
 
     #[test]
     fn test_parse_flat_request_too_small() {
+        let _merkle = lock_merkle();
         let result = parse_flat_request(&[0u8; 10]);
         assert!(result.is_err());
         assert!(result.err().unwrap().to_string().contains("too small"));
@@ -2455,7 +2498,7 @@ mod tests {
 
     #[test]
     fn test_parse_flat_request_bad_magic() {
-        let mut data = vec![0u8; FRAME_HEADER_SIZE + 4];
+        let (_merkle, mut data) = (lock_merkle(), vec![0u8; FRAME_HEADER_SIZE + 4]);
         data[0..4].copy_from_slice(b"XXXX");
         let result = parse_flat_request(&data);
         assert!(result.is_err());
@@ -2464,6 +2507,7 @@ mod tests {
 
     #[test]
     fn test_parse_flat_request_empty_payload() {
+        let _merkle = lock_merkle();
         let frame = build_nda_frame(&[]);
         let result = parse_flat_request(&frame);
         assert!(result.is_err());
@@ -2472,6 +2516,7 @@ mod tests {
 
     #[test]
     fn test_parse_flat_request_missing_request_id() {
+        let _merkle = lock_merkle();
         let frame = build_nda_frame(&[METHOD_PING]);
         let result = parse_flat_request(&frame);
         assert!(result.is_err());
@@ -2484,7 +2529,7 @@ mod tests {
 
     #[test]
     fn test_parse_flat_request_missing_name_length() {
-        let mut payload = vec![METHOD_PING];
+        let (_merkle, mut payload) = (lock_merkle(), vec![METHOD_PING]);
         payload.extend_from_slice(&1u64.to_le_bytes());
         let frame = build_nda_frame(&payload);
         let result = parse_flat_request(&frame);
@@ -2498,7 +2543,7 @@ mod tests {
 
     #[test]
     fn test_parse_flat_request_truncated_name() {
-        let mut payload = vec![METHOD_PING];
+        let (_merkle, mut payload) = (lock_merkle(), vec![METHOD_PING]);
         payload.extend_from_slice(&1u64.to_le_bytes());
         payload.extend_from_slice(&100u16.to_le_bytes());
         payload.extend_from_slice(b"short");
@@ -2514,6 +2559,7 @@ mod tests {
 
     #[test]
     fn test_parse_flat_response_too_small() {
+        let _merkle = lock_merkle();
         let result = parse_flat_response(&[0u8; 10]);
         assert!(result.is_err());
         assert!(result.err().unwrap().to_string().contains("too small"));
@@ -2521,7 +2567,7 @@ mod tests {
 
     #[test]
     fn test_parse_flat_response_bad_magic() {
-        let mut data = vec![0u8; FRAME_HEADER_SIZE + 4];
+        let (_merkle, mut data) = (lock_merkle(), vec![0u8; FRAME_HEADER_SIZE + 4]);
         data[0..4].copy_from_slice(b"XXXX");
         let result = parse_flat_response(&data);
         assert!(result.is_err());
@@ -2530,6 +2576,7 @@ mod tests {
 
     #[test]
     fn test_parse_flat_response_empty_payload() {
+        let _merkle = lock_merkle();
         let frame = build_nda_frame(&[]);
         let result = parse_flat_response(&frame);
         assert!(result.is_err());
@@ -2538,6 +2585,7 @@ mod tests {
 
     #[test]
     fn test_parse_flat_response_missing_id() {
+        let _merkle = lock_merkle();
         let frame = build_nda_frame(&[STATUS_OK]);
         let result = parse_flat_response(&frame);
         assert!(result.is_err());
@@ -2782,7 +2830,7 @@ mod tests {
 
     #[test]
     fn test_parse_flat_response_merkle_mismatch() {
-        let result = json!(["ok"]);
+        let (_merkle, result) = (lock_merkle(), json!(["ok"]));
         let mut frame = build_flat_response(STATUS_OK, 1, &result);
         let last = frame.len() - 1;
         frame[last] ^= 0xFF;
@@ -2792,6 +2840,7 @@ mod tests {
 
     #[test]
     fn test_parse_flat_request_merkle_mismatch() {
+        let _merkle = lock_merkle();
         let mut frame = build_flat_request(METHOD_PING, &json!(1), "test", &Value::Null);
         let last = frame.len() - 1;
         frame[last] ^= 0xFF;
@@ -2895,7 +2944,7 @@ mod tests {
 
         #[test]
         fn test_encrypted_frame_round_trip() {
-            let _lock = lock_session_key();
+            let (_merkle, _lock) = (lock_merkle(), lock_session_key());
             setup_test_key();
             let req_id = json!(42);
             let data = json!({"name": "test_tool", "arguments": {"size": 64}});
@@ -2915,7 +2964,7 @@ mod tests {
 
         #[test]
         fn test_encrypted_frame_wrong_key() {
-            let _lock = lock_session_key();
+            let (_merkle, _lock) = (lock_merkle(), lock_session_key());
             setup_test_key();
             let req_id = json!(1);
             let data = json!({"test": "data"});
@@ -2936,7 +2985,7 @@ mod tests {
 
         #[test]
         fn test_encrypted_frame_no_key() {
-            let _lock = lock_session_key();
+            let (_merkle, _lock) = (lock_merkle(), lock_session_key());
             clear_session_key();
             let req_id = json!(1);
             let data = Value::Null;
@@ -2948,25 +2997,23 @@ mod tests {
 
         #[test]
         fn test_encrypted_frame_tampered_ciphertext() {
-            let _lock = lock_session_key();
+            let (_merkle, _lock) = (lock_merkle(), lock_session_key());
             setup_test_key();
             let req_id = json!(1);
             let data = json!({"test": "data"});
 
             let mut frame = build_nda_encrypted_frame(METHOD_PING, &req_id, &data).unwrap();
-
-            // Tamper with ciphertext (last byte)
             let last = frame.len() - 1;
             frame[last] ^= 0xFF;
-
-            // Should fail (either decryption or Merkle mismatch)
-            let result = parse_nda_request(&frame);
-            assert!(result.is_err());
+            assert!(
+                err_msg(parse_nda_request(&frame)).starts_with("Encrypted frame decryption failed"),
+                "tampered ciphertext must be rejected by the AEAD tag, not a later check"
+            );
         }
 
         #[test]
         fn test_encrypted_frame_no_plaintext_fallback() {
-            let _lock = lock_session_key();
+            let (_merkle, _lock) = (lock_merkle(), lock_session_key());
             // This is the critical security test: encrypted frames that fail
             // decryption must be rejected, NOT silently processed as plaintext.
             setup_test_key();
@@ -3010,7 +3057,7 @@ mod tests {
 
         #[test]
         fn test_parse_nda_request_inplace_encrypted() {
-            let _lock = lock_session_key();
+            let (_merkle, _lock) = (lock_merkle(), lock_session_key());
             setup_test_key();
             let req_id = json!(99);
             let data = json!({"name": "file_read", "arguments": {"path": "/test.txt"}});
@@ -3027,7 +3074,7 @@ mod tests {
 
         #[test]
         fn test_is_nda_frame_encrypted() {
-            let _lock = lock_session_key();
+            let (_merkle, _lock) = (lock_merkle(), lock_session_key());
             let plaintext = build_nda_request(METHOD_PING, &json!(1), &Value::Null).unwrap();
             assert!(!is_nda_frame_encrypted(&plaintext));
 
@@ -3042,7 +3089,7 @@ mod tests {
 
         #[test]
         fn test_plaintext_frame_still_works_with_encryption_enabled() {
-            let _lock = lock_session_key();
+            let (_merkle, _lock) = (lock_merkle(), lock_session_key());
             // When oauth2 feature is enabled, plaintext frames (NMCP magic)
             // should still work normally — no decryption attempted.
             setup_test_key();
@@ -3055,5 +3102,95 @@ mod tests {
             assert_eq!(parsed.method, METHOD_PING);
             assert_eq!(parsed.request_id, json!(1));
         }
+    }
+
+    // A frame built while another test holds the toggle off carries a zero root, which
+    // the verifier rejects once that test restores the default. Every reader of the
+    // toggle therefore holds MERKLE_TOGGLE_LOCK for its whole body.
+    pub(crate) fn lock_merkle() -> std::sync::MutexGuard<'static, ()> {
+        MERKLE_TOGGLE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+#[cfg(test)]
+mod zero_alloc_walk_value_caps {
+    use super::*;
+
+    // Characterisation pin, not an endorsement: the allocating decoder enforces
+    // TLV_MAX_STRING_LEN and TLV_MAX_ELEMENTS, the zero-alloc walk does not, so
+    // the same bytes are refused on one NDA parse path and forwarded on the
+    // other. These frames need at least 100_006 bytes, which the 4_080-byte
+    // shared-memory input capacity cannot carry; the HTTP body limit does.
+
+    fn over_cap_array() -> Vec<u8> {
+        let n = TLV_MAX_ELEMENTS + 1;
+        let mut v = vec![0x05u8];
+        v.extend_from_slice(&(n as u32).to_be_bytes());
+        v.resize(v.len() + n, 0x04);
+        v
+    }
+
+    fn over_cap_object() -> Vec<u8> {
+        let n = TLV_MAX_ELEMENTS + 1;
+        let mut v = vec![0x06u8];
+        v.extend_from_slice(&(n as u32).to_be_bytes());
+        for _ in 0..n {
+            v.extend_from_slice(&0u16.to_be_bytes());
+            v.push(0x04);
+        }
+        v
+    }
+
+    fn over_cap_string() -> Vec<u8> {
+        let n = TLV_MAX_STRING_LEN + 1;
+        let mut v = vec![0x01u8];
+        v.extend_from_slice(&(n as u32).to_be_bytes());
+        v.resize(v.len() + n, b'x');
+        v
+    }
+
+    #[test]
+    fn walk_accepts_over_cap_values_the_decoder_refuses() {
+        for (label, buf) in [
+            ("array", over_cap_array()),
+            ("object", over_cap_object()),
+            ("string", over_cap_string()),
+        ] {
+            let decoded = decode_json_value(&buf);
+            let err = decoded.unwrap_err().to_string();
+            assert!(
+                err.contains("exceeds maximum"),
+                "{}: decoder must refuse, got {}",
+                label,
+                err
+            );
+            assert_eq!(
+                skip_tlv_value(&buf).unwrap(),
+                buf.len(),
+                "{}: walk must consume the whole over-cap value",
+                label
+            );
+        }
+    }
+
+    #[test]
+    fn field_extractors_forward_the_whole_over_cap_value() {
+        // The production shape: `arguments` is an over-cap array inside a
+        // tools/call data object. The walk hands the caller the complete TLV
+        // rather than refusing it, so the cap never reaches the guest.
+        let args = over_cap_array();
+        let mut data = vec![0x06u8];
+        data.extend_from_slice(&1u32.to_be_bytes());
+        data.extend_from_slice(&9u16.to_be_bytes());
+        data.extend_from_slice(b"arguments");
+        data.extend_from_slice(&args);
+
+        let (name, arguments) = extract_tools_call_fields(&data).unwrap();
+        assert!(name.is_none());
+        assert_eq!(arguments.unwrap(), &args[..]);
+
+        let found = extract_tlv_field(&data, b"arguments")
+            .unwrap()
+            .expect("key must be found");
+        assert_eq!(found.len(), args.len());
     }
 }
