@@ -412,8 +412,6 @@ pub fn skip_tlv_value(bytes: &[u8]) -> Result<usize, Box<dyn Error>> {
 }
 
 fn skip_tlv_value_inner(bytes: &[u8], depth: u32) -> Result<usize, Box<dyn Error>> {
-    // Shares the decoder's depth and truncation bounds, but not its value caps:
-    // this walk allocates nothing, so an over-cap container is skipped, not refused.
     if depth > TLV_MAX_DEPTH {
         return Err(format!("TLV skip: nesting depth exceeds maximum {}", TLV_MAX_DEPTH).into());
     }
@@ -426,6 +424,13 @@ fn skip_tlv_value_inner(bytes: &[u8], depth: u32) -> Result<usize, Box<dyn Error
                 return Err("TLV skip: truncated string length".into());
             }
             let len = u32::from_be_bytes(bytes[1..5].try_into()?) as usize;
+            if len > TLV_MAX_STRING_LEN {
+                return Err(format!(
+                    "TLV skip: string length {} exceeds maximum {}",
+                    len, TLV_MAX_STRING_LEN
+                )
+                .into());
+            }
             if bytes.len() < 5 + len {
                 return Err("TLV skip: truncated string body".into());
             }
@@ -449,6 +454,13 @@ fn skip_tlv_value_inner(bytes: &[u8], depth: u32) -> Result<usize, Box<dyn Error
                 return Err("TLV skip: truncated array count".into());
             }
             let count = u32::from_be_bytes(bytes[1..5].try_into()?) as usize;
+            if count > TLV_MAX_ELEMENTS {
+                return Err(format!(
+                    "TLV skip: array count {} exceeds maximum {}",
+                    count, TLV_MAX_ELEMENTS
+                )
+                .into());
+            }
             let mut off = 5usize;
             for _ in 0..count {
                 off += skip_tlv_value_inner(&bytes[off..], depth + 1)?;
@@ -460,6 +472,13 @@ fn skip_tlv_value_inner(bytes: &[u8], depth: u32) -> Result<usize, Box<dyn Error
                 return Err("TLV skip: truncated object count".into());
             }
             let count = u32::from_be_bytes(bytes[1..5].try_into()?) as usize;
+            if count > TLV_MAX_ELEMENTS {
+                return Err(format!(
+                    "TLV skip: object count {} exceeds maximum {}",
+                    count, TLV_MAX_ELEMENTS
+                )
+                .into());
+            }
             let mut off = 5usize;
             for _ in 0..count {
                 if bytes.len() < off + 2 {
@@ -3115,11 +3134,11 @@ pub(crate) mod tests {
 mod zero_alloc_walk_value_caps {
     use super::*;
 
-    // Characterisation pin, not an endorsement: the allocating decoder enforces
-    // TLV_MAX_STRING_LEN and TLV_MAX_ELEMENTS, the zero-alloc walk does not, so
-    // the same bytes are refused on one NDA parse path and forwarded on the
-    // other. These frames need at least 100_006 bytes, which the 4_080-byte
-    // shared-memory input capacity cannot carry; the HTTP body limit does.
+    // Both the allocating decoder and the zero-alloc walk now enforce the same
+    // value caps (TLV_MAX_STRING_LEN, TLV_MAX_ELEMENTS), so neither path can
+    // accept what the other refuses. These frames need at least 100_006 bytes,
+    // which the 4_080-byte shared-memory input capacity cannot carry; the HTTP
+    // body limit does.
 
     fn over_cap_array() -> Vec<u8> {
         let n = TLV_MAX_ELEMENTS + 1;
@@ -3149,7 +3168,7 @@ mod zero_alloc_walk_value_caps {
     }
 
     #[test]
-    fn walk_accepts_over_cap_values_the_decoder_refuses() {
+    fn both_paths_refuse_over_cap_values() {
         for (label, buf) in [
             ("array", over_cap_array()),
             ("object", over_cap_object()),
@@ -3163,20 +3182,26 @@ mod zero_alloc_walk_value_caps {
                 label,
                 err
             );
-            assert_eq!(
-                skip_tlv_value(&buf).unwrap(),
-                buf.len(),
-                "{}: walk must consume the whole over-cap value",
+            let skipped = skip_tlv_value(&buf);
+            assert!(
+                skipped.is_err(),
+                "{}: walk must also refuse over-cap value",
                 label
+            );
+            let skip_err = skipped.unwrap_err().to_string();
+            assert!(
+                skip_err.contains("exceeds maximum"),
+                "{}: walk error must mention cap, got {}",
+                label,
+                skip_err
             );
         }
     }
 
     #[test]
-    fn field_extractors_forward_the_whole_over_cap_value() {
+    fn field_extractors_refuse_over_cap_values() {
         // The production shape: `arguments` is an over-cap array inside a
-        // tools/call data object. The walk hands the caller the complete TLV
-        // rather than refusing it, so the cap never reaches the guest.
+        // tools/call data object. Both paths now refuse it consistently.
         let args = over_cap_array();
         let mut data = vec![0x06u8];
         data.extend_from_slice(&1u32.to_be_bytes());
@@ -3184,13 +3209,28 @@ mod zero_alloc_walk_value_caps {
         data.extend_from_slice(b"arguments");
         data.extend_from_slice(&args);
 
-        let (name, arguments) = extract_tools_call_fields(&data).unwrap();
-        assert!(name.is_none());
-        assert_eq!(arguments.unwrap(), &args[..]);
+        let result = extract_tools_call_fields(&data);
+        assert!(
+            result.is_err(),
+            "extract_tools_call_fields must refuse over-cap arguments"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("exceeds maximum"),
+            "error must mention cap: {}",
+            err
+        );
 
-        let found = extract_tlv_field(&data, b"arguments")
-            .unwrap()
-            .expect("key must be found");
-        assert_eq!(found.len(), args.len());
+        let found = extract_tlv_field(&data, b"arguments");
+        assert!(
+            found.is_err(),
+            "extract_tlv_field must also refuse over-cap value"
+        );
+        let err = found.unwrap_err().to_string();
+        assert!(
+            err.contains("exceeds maximum"),
+            "error must mention cap: {}",
+            err
+        );
     }
 }
