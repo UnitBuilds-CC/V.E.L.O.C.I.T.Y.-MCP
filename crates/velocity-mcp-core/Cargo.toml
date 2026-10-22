@@ -1,6 +1,6 @@
 [package]
 name = "velocity-mcp-core"
-version = "3.2.0"
+version = "3.2.1"
 edition = "2021"
 authors = ["UnitBuilds <ian@unitbuilds.com>"]
 description = "WASM-compatible core protocol logic for VELOCITY-MCP — pure MCP JSON-RPC handling with no OS dependencies"
