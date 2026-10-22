@@ -55,7 +55,7 @@ Returns the server's capabilities and info with full capability declaration:
     },
     "serverInfo": {
       "name": "velocity-mcp",
-      "version": "3.2.0"
+      "version": "3.2.1"
     }
   }
 }
@@ -119,7 +119,7 @@ Cancels an in-flight request by ID. No response is sent (notification).
 Returns server health status:
 
 ```json
-{"jsonrpc":"2.0","id":<id>,"result":{"status":"healthy","mode":"stdio","version":"3.2.0"}}
+{"jsonrpc":"2.0","id":<id>,"result":{"status":"healthy","mode":"stdio","version":"3.2.1"}}
 ```
 
 ### Unknown Methods
